@@ -3,7 +3,6 @@ package rocks.gorjan.gokixp
 import android.content.Context
 import android.view.ViewGroup
 import android.widget.FrameLayout
-import rocks.gorjan.gokixp.theme.AppTheme
 import rocks.gorjan.gokixp.theme.ThemeManager
 
 /**
@@ -75,9 +74,6 @@ class FloatingWindowManager(private val context: Context, private val container:
 
     fun removeWindow(windowsDialog: WindowsDialog) {
         try {
-            // Unregister from taskbar before removing
-            windowsDialog.unregisterFromTaskbar()
-
             // Apply fade-out animation for Vista
             if (themeManager.isVistaChrome()) {
                 windowsDialog.animate()

@@ -98,9 +98,6 @@ import kotlinx.coroutines.flow.collectLatest
 class MainActivity : AppCompatActivity(), AppChangeListener {
 
     val themeManager by lazy { ThemeManager(this) }
-    private val fontManager by lazy { FontManager(this) }
-    val drawableManager by lazy { DrawableManager(this) }
-    private val themeAwareComponents = mutableListOf<ThemeAware>()
 
     private lateinit var binding: ActivityMainBinding
     // Was assigned in the desktop's setup, which is gone; there is nothing to wait for
@@ -139,7 +136,8 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     private val APP_CHECK_INTERVAL = 30000L // 30 seconds
     private val ICON_REFRESH_DEBOUNCE_MS = 250L // Coalesces bursts of package-change callbacks
     private var isContextMenuVisible = false
-    private var lastAppliedTheme: String? = null
+    /** Whether the shell has been put up in this activity. See [initializeTheme]. */
+    private var shellApplied = false
     private val desktopIcons = mutableListOf<DesktopIcon>()
     private var wallpaperSlideRunnable: Runnable? = null
     private var wallpaperSlidePositionMs = 0L // elapsed within the slide cycle, so it resumes where it stopped
@@ -348,12 +346,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      * that matters; this only decides when the question gets asked.
      */
     private fun requestDialerRole() {
-        // Only the phone shell has anywhere to take a call. See enforceDefaultAppRoles,
-        // which is what stands between a desktop theme and a role already held.
-        if (themeManager.getSelectedTheme() !is AppTheme.WindowsPhone81) {
-            showNotification("People", "Only Windows Phone 8 has a phone app")
-            return
-        }
         val roles = getSystemService(android.app.role.RoleManager::class.java)
         if (roles == null || !roles.isRoleAvailable(android.app.role.RoleManager.ROLE_DIALER)) {
             showNotification("People", "This device has no phone app to be")
@@ -399,11 +391,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      * dialog is the consent that matters; this only decides when it gets asked.
      */
     private fun requestSmsRole() {
-        // And only the phone shell has anywhere to read a message. As above.
-        if (themeManager.getSelectedTheme() !is AppTheme.WindowsPhone81) {
-            showNotification("People", "Only Windows Phone 8 has a messaging app")
-            return
-        }
         val roles = getSystemService(android.app.role.RoleManager::class.java)
         if (roles == null || !roles.isRoleAvailable(android.app.role.RoleManager.ROLE_SMS)) {
             showNotification("People", "This device has no messaging app to be")
@@ -883,28 +870,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
 
 
-    /**
-     * Notifies all registered components that the theme has changed.
-     */
-    private fun notifyThemeChanged(theme: AppTheme) {
-        // Iterate a copy: a component's onThemeChanged() may add/remove views (and thus mutate
-        // the list via attach/detach) while we're notifying.
-        themeAwareComponents.toList().forEach { it.onThemeChanged(theme) }
-    }
-
-    /**
-     * Registers a component to receive theme-change notifications via [notifyThemeChanged].
-     * Idempotent. Desktop icon views and the context menu call this from onAttachedToWindow();
-     * adapters register through their field setters. Pair every register with [unregisterThemeAware].
-     */
-    fun registerThemeAware(component: ThemeAware) {
-        if (component !in themeAwareComponents) themeAwareComponents.add(component)
-    }
-
-    /** Removes a component previously registered with [registerThemeAware]. */
-    fun unregisterThemeAware(component: ThemeAware) {
-        themeAwareComponents.remove(component)
-    }
+    // There is no theme-change notification, because there is no theme change. The
+    // desktop launcher rebuilt itself in place when the user picked another shell and had
+    // to tell every view about it; this launcher has one shell for its whole life.
 
 
     /**
@@ -973,24 +941,13 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      * Gets the wallpaper storage keys for the current theme.
      * Returns Pair(path_key, uri_key)
      */
-    private fun getCurrentThemeWallpaperKeysTypeSafe(): Pair<String, String> {
-        return when (themeManager.getSelectedTheme().chrome) {
-            DesktopChrome.CLASSIC -> Pair(KEY_WALLPAPER_CLASSIC_PATH, KEY_WALLPAPER_CLASSIC_URI)
-            DesktopChrome.XP -> Pair(KEY_WALLPAPER_XP_PATH, KEY_WALLPAPER_XP_URI)
-            DesktopChrome.VISTA -> Pair(KEY_WALLPAPER_VISTA_PATH, KEY_WALLPAPER_VISTA_URI)
-        }
-    }
+    private fun getCurrentThemeWallpaperKeysTypeSafe(): Pair<String, String> =
+        Pair(KEY_WALLPAPER_VISTA_PATH, KEY_WALLPAPER_VISTA_URI)
 
     /**
      * Gets the wallpaper X focus storage key for the current theme.
      */
-    private fun getCurrentThemeWallpaperFocusXKey(): String {
-        return when (themeManager.getSelectedTheme().chrome) {
-            DesktopChrome.CLASSIC -> KEY_WALLPAPER_CLASSIC_FOCUS_X
-            DesktopChrome.XP -> KEY_WALLPAPER_XP_FOCUS_X
-            DesktopChrome.VISTA -> KEY_WALLPAPER_VISTA_FOCUS_X
-        }
-    }
+    private fun getCurrentThemeWallpaperFocusXKey(): String = KEY_WALLPAPER_VISTA_FOCUS_X
 
 
 
@@ -1001,9 +958,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // Set theme before calling super.onCreate()
-        // Phase 2: Use ThemeManager for theme initialization
-        val theme = themeManager.getSelectedTheme()
-        setTheme(themeManager.getThemeStyleRes(theme))
+        setTheme(themeManager.getThemeStyleRes())
 
         super.onCreate(savedInstanceState)
         instance = this
@@ -1239,30 +1194,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         chargingReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
 
-                val currentTheme = themeManager.getSelectedTheme()
                 when (intent?.action) {
-                    Intent.ACTION_POWER_CONNECTED -> {
-                        if(currentTheme == AppTheme.WindowsVista){
-                            playSound(R.raw.charge_on_vista)
-                        }
-                        else if(currentTheme == AppTheme.WindowsPhone81){
-                            playSound(R.raw.charge_on_8)
-                        }
-                        else{
-                            playSound(R.raw.charge_on)
-                        }
-                    }
-                    Intent.ACTION_POWER_DISCONNECTED -> {
-                        if(currentTheme == AppTheme.WindowsVista){
-                            playSound(R.raw.charge_off_vista)
-                        }
-                        else if(currentTheme == AppTheme.WindowsPhone81){
-                            playSound(R.raw.charge_off_8)
-                        }
-                        else{
-                            playSound(R.raw.charge_off)
-                        }
-                    }
+                    Intent.ACTION_POWER_CONNECTED -> playSound(R.raw.charge_on_8)
+                    Intent.ACTION_POWER_DISCONNECTED -> playSound(R.raw.charge_off_8)
                 }
             }
         }
@@ -1594,9 +1528,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // The phone's own programs, kept off every desktop - see WINDOWS_PHONE_ONLY_APPS,
         // which the desktop icon loader reads too, so the two can never drift apart - and
         // the desktop's own, kept off the phone.
-        return if (themeManager.isWindowsPhone81())
-            systemApps.filterNot { isDesktopOnlyApp(it.packageName) }
-        else systemApps.filterNot { isWindowsPhoneOnlyApp(it.packageName) }
+        return systemApps.filterNot { isDesktopOnlyApp(it.packageName) }
     }
 
     fun launchSystemApp(packageName: String) {
@@ -1682,7 +1614,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
         if(packageName.startsWith("folder_")){
             // Return appropriate folder icon based on theme
-            return AppCompatResources.getDrawable(this, themeManager.getFolderIconRes(themeManager.getSelectedTheme()))
+            return AppCompatResources.getDrawable(this, themeManager.getFolderIconRes())
         }
 
         // Handle system apps
@@ -2117,11 +2049,10 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     private fun saveCustomIconMappings() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-        val currentTheme = themeManager.getSelectedTheme()
-        val themeKey = currentTheme.customIconsKey
+        val themeKey = rocks.gorjan.gokixp.theme.CUSTOM_ICONS_KEY
 
         val jsonString = customIconMappings.entries.joinToString(";") { "${it.key}:${it.value}" }
-        Log.d("MainActivity", "Saving custom icons to $themeKey for theme $currentTheme: $jsonString")
+        Log.d("MainActivity", "Saving custom icons to $themeKey: $jsonString")
 
         prefs.edit {
             putString(themeKey, jsonString)
@@ -2230,13 +2161,14 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         fun serialise(mappings: Map<String, String>) =
             mappings.entries.joinToString(";") { "${it.key}:${it.value}" }
 
-        val phoneKey = AppTheme.WindowsPhone81.customIconsKey
+        val phoneKey = rocks.gorjan.gokixp.theme.CUSTOM_ICONS_KEY
         val phoneIcons = parse(phoneKey)
         val moved = mutableMapOf<String, String>()
 
         // Vista's is where the writes went, XP's is what the car screen was reading and
-        // what the shell carried into memory when it was entered from XP. Both are swept.
-        val donors = listOf(AppTheme.WindowsVista, AppTheme.WindowsXP).map { it.customIconsKey }
+        // what the shell carried into memory when it was entered from XP. Both are swept,
+        // and so is Classic's, for a setup carried over from the desktop launcher.
+        val donors = rocks.gorjan.gokixp.theme.DESKTOP_CUSTOM_ICON_KEYS
 
         prefs.edit {
             for (donorKey in donors) {
@@ -2305,7 +2237,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 // Icons chosen by hand - one set per theme - and renamed shortcuts. Both
                 // are "package:value" pairs, and a renamed one escapes the colons in the
                 // value, so the package is always what stands before the first.
-                for (key in AppTheme.all().map { it.customIconsKey } + KEY_CUSTOM_NAMES) {
+                for (key in listOf(rocks.gorjan.gokixp.theme.CUSTOM_ICONS_KEY) + KEY_CUSTOM_NAMES) {
                     purgeListedPackages(prefs, key, ";", retiring) { it.substringBefore(":") }
                 }
 
@@ -2350,10 +2282,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     private fun loadCustomIconMappings() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-        val currentTheme = themeManager.getSelectedTheme()
-        val themeKey = currentTheme.customIconsKey
+        val themeKey = rocks.gorjan.gokixp.theme.CUSTOM_ICONS_KEY
 
-        Log.d("MainActivity", "Loading custom icon mappings for theme: $currentTheme, key: $themeKey")
+        Log.d("MainActivity", "Loading custom icon mappings from $themeKey")
 
         // Try to load theme-specific mappings first
         val jsonString = prefs.getString(themeKey, "") ?: ""
@@ -2491,7 +2422,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         val files = iconsDir.listFiles() ?: return
 
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val inUse = AppTheme.all().map { it.customIconsKey }
+        val inUse = listOf(rocks.gorjan.gokixp.theme.CUSTOM_ICONS_KEY)
             .flatMap { key -> (prefs.getString(key, "") ?: "").split(";") }
             .mapNotNull { entry -> entry.substringAfter(":", "").takeIf { it.isNotEmpty() } }
             .toSet()
@@ -2742,9 +2673,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         val windowsDialog = createThemedWindowsDialog()
         windowsDialog.setTitle("Apply Wallpaper To")
 
-        // Get current theme for button styling
-        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        val selectedTheme = AppTheme.WindowsPhone81.toString()
 
         // Create content view from XML layout
         val contentView = layoutInflater.inflate(R.layout.wallpaper_target_dialog_content, null)
@@ -2756,10 +2684,8 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         val lockScreenCheckbox = contentView.findViewById<android.widget.CheckBox>(R.id.lock_screen_checkbox)
         val applyButton = contentView.findViewById<TextView>(R.id.apply_button)
 
-        // Set button background based on theme
-        val buttonBackground = if (selectedTheme == "Windows Classic") {
-            R.drawable.win98_start_menu_border
-        } else {
+        // One button background; the Windows Classic alternative went with its shell.
+        val buttonBackground = run {
             R.drawable.button_xp_background
         }
         applyButton.setBackgroundResource(buttonBackground)
@@ -3017,13 +2943,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     /**
      * Gets the button background drawable resource for the current theme
      */
-    private fun getThemedButtonBackground(): Int {
-        return when (themeManager.getSelectedTheme().chrome) {
-            DesktopChrome.CLASSIC -> R.drawable.win98_start_menu_border
-            DesktopChrome.XP -> R.drawable.button_xp_background
-            DesktopChrome.VISTA -> R.drawable.button_xp_background
-        }
-    }
+    private fun getThemedButtonBackground(): Int = R.drawable.button_xp_background
 
     /**
      * Generic dialog for renaming items with Windows XP/98 styling
@@ -4028,7 +3948,8 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
 
     private fun applyWallpaperDrawable(drawable: Drawable, uri: Uri? = null) {
-        if (themeManager.isWindowsPhone81()) return
+        // The phone shell paints its own Start background and never a desktop wallpaper.
+        if (true) return
 
         val mainBackground = findViewById<RelativeLayout>(R.id.main_background)
 
@@ -4250,7 +4171,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     }
 
     private fun applyThemeFontsToDialog(contentView: View) {
-        val fontResId = fontManager.getFontFamilyRes(themeManager.getSelectedTheme())
+        // One family, everywhere. FontManager used to pick between Micross, Tahoma and
+        // Segoe for four themes; there is one theme, and it is set in Segoe.
+        val fontResId = R.font.segoe_wp_family
 
         val typeface = try {
             androidx.core.content.res.ResourcesCompat.getFont(this, fontResId)
@@ -4281,71 +4204,12 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
 
-        // Plus! 95 theme overrides the Classic startup sound
-        val plus95 = themeManager.getActivePlus95()
-        if (plus95 != null && plus95.startupAsset != null) {
-            if (playPlus95StartupSound(plus95.slug, plus95.startupAsset)) return
-        }
-
-        if(themeManager.getSelectedTheme() is AppTheme.WindowsClassic) {
-            val currentBanner = prefs.getString(KEY_START_BANNER_98, "start_banner_98") ?: "start_banner_98"
-            when (currentBanner) {
-                "start_banner_me", "start_banner_2000" -> {
-                    playSound(R.raw.startup_2000)
-                }
-                "start_banner_95" -> {
-                    playSound(R.raw.startup_95)
-                }
-                else -> {
-                    playSound(R.raw.startup_98)
-                }
-            }
-        }
-        else if(themeManager.getSelectedTheme() is AppTheme.WindowsVista) {
-            playSound(R.raw.startup_vista)
-        }
-        // The phone's own jingle. It shares this branch with XP otherwise, and a Start
-        // screen coming up to the XP chime is the one moment the illusion breaks.
-        else if(themeManager.getSelectedTheme() is AppTheme.WindowsPhone81) {
-            playSound(R.raw.startup_8)
-        }
-        else{
-            playSound(R.raw.startup)
-        }
+        // The phone's own jingle. This used to fork four ways, and a Start screen coming
+        // up to the XP chime was the one moment the illusion broke.
+        playSound(R.raw.startup_8)
     }
 
-    /**
-     * Strong reference to the currently-playing startup jingle. Required: several Plus! 98
-     * themes ship 10–12s startup sounds, and without a field holding the MediaPlayer the GC
-     * finalizes the local instance mid-playback and the clip cuts off partway through. (Older
-     * themes' ~3s clips finished before a GC ever ran, which is why only the new ones cut off.)
-     */
-    private var plus95StartupPlayer: android.media.MediaPlayer? = null
 
-    private fun playPlus95StartupSound(slug: String, startupAsset: String): Boolean {
-        if (isSoundMuted()) return true
-        return try {
-            // Stop any startup jingle still playing from a previous apply
-            plus95StartupPlayer?.release()
-            plus95StartupPlayer = null
-            val afd = assets.openFd(themeManager.plus95Path(slug, startupAsset))
-            val mp = android.media.MediaPlayer()
-            mp.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
-            afd.close()
-            mp.setOnCompletionListener {
-                it.release()
-                if (plus95StartupPlayer === it) plus95StartupPlayer = null
-            }
-            mp.prepare()
-            mp.start()
-            // Keep a strong reference for the whole clip so the GC can't finalize it early.
-            plus95StartupPlayer = mp
-            true
-        } catch (e: Exception) {
-            Log.e("MainActivity", "Plus! startup sound failed for $slug/$startupAsset", e)
-            false
-        }
-    }
     
     
 
@@ -4399,7 +4263,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             // its navigation bar against the bottom. Padding root_container (rather than the
             // shell itself) means floating windows, which are siblings of the shell, clear
             // the system bars too.
-            val isPhoneShell = themeManager.isWindowsPhone81()
+            val isPhoneShell = true
             val reservedBottomPx =
                 if (isPhoneShell) 0
                 else (30 * resources.displayMetrics.density).toInt()
@@ -6344,8 +6208,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // Clear container background
         aqiContainer?.setBackgroundColor(Color.TRANSPARENT)
 
-        // Set text color based on theme (black for Classic/98, white for XP/Vista)
-        val textColor = if (themeManager.isClassicTheme()) Color.BLACK else Color.WHITE
+        val textColor = Color.WHITE
         aqiText?.setTextColor(textColor)
 
         // Create 2px colored underline as background drawable, offset 2px down
@@ -7237,7 +7100,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         refreshWP81AppList()
         startWP81LiveTiles()
 
-        notifyThemeChanged(AppTheme.WindowsPhone81)
     }
 
     /**
@@ -10334,11 +10196,11 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     override fun attachBaseContext(newBase: Context) {
         val prefs = newBase.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-        val selectedTheme = AppTheme.WindowsPhone81.toString()
-        val shouldScaleFont = selectedTheme == "Windows Classic"
-        if(shouldScaleFont) {
+        // Windows Classic asked for a 5% larger base font; nothing here does.
+        @Suppress("ConstantConditionIf")
+        if (false) {
             val config = Configuration(newBase.resources.configuration)
-            config.fontScale = 1.05f // +20%
+            config.fontScale = 1.05f
             val ctx = newBase.createConfigurationContext(config)
             super.attachBaseContext(ctx)
         } else {
@@ -10355,10 +10217,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      * the activity is still recreated for configuration changes.
      */
     private fun initializeTheme() {
-        val applied = AppTheme.WindowsPhone81.toString()
-        if (lastAppliedTheme == applied) return
+        if (shellApplied) return
         applyWindowsPhone81Theme()
-        lastAppliedTheme = applied
+        shellApplied = true
     }
 
     /** True if the user has set a custom icon for this package (folders check this before re-theming). */
@@ -10423,19 +10284,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     /**
      * Creates a WindowsDialog with the correct theme from the start to avoid re-inflation
      */
-    private fun createThemedWindowsDialog(): WindowsDialog {
-        // Pass the *chrome* theme, not the selected one. Under Windows Phone 8.1 this
-        // hands the dialog AppTheme.WindowsVista, so every `currentTheme is WindowsVista`
-        // check inside WindowsDialog - layout, border, focused/unfocused title bars -
-        // takes the Vista branch without needing a WP8.1 arm of its own.
-        val theme = themeManager.getSelectedTheme()
-        val chromeTheme = when (theme.chrome) {
-            DesktopChrome.CLASSIC -> AppTheme.WindowsClassic
-            DesktopChrome.XP -> AppTheme.WindowsXP
-            DesktopChrome.VISTA -> AppTheme.WindowsVista
-        }
-        return WindowsDialog(this, initialTheme = chromeTheme)
-    }
+    private fun createThemedWindowsDialog(): WindowsDialog = WindowsDialog(this)
 
     /**
      * Shows a notification bubble with title and description

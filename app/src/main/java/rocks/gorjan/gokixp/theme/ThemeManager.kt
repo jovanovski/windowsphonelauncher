@@ -10,86 +10,24 @@ import rocks.gorjan.gokixp.getSafeInt
 import rocks.gorjan.gokixp.R
 
 /**
- * Which desktop chrome a theme renders its windows, dialogs and in-window assets with.
+ * Where the user's hand-picked icons are kept.
  *
- * This is deliberately separate from [AppTheme]: a theme can replace the whole shell
- * (Start screen, taskbar, navigation) while still drawing its windows in a borrowed
- * chrome. Windows Phone 8.1 does exactly that - it has no desktop of its own, but its
- * windows are Vista windows.
- *
- * Resource lookups branch on this rather than on [AppTheme] so that adding a theme which
- * reuses an existing chrome costs one declaration instead of an arm in ~40 `when` blocks.
+ * This was `AppTheme.customIconsKey`, one per theme, because an icon is chosen for the
+ * shell that is on screen. There is one shell now, so there is one key - but it keeps the
+ * phone's original spelling, because that is what is already in `taskbar_widget_prefs` on
+ * every phone this has run on.
  */
-enum class DesktopChrome { CLASSIC, XP, VISTA }
+const val CUSTOM_ICONS_KEY = "custom_icons_wp8"
 
 /**
- * Sealed class representing available themes.
- * toString() returns the exact string stored in SharedPreferences for backward compatibility.
+ * The desktop launcher's icon keys, read only when a setup is carried over from it.
+ *
+ * A Start screen arriving from the desktop launcher may have its phone icons filed under
+ * whichever desktop theme was current when they were picked - Vista's is where the writes
+ * went, XP's is what the shell carried into memory when it was entered from XP. Both are
+ * swept into [CUSTOM_ICONS_KEY] once; see MainActivity.migrateWP81CustomIconsIfNeeded.
  */
-sealed class AppTheme {
-
-    /** The window chrome this theme draws with. See [DesktopChrome]. */
-    abstract val chrome: DesktopChrome
-
-    /**
-     * Where the icons the user picked by hand for this theme are kept.
-     *
-     * Deliberately keyed on the theme and not on [chrome]: an icon is chosen for the shell
-     * that is on screen, and Windows Phone's shell is its own even though its windows are
-     * Vista's. Keying this on the chrome had a tile icon overwrite a desktop one.
-     */
-    abstract val customIconsKey: String
-
-    object WindowsXP : AppTheme() {
-        override val chrome = DesktopChrome.XP
-        override val customIconsKey = "custom_icons_xp"
-        override fun toString() = "Windows XP"
-    }
-
-    object WindowsClassic : AppTheme() {
-        override val chrome = DesktopChrome.CLASSIC
-        override val customIconsKey = "custom_icons_98"
-        override fun toString() = "Windows Classic"
-    }
-
-    object WindowsVista : AppTheme() {
-        override val chrome = DesktopChrome.VISTA
-        override val customIconsKey = "custom_icons_vista"
-        override fun toString() = "Windows Vista"
-    }
-
-    /**
-     * Windows Phone 8.1. Replaces the entire desktop shell with a phone UI (Start screen
-     * of live tiles, app list, three navigation buttons) but renders its windows - Solitaire,
-     * Internet Explorer, Winamp and the rest - in Vista chrome.
-     */
-    object WindowsPhone81 : AppTheme() {
-        override val chrome = DesktopChrome.VISTA
-        override val customIconsKey = "custom_icons_wp8"
-        override fun toString() = "Windows Phone 8"
-    }
-
-    companion object {
-        /**
-         * Converts string from SharedPreferences to AppTheme.
-         * Maintains backward compatibility with existing user preferences.
-         */
-        fun fromString(value: String?): AppTheme = when (value) {
-            "Windows Classic" -> WindowsClassic
-            "Windows Vista" -> WindowsVista
-            "Windows XP" -> WindowsXP
-            // Both spellings: the theme was called 8.1 for a while, and that string is
-            // sitting in the preferences of everyone who chose it.
-            "Windows Phone 8", "Windows Phone 8.1" -> WindowsPhone81
-            else -> WindowsXP // Default to XP if unknown
-        }
-
-        /**
-         * Returns all available themes.
-         */
-        fun all(): List<AppTheme> = listOf(WindowsXP, WindowsClassic, WindowsVista, WindowsPhone81)
-    }
-}
+val DESKTOP_CUSTOM_ICON_KEYS = listOf("custom_icons_vista", "custom_icons_xp", "custom_icons_98")
 
 /**
  * Centralized theme management class.
@@ -104,17 +42,10 @@ class ThemeManager(private val context: Context) {
     private val prefs = context.getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE)
 
 
-    /**
-     * The theme this launcher renders. Always Windows Phone 8.1 - it is the only one here.
-     *
-     * Deliberately ignores the stored `selected_theme` rather than reading it. A Start
-     * screen imported from the desktop launcher carries that key along with everything
-     * else, and it may say "Windows XP" - which is the desktop launcher's default and
-     * would otherwise boot this app into a desktop it no longer contains. The key is left
-     * in preferences untouched so an import stays a faithful copy; it just does not get a
-     * vote on which shell runs.
-     */
-    fun getSelectedTheme(): AppTheme = AppTheme.WindowsPhone81
+    // There is no selected theme to read. The stored `selected_theme` key is left in
+    // preferences untouched - a Start screen imported from the desktop launcher carries it,
+    // and an import should stay a faithful copy - but it gets no vote on which shell runs,
+    // because there is only one.
 
 
     // ========== The app's own icon ==========
@@ -149,19 +80,11 @@ class ThemeManager(private val context: Context) {
 
     fun plus95Path(slug: String, filename: String): String = "plus95/$slug/$filename"
 
-    /**
-     * Returns true if the current theme is Windows Classic (98).
-     * Convenience method for boolean checks.
-     */
-    fun isClassicTheme(): Boolean = getSelectedTheme() is AppTheme.WindowsClassic
 
 
 
-    /**
-     * True when windows are drawn with Vista chrome - i.e. Windows Vista *or*
-     * Windows Phone 8.1. This is the check in-window UI wants.
-     */
-    fun isVistaChrome(): Boolean = getSelectedTheme().chrome == DesktopChrome.VISTA
+    /** Windows are always drawn in Vista chrome here; the phone had no chrome of its own. */
+    fun isVistaChrome(): Boolean = true
 
     /**
      * Built-in tiles the user has hidden from Start.
@@ -180,8 +103,6 @@ class ThemeManager(private val context: Context) {
         prefs.edit { putString(KEY_WP81_HIDDEN_TILES, ids.joinToString(",")) }
     }
 
-    /** True when the Windows Phone 8.1 shell is active. */
-    fun isWindowsPhone81(): Boolean = getSelectedTheme() is AppTheme.WindowsPhone81
 
     /**
      * The theme name that legacy raw-string `when (selectedTheme)` blocks should branch on.
@@ -191,11 +112,7 @@ class ThemeManager(private val context: Context) {
      * WP8.1 would quietly fall through to XP assets. In-window callers should use this
      * instead of the raw pref so WP8.1 resolves to Vista.
      */
-    fun chromeThemeString(): String = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> "Windows Classic"
-        DesktopChrome.XP -> "Windows XP"
-        DesktopChrome.VISTA -> "Windows Vista"
-    }
+    fun chromeThemeString(): String = "Windows Vista"
 
     // ========== Windows Phone 8.1 accent + background ==========
 
@@ -491,94 +408,40 @@ class ThemeManager(private val context: Context) {
      */
     // Deliberately keyed on the theme, not its chrome: WP8.1 borrows Vista's window
     // chrome but needs its own style for the accent colour and the Segoe weights.
-    fun getThemeStyleRes(theme: AppTheme): Int = when (theme) {
-        AppTheme.WindowsClassic -> R.style.Theme_GokiXP_Classic
-        AppTheme.WindowsXP -> R.style.Base_Theme_GokiXP
-        AppTheme.WindowsVista -> R.style.Theme_GokiXP_Vista
-        AppTheme.WindowsPhone81 -> R.style.Theme_GokiXP_WP81
-    }
-
-
-
-    /**
-     * Gets the dialog content layout resource ID for the given theme.
-     */
-    fun getDialogLayoutRes(theme: AppTheme): Int = when (theme.chrome) {
-        DesktopChrome.CLASSIC -> R.layout.windows_dialog_content_98
-        DesktopChrome.XP -> R.layout.windows_dialog_content_xp
-        DesktopChrome.VISTA -> R.layout.windows_dialog_content_vista
-    }
+    fun getThemeStyleRes(): Int = R.style.Theme_GokiXP_WP81
 
 
 
 
 
 
-    fun getIEIcon(): Int = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.ie6
-        DesktopChrome.XP -> R.drawable.ie6
-        DesktopChrome.VISTA -> R.drawable.ie7
-    }
-
-    fun getWindowsIcon(): Int = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.windows_logo
-        DesktopChrome.XP -> R.drawable.xp_logo
-        DesktopChrome.VISTA -> R.drawable.logo_vista
-    }
 
 
 
-    fun getRegeditIcon(): Int = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.regedit_icon_98
-        DesktopChrome.XP -> R.drawable.regedit_icon_xp
-        DesktopChrome.VISTA -> R.drawable.regedit_icon_vista
-    }
-
-    fun getSolitareIcon(): Int = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.solitare_icon
-        DesktopChrome.XP -> R.drawable.solitare_icon
-        DesktopChrome.VISTA -> R.drawable.solitare_icon_vista
-    }
+    fun getIEIcon(): Int = R.drawable.ie7
 
 
-    fun getWinampIcon(): Int = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.winamp_icon_98
-        DesktopChrome.XP -> R.drawable.winamp_icon_xp
-        DesktopChrome.VISTA -> R.drawable.winamp_icon_xp
-    }
-
-    fun getWmpIcon(): Int = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.wmp_98_icon
-        DesktopChrome.XP -> R.drawable.wmp_xp_icon
-        DesktopChrome.VISTA -> R.drawable.wmp_vista_icon
-    }
 
 
-    fun getMinesweeperIcon(): Int = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.minesweeper_icon_98
-        DesktopChrome.XP -> R.drawable.minesweeper_icon_xp
-        DesktopChrome.VISTA -> R.drawable.minesweeper_icon_vista
-    }
+    fun getRegeditIcon(): Int = R.drawable.regedit_icon_vista
+
+    fun getSolitareIcon(): Int = R.drawable.solitare_icon_vista
 
 
-    fun getNotepadIcon(): Int = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.notepad_icon_98
-        DesktopChrome.XP -> R.drawable.notepad_icon_xp
-        DesktopChrome.VISTA -> R.drawable.notepad_icon_vista
-    }
+    fun getWinampIcon(): Int = R.drawable.winamp_icon_xp
+
+    fun getWmpIcon(): Int = R.drawable.wmp_vista_icon
 
 
-    fun getClockIcon(): Int = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.icon_clock_98
-        DesktopChrome.XP -> R.drawable.icon_clock_xp
-        DesktopChrome.VISTA -> R.drawable.icon_clock_vista
-    }
+    fun getMinesweeperIcon(): Int = R.drawable.minesweeper_icon_vista
 
-    fun getMyComputerIcon(): Int = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.my_computer_98_icon
-        DesktopChrome.XP -> R.drawable.my_computer_xp_icon
-        DesktopChrome.VISTA -> R.drawable.my_computer_vista_icon
-    }
+
+    fun getNotepadIcon(): Int = R.drawable.notepad_icon_vista
+
+
+    fun getClockIcon(): Int = R.drawable.icon_clock_vista
+
+    fun getMyComputerIcon(): Int = R.drawable.my_computer_vista_icon
 
 
 
@@ -590,26 +453,10 @@ class ThemeManager(private val context: Context) {
 
 
 
-    fun getMaximizeIcon(): Int = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.win98_title_bar_maximize
-        DesktopChrome.XP -> R.drawable.xp_title_bar_maximize
-        DesktopChrome.VISTA -> R.drawable.vista_title_bar_maximize
-    }
+    fun getMaximizeIcon(): Int = R.drawable.vista_title_bar_maximize
 
-    fun getRestoreIcon(): Int = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.win98_title_bar_restore
-        DesktopChrome.XP -> R.drawable.xp_title_bar_restore
-        DesktopChrome.VISTA -> R.drawable.vista_title_bar_restore
-    }
+    fun getRestoreIcon(): Int = R.drawable.vista_title_bar_restore
 
-    /**
-     * Gets the taskbar button layout resource ID for the given theme.
-     */
-    fun getTaskbarButtonLayoutRes(theme: AppTheme): Int = when (theme.chrome) {
-        DesktopChrome.CLASSIC -> R.layout.taskbar_button_98
-        DesktopChrome.XP -> R.layout.taskbar_button_xp
-        DesktopChrome.VISTA -> R.layout.taskbar_button_vista
-    }
 
 
     // ========== Icon Resource Mappings ==========
@@ -617,11 +464,7 @@ class ThemeManager(private val context: Context) {
     /**
      * Gets the folder icon drawable resource ID for the given theme.
      */
-    fun getFolderIconRes(theme: AppTheme): Int = when (theme.chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.folder_98
-        DesktopChrome.XP -> R.drawable.folder_xp
-        DesktopChrome.VISTA -> R.drawable.folder_vista
-    }
+    fun getFolderIconRes(): Int = R.drawable.folder_vista
 
 
 

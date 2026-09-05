@@ -16,7 +16,6 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.view.ViewCompat
 import androidx.core.view.updateLayoutParams
-import rocks.gorjan.gokixp.theme.AppTheme
 import rocks.gorjan.gokixp.theme.ThemeManager
 
 /**
@@ -34,7 +33,6 @@ class WindowsDialog @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0,
-    initialTheme: AppTheme = AppTheme.WindowsXP  // Phase 3: Changed from Boolean to AppTheme
 ) : LinearLayout(context, attrs, defStyleAttr) {
 
     // Root overlay (full-screen) and the actual movable window frame inside it
@@ -44,9 +42,6 @@ class WindowsDialog @JvmOverloads constructor(
     // Title bar + content
     private lateinit var titleBar: LinearLayout
     // XP-only title bar pieces - the Classic and Vista dialog layouts don't have them
-    private var xpTitleBarLeft: ImageView? = null
-    private var xpTitleBarRight: ImageView? = null
-    private var xpTitleBarMiddle: ImageView? = null
     private lateinit var titleText: TextView
     private lateinit var closeButton: ImageView
     private lateinit var minimizeButton: ImageView
@@ -61,12 +56,8 @@ class WindowsDialog @JvmOverloads constructor(
     private var onMaximizeListener: (() -> Unit)? = null
 
     // Theme
-    private var currentTheme: AppTheme = initialTheme
 
     // Taskbar
-    private var taskbarButton: View? = null
-    private var taskbarContainer: LinearLayout? = null
-    private var taskbarIconResId: Int = R.drawable.executable
 
     // Minimized state
     private var isMinimized = false
@@ -166,21 +157,9 @@ class WindowsDialog @JvmOverloads constructor(
     private fun setupDialogLayout() {
         removeAllViews()
 
-        // Phase 3: Use ThemeManager to get the layout
-        val mainActivity = context as? MainActivity
-        val dialogLayoutResId = if (mainActivity != null) {
-            mainActivity.themeManager.getDialogLayoutRes(currentTheme)
-        } else {
-            // Fallback if not in MainActivity context
-            if (currentTheme is AppTheme.WindowsClassic) {
-                R.layout.windows_dialog_content_98
-            } else if (currentTheme is AppTheme.WindowsVista){
-                R.layout.windows_dialog_content_vista
-            }
-            else {
-                R.layout.windows_dialog_content_xp
-            }
-        }
+        // One frame. Windows Phone 8.1 drew its programs in Vista chrome, and it is the
+        // only chrome that ships here - the 98 and XP frames went with their shells.
+        val dialogLayoutResId = R.layout.windows_dialog_content_vista
 
         val dialogLayout = LayoutInflater.from(context).inflate(dialogLayoutResId, this, true)
 
@@ -204,9 +183,6 @@ class WindowsDialog @JvmOverloads constructor(
 
         // Core parts
         titleBar = findViewById(R.id.dialog_title_bar)
-        xpTitleBarLeft = findViewById(R.id.dialog_xp_title_bar_left)
-        xpTitleBarMiddle = findViewById(R.id.dialog_xp_title_bar_middle)
-        xpTitleBarRight = findViewById(R.id.dialog_xp_title_bar_right)
         titleText = findViewById(R.id.dialog_title_text)
         closeButton = findViewById(R.id.dialog_close_button)
         minimizeButton = findViewById(R.id.dialog_minimize_button)
@@ -214,8 +190,7 @@ class WindowsDialog @JvmOverloads constructor(
         contentArea = findViewById(R.id.dialog_content_area)
         windowIcon = findViewById(R.id.dialog_window_icon)
 
-        // Get border frame only for Windows XP theme
-        if (currentTheme is AppTheme.WindowsXP || currentTheme is AppTheme.WindowsVista) {
+        run {
             windowBorder = findViewById(R.id.window_border)
 
 
@@ -400,8 +375,8 @@ class WindowsDialog @JvmOverloads constructor(
             }
         }
 
-        // Register with taskbar
-        autoRegisterWithTaskbar()
+        // No taskbar to register with. A window used to put a button on the desktop's
+        // taskbar; the phone shows what is open in its own task switcher instead.
     }
 
     private fun updateTouchableRegion() {
@@ -524,12 +499,13 @@ class WindowsDialog @JvmOverloads constructor(
 
     fun setTitle(title: String) {
         titleText.text = title
-        updateTaskbarButtonTitle(title)
     }
 
+    /**
+     * The window's icon. Named for the taskbar it used to also paint; the callers all pass
+     * the icon they want on the window, so the name is kept rather than churn twelve of them.
+     */
     fun setTaskbarIcon(iconResId: Int) {
-        taskbarIconResId = iconResId
-        taskbarButton?.findViewById<ImageView>(R.id.taskbar_button_icon)?.setImageResource(iconResId)
         windowIcon?.apply {
             setImageResource(iconResId)
             visibility = View.VISIBLE
@@ -841,7 +817,7 @@ class WindowsDialog @JvmOverloads constructor(
         // Under Windows Phone 8.1 a maximizable window is *always* maximized. Hooked here
         // rather than at each of the dozen call sites so Solitaire, Internet Explorer and
         // every other maximizable program behave alike without touching them individually.
-        if (enabled && ThemeManager(context).isWindowsPhone81()) {
+        if (enabled) {
             setForceMaximized(true)
         }
     }
@@ -884,15 +860,6 @@ class WindowsDialog @JvmOverloads constructor(
 
     fun getContentArea(): LinearLayout = contentArea
 
-    fun setThemeBackground(isWindows98: Boolean) {
-        val newTheme = if (isWindows98) AppTheme.WindowsClassic else AppTheme.WindowsXP
-        if (this.currentTheme != newTheme) {
-            currentTheme = newTheme
-            val currentTitle = if (::titleText.isInitialized) titleText.text.toString() else ""
-            setupDialogLayout()
-            setTitle(currentTitle)
-        }
-    }
 
     /**
      * Public method to close the window - used by both bordered and borderless windows
@@ -1186,27 +1153,7 @@ class WindowsDialog @JvmOverloads constructor(
 
     // ——— Taskbar ———
 
-    private fun autoRegisterWithTaskbar() {
-        try {
-            val activity = resolveActivity(context)
-            val taskbarContainerId = R.id.taskbar_empty_space
-            val container = activity?.findViewById<LinearLayout>(taskbarContainerId)
-            if (container != null) {
-                registerWithTaskbar(container)
-            }
-        } catch (_: Exception) { /* ignore */ }
-    }
 
-    private fun autoRegisterWithTaskbar(dialog: AlertDialog) {
-        try {
-            val activity = resolveActivity(context)
-            val taskbarContainerId = R.id.taskbar_empty_space
-            val container = activity?.findViewById<LinearLayout>(taskbarContainerId)
-            if (container != null) {
-                registerWithTaskbar(container, dialog)
-            }
-        } catch (_: Exception) { /* ignore */ }
-    }
 
     private fun resolveActivity(ctx: Context): Activity? {
         var c = ctx
@@ -1217,121 +1164,11 @@ class WindowsDialog @JvmOverloads constructor(
         return null
     }
 
-    fun registerWithTaskbar(taskbarContainerView: LinearLayout) {
-        taskbarContainer = taskbarContainerView
-        val buttonLayoutResId = ThemeManager(context).getTaskbarButtonLayoutRes(currentTheme)
-        taskbarButton = LayoutInflater.from(context).inflate(buttonLayoutResId, taskbarContainer, false)
-        taskbarButton?.findViewById<ImageView>(R.id.taskbar_button_icon)?.setImageResource(taskbarIconResId)
-        taskbarButton?.findViewById<TextView>(R.id.taskbar_button_text)?.text = titleText.text
 
-        applyPlus95TintToTaskbarButton()
 
-        // Regular click - minimize/restore/focus
-        taskbarButton?.setOnClickListener {
-            // Toggle behavior based on window state
-            when {
-                isMinimized -> restore() // If minimized, restore
-                isInFocus() -> minimize() // If in focus, minimize
-                else -> windowManager?.bringToFront(this) // Otherwise, bring to front
-            }
-        }
 
-        // Long press - show context menu
-        taskbarButton?.setOnLongClickListener { view ->
-            // Perform haptic feedback
-            view.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
 
-            // Get button position on screen
-            val location = IntArray(2)
-            view.getLocationOnScreen(location)
 
-            // Show context menu at button position
-            showTaskbarContextMenu(location[0].toFloat(), location[1].toFloat())
-            true
-        }
-
-        taskbarContainer?.addView(taskbarButton)
-    }
-
-    fun registerWithTaskbar(taskbarContainerView: LinearLayout, dialogRef: AlertDialog) {
-        taskbarContainer = taskbarContainerView
-        val buttonLayoutResId = ThemeManager(context).getTaskbarButtonLayoutRes(currentTheme)
-        taskbarButton = LayoutInflater.from(context).inflate(buttonLayoutResId, taskbarContainer, false)
-        taskbarButton?.findViewById<ImageView>(R.id.taskbar_button_icon)?.setImageResource(taskbarIconResId)
-        taskbarButton?.findViewById<TextView>(R.id.taskbar_button_text)?.text = titleText.text
-
-        applyPlus95TintToTaskbarButton()
-
-        // Regular click - minimize/restore/focus
-        taskbarButton?.setOnClickListener {
-            // Toggle behavior based on window state
-            when {
-                isMinimized -> restore() // If minimized, restore
-                isInFocus() -> minimize() // If in focus, minimize
-                else -> {
-                    // Bring to front: ensure windowFrame is last in z-order
-                    windowFrame.bringToFront()
-                    overlayRoot.invalidate()
-                }
-            }
-        }
-
-        // Long press - show context menu
-        taskbarButton?.setOnLongClickListener { view ->
-            // Perform haptic feedback
-            view.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
-
-            // Get button position on screen
-            val location = IntArray(2)
-            view.getLocationOnScreen(location)
-
-            // Show context menu at button position
-            showTaskbarContextMenu(location[0].toFloat(), location[1].toFloat())
-            true
-        }
-
-        taskbarContainer?.addView(taskbarButton)
-    }
-
-    /**
-     * Recolours the taskbar button to the active Plus! menu colour. The button is inflated when
-     * a window opens — after the theme-wide tint walk has already run — so without this it would
-     * keep the default Classic gray instead of the theme colour. No-op for non-Plus! themes.
-     */
-    private fun applyPlus95TintToTaskbarButton() {
-        val mainActivity = context as? MainActivity ?: return
-        val plus95 = mainActivity.themeManager.getActivePlus95() ?: return
-        val button = taskbarButton ?: return
-        // The Win98 button background (win98_start_menu_border) is a LayerDrawable shared across
-        // many views via a common ConstantState. mutate() gives this button its own copy, then we
-        // recolour each layer's solid fill directly to the Plus! menu colour. Doing the recolour
-        // explicitly (rather than via the color-matching tint walk) guarantees it takes; the
-        // border strokes are left untouched, so the 3D bevel is preserved.
-        val bg = button.background?.mutate() ?: return
-        button.background = bg
-        when (bg) {
-            is android.graphics.drawable.LayerDrawable ->
-                for (i in 0 until bg.numberOfLayers) {
-                    (bg.getDrawable(i) as? android.graphics.drawable.GradientDrawable)?.setColor(plus95.menuColor)
-                }
-            is android.graphics.drawable.GradientDrawable -> bg.setColor(plus95.menuColor)
-            is android.graphics.drawable.ColorDrawable -> bg.color = plus95.menuColor
-        }
-    }
-
-    fun unregisterFromTaskbar() {
-        taskbarButton?.let { taskbarContainer?.removeView(it) }
-        taskbarButton = null
-        taskbarContainer = null
-    }
-
-    fun updateTaskbarButtonTitle(title: String) {
-        taskbarButton?.findViewById<TextView>(R.id.taskbar_button_text)?.text = title
-    }
-
-    fun setTaskbarButtonIcon(iconResId: Int) {
-        taskbarButton?.findViewById<ImageView>(R.id.taskbar_button_icon)?.setImageResource(iconResId)
-    }
 
     fun setContextMenuView(contextMenu: ContextMenuView) {
         this.contextMenuView = contextMenu
@@ -1355,31 +1192,6 @@ class WindowsDialog @JvmOverloads constructor(
         }
     }
 
-    /**
-     * Shows the taskbar button context menu with Minimize/Restore and Close options
-     */
-    private fun showTaskbarContextMenu(x: Float, y: Float) {
-        contextMenuView?.let { menu ->
-            // Create menu items based on window state
-            val menuItems = ContextMenuItems.getTaskbarMenuItems(
-                isMinimized = isMinimized,
-                onMinimizeRestore = {
-                    if (isMinimized) {
-                        restore()
-                    } else {
-                        minimize()
-                    }
-                },
-                onClose = {
-                    windowManager?.removeWindow(this)
-                    onCloseListener?.invoke()
-                }
-            )
-
-            // Show menu at taskbar button position
-            menu.showMenu(menuItems, x, y)
-        }
-    }
 
     // ——— Minimize/Restore ———
 
@@ -1534,24 +1346,7 @@ class WindowsDialog @JvmOverloads constructor(
         if (isBorderless) return
 
         if (::titleBar.isInitialized) {
-            if(currentTheme is AppTheme.WindowsClassic || currentTheme is AppTheme.WindowsVista) {
-                val activeBackground = if (currentTheme is AppTheme.WindowsClassic) {
-                    R.drawable.windows_98_dialog_title_bar
-                } else {
-                    R.drawable.windows_vista_title_bar_rounded
-                }
-                titleBar.setBackgroundResource(activeBackground)
-            }
-
-            if (currentTheme is AppTheme.WindowsXP) {
-                windowBorder?.setBackgroundResource(R.drawable.windows_xp_dialog_border)
-                xpTitleBarLeft?.setBackgroundResource(R.drawable.xp_title_bar_corner)
-                xpTitleBarMiddle?.setBackgroundResource(R.drawable.xp_title_bar_repeat)
-                xpTitleBarRight?.setBackgroundResource(R.drawable.xp_title_bar_corner_end)
-                minimizeButton.setImageResource(R.drawable.xp_title_bar_minimize)
-                maximizeButton?.setImageResource(R.drawable.xp_title_bar_maximize)
-                closeButton.setImageResource(R.drawable.xp_title_bar_close)
-            }
+            titleBar.setBackgroundResource(R.drawable.windows_vista_title_bar_rounded)
         }
     }
 
@@ -1562,20 +1357,7 @@ class WindowsDialog @JvmOverloads constructor(
         // Skip if borderless
         if (isBorderless) return
 
-        if (::titleBar.isInitialized) {
-            if (currentTheme is AppTheme.WindowsClassic) {
-                titleBar.setBackgroundResource(R.drawable.windows_98_dialog_title_bar_inactive)
-            }
-            else if (currentTheme is AppTheme.WindowsXP){
-                windowBorder?.setBackgroundResource(R.drawable.windows_xp_dialog_border_inactive)
-                xpTitleBarLeft?.setBackgroundResource(R.drawable.xp_title_bar_corner_gray)
-                xpTitleBarMiddle?.setBackgroundResource(R.drawable.xp_title_bar_repeat_gray)
-                xpTitleBarRight?.setBackgroundResource(R.drawable.xp_title_bar_corner_end_gray)
-                minimizeButton.setImageResource(R.drawable.xp_title_bar_minimize_gray)
-                maximizeButton?.setImageResource(R.drawable.xp_title_bar_maximize_gray)
-                closeButton.setImageResource(R.drawable.xp_title_bar_close_gray)
-            }
-        }
+        // Vista draws no separate inactive title bar, so there is nothing to swap.
     }
 
     /**

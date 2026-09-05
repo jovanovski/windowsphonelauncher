@@ -5,7 +5,7 @@ import rocks.gorjan.gokixp.DesktopIcon
 import rocks.gorjan.gokixp.IconType
 import rocks.gorjan.gokixp.MainActivity
 import rocks.gorjan.gokixp.R
-import rocks.gorjan.gokixp.theme.AppTheme
+import rocks.gorjan.gokixp.theme.CUSTOM_ICONS_KEY
 import rocks.gorjan.gokixp.theme.ThemeManager
 
 /**
@@ -554,7 +554,7 @@ class WP81TileHost(
     /**
      * The icons the user chose by hand, as packageName to the file they picked.
      *
-     * Kept per theme, under the phone's own key - see AppTheme.customIconsKey. Read here
+     * Kept under the phone's own key - see theme.CUSTOM_ICONS_KEY. Read here
      * so the car's tiles wear the same art the phone's do; reading any other theme's key
      * would dress the car in a desktop's icons and miss every one picked on a tile.
      */
@@ -646,7 +646,7 @@ class WP81TileHost(
         const val IMPORTED_ICONS_DIR = "imported_icons"
 
         /** Where the Start screen's hand-picked icons are kept. */
-        val KEY_CUSTOM_ICONS: String = AppTheme.WindowsPhone81.customIconsKey
+        val KEY_CUSTOM_ICONS: String = CUSTOM_ICONS_KEY
 
         fun loadIcons(context: Context): MutableList<DesktopIcon> {
             val prefs = context.getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE)

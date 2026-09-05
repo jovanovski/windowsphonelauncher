@@ -9,22 +9,15 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.content.res.ResourcesCompat
-import rocks.gorjan.gokixp.theme.AppTheme
-import rocks.gorjan.gokixp.theme.ThemeAware
 
 class ContextMenuView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0
-) : LinearLayout(context, attrs, defStyleAttr), ThemeAware {
+) : LinearLayout(context, attrs, defStyleAttr) {
 
     private var onItemClickListener: ((ContextMenuItem) -> Unit)? = null
     private var onMenuHiddenListener: (() -> Unit)? = null
-    private var currentTheme: AppTheme = AppTheme.WindowsXP
-
-    // Backward compatible property
-    private var isWindows98Theme = false
-        get() = currentTheme is AppTheme.WindowsClassic
 
     init {
         orientation = VERTICAL
@@ -35,12 +28,10 @@ class ContextMenuView @JvmOverloads constructor(
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        (context as? MainActivity)?.registerThemeAware(this)
     }
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
-        (context as? MainActivity)?.unregisterThemeAware(this)
     }
 
     fun showMenu(items: List<ContextMenuItem>, x: Float, y: Float) {
@@ -57,7 +48,6 @@ class ContextMenuView @JvmOverloads constructor(
 
         // Re-apply the background each time so a Plus! 95 theme's menu colour is picked up
         // (the menu lives outside main_background, so the theme-wide tint walk never reaches it).
-        refreshThemedBackground()
 
         // Position the menu
         positionMenu(x, y)
@@ -82,69 +72,13 @@ class ContextMenuView @JvmOverloads constructor(
         onMenuHiddenListener = listener
     }
 
+    /**
+     * Kept for the one caller that still passes a flag. There is a single background now -
+     * the drawn Windows 98 3D border it used to build belongs to a theme that ships in the
+     * desktop launcher.
+     */
     fun setThemeBackground(isWindows98: Boolean) {
-        currentTheme = if (isWindows98) AppTheme.WindowsClassic else AppTheme.WindowsXP
-        updateExistingMenuItemFonts(isWindows98)
-        if (currentTheme is AppTheme.WindowsClassic) {
-            // Create Windows 98 border: top/left black, bottom/right white
-            val borderDrawable = object : android.graphics.drawable.Drawable() {
-                override fun draw(canvas: android.graphics.Canvas) {
-                    val bounds = getBounds()
-                    val paint = android.graphics.Paint()
-                    val borderSize = (1 * context.resources.displayMetrics.density).toInt()
-
-                    // Fill background with #d3cec7
-                    paint.color = android.graphics.Color.parseColor("#d3cec7")
-                    canvas.drawRect(bounds, paint)
-
-                    // Top border (2dp, white)
-                    paint.color = android.graphics.Color.WHITE
-                    canvas.drawRect(
-                        bounds.left.toFloat(),
-                        bounds.top.toFloat(),
-                        bounds.right.toFloat(),
-                        (bounds.top + borderSize).toFloat(),
-                        paint
-                    )
-
-                    // Left border (2dp, white)
-                    canvas.drawRect(
-                        bounds.left.toFloat(),
-                        bounds.top.toFloat(),
-                        (bounds.left + borderSize).toFloat(),
-                        bounds.bottom.toFloat(),
-                        paint
-                    )
-
-                    // Bottom border (2dp, black)
-                    paint.color = android.graphics.Color.BLACK
-                    canvas.drawRect(
-                        bounds.left.toFloat(),
-                        (bounds.bottom - borderSize).toFloat(),
-                        bounds.right.toFloat(),
-                        bounds.bottom.toFloat(),
-                        paint
-                    )
-
-                    // Right border (2dp, black)
-                    canvas.drawRect(
-                        (bounds.right - borderSize).toFloat(),
-                        bounds.top.toFloat(),
-                        bounds.right.toFloat(),
-                        bounds.bottom.toFloat(),
-                        paint
-                    )
-                }
-
-                override fun setAlpha(alpha: Int) {}
-                override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) {}
-                override fun getOpacity(): Int = android.graphics.PixelFormat.OPAQUE
-            }
-
-            background = borderDrawable
-        } else {
-            setBackgroundResource(R.drawable.context_menu_background)
-        }
+        updateBackground()
     }
 
     /**
@@ -173,38 +107,14 @@ class ContextMenuView @JvmOverloads constructor(
         when {
             item.title.isEmpty() -> {
                 // Add divider - different styles for different themes
-                if (isWindows98Theme) {
-                    // Windows 98 style: 2px divider with #909090 top, #FFFFFF bottom
-                    val dividerContainer = LinearLayout(context)
-                    dividerContainer.orientation = LinearLayout.VERTICAL
-                    val containerParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
-                    containerParams.setMargins(4.dpToPx(), 2.dpToPx(), 4.dpToPx(), 2.dpToPx())
-                    dividerContainer.layoutParams = containerParams
-
-                    // First row: #909090
-                    val topDivider = View(context)
-                    val topParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1.dpToPx())
-                    topDivider.layoutParams = topParams
-                    topDivider.setBackgroundColor(android.graphics.Color.parseColor("#909090"))
-
-                    // Second row: #FFFFFF
-                    val bottomDivider = View(context)
-                    val bottomParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1.dpToPx())
-                    bottomDivider.layoutParams = bottomParams
-                    bottomDivider.setBackgroundColor(android.graphics.Color.parseColor("#FFFFFF"))
-
-                    dividerContainer.addView(topDivider)
-                    dividerContainer.addView(bottomDivider)
-                    addView(dividerContainer)
-                } else {
-                    // Windows XP style: original divider
-                    val divider = View(context)
-                    val dividerParams = LayoutParams(LayoutParams.MATCH_PARENT, 1)
-                    dividerParams.setMargins(4.dpToPx(), 0, 4.dpToPx(), 0)
-                    divider.layoutParams = dividerParams
-                    divider.setBackgroundColor(context.getColor(R.color.context_menu_divider))
-                    addView(divider)
-                }
+                // One divider style. The Windows 98 alternative - a two-pixel rule in
+                // #909090 over #FFFFFF - belonged to a theme in the desktop launcher.
+                val divider = View(context)
+                val dividerParams = LayoutParams(LayoutParams.MATCH_PARENT, 1)
+                dividerParams.setMargins(4.dpToPx(), 0, 4.dpToPx(), 0)
+                divider.layoutParams = dividerParams
+                divider.setBackgroundColor(context.getColor(R.color.context_menu_divider))
+                addView(divider)
             }
             else -> {
                 // Add menu item
@@ -372,41 +282,14 @@ class ContextMenuView @JvmOverloads constructor(
         return (this * resources.displayMetrics.density).toInt()
     }
 
-    // Phase 3: Implement ThemeAware interface
-    override fun onThemeChanged(theme: AppTheme) {
-        currentTheme = theme
-        updateBackground()
-        updateExistingMenuItemFonts(currentTheme is AppTheme.WindowsClassic)
-    }
+
 
     /**
-     * For the Windows Classic theme, rebuilds the gray Win98 border using the active Plus! 95
-     * menu colour (falling back to the stock gray when no Plus! theme is active, which also
-     * clears any stale tint left by a previous selection). No-op for XP/Vista, whose backgrounds
-     * are set by [updateBackground]. The menu items themselves are transparent, so tinting the
-     * container is enough. Called on every open so it always reflects the current theme.
+     * One background. This chose between a drawn Windows 98 border and the XP/Vista
+     * bitmap; only the bitmap is reachable, since the phone's programs draw in Vista
+     * chrome.
      */
-    private fun refreshThemedBackground() {
-        val mainActivity = context as? MainActivity ?: return
-        if (!mainActivity.themeManager.isClassicTheme()) return
-        val fill = mainActivity.themeManager.getActivePlus95()?.menuColor
-            ?: androidx.core.content.ContextCompat.getColor(context, R.color.window_98_background)
-        val topLeft = androidx.core.content.ContextCompat.getColor(context, R.color.border_white)
-        val bottomRight = androidx.core.content.ContextCompat.getColor(context, R.color.border_black)
-        background = mainActivity.drawableManager.createWindows98Border(fill, topLeft, bottomRight)
-    }
-
     private fun updateBackground() {
-        val mainActivity = context as? MainActivity
-        if (mainActivity != null) {
-            background = mainActivity.drawableManager.getContextMenuBackground(currentTheme)
-        } else {
-            // Fallback if not in MainActivity context
-            if (currentTheme is AppTheme.WindowsClassic) {
-                setThemeBackground(true)
-            } else {
-                setBackgroundResource(R.drawable.context_menu_background)
-            }
-        }
+        setBackgroundResource(R.drawable.context_menu_background)
     }
 }
