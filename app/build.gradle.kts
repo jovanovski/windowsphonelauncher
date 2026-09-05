@@ -76,7 +76,10 @@ dependencies {
     implementation(libs.androidx.navigation.ui.ktx)
     implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("com.google.code.gson:gson:2.10.1")
-    implementation("com.github.bumptech.glide:glide:4.16.0")
+    // Glide is gone with Clippy - the desktop agent was its only user. ExifInterface came
+    // in behind it, and a picked photo still has to be turned the right way up, so it is
+    // asked for directly now rather than arriving as somebody else's transitive.
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
     implementation("pl.droidsonroids.gif:android-gif-drawable:1.2.29")
 
     // Android Auto: template host + the navigation surface the car screen is drawn on.
@@ -113,24 +116,11 @@ dependencies {
 
     // OSMDroid for OpenStreetMap
 
-    // PDF rendering with PdfBox
-    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+    // No PdfBox: it was only ever the desktop photo viewer's, for opening a PDF in a window.
 
-    // Google Drive API
-    implementation("com.google.android.gms:play-services-auth:21.0.0")
-    implementation("com.google.apis:google-api-services-drive:v3-rev20240123-2.0.0") {
-        exclude(group = "org.apache.httpcomponents")
-        exclude(group = "org.apache.httpcomponents", module = "httpclient")
-    }
-    implementation("com.google.api-client:google-api-client-android:2.2.0") {
-        exclude(group = "org.apache.httpcomponents")
-    }
-    implementation("com.google.http-client:google-http-client-gson:1.43.3") {
-        exclude(group = "org.apache.httpcomponents")
-    }
-    implementation("com.google.http-client:google-http-client-android:1.43.3") {
-        exclude(group = "org.apache.httpcomponents")
-    }
+    // No Google Drive or Play auth either. Those five artifacts existed for the Registry
+    // Editor's settings sync, which is a desktop program. Settings here travel by the
+    // export/import file instead.
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

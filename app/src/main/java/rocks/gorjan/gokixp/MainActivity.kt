@@ -83,7 +83,6 @@ import android.view.LayoutInflater
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts.CreateDocument
 import androidx.appcompat.content.res.AppCompatResources
-import com.google.android.gms.common.api.ApiException
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import rocks.gorjan.gokixp.theme.*
@@ -587,6 +586,16 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
          * done with it.
          */
         private val RETIRED_SYSTEM_APPS = setOf("system.msn")
+
+        /**
+         * The repository this launcher updates itself from, and shows release notes for.
+         *
+         * Its own, not the desktop launcher's. Left pointing at windowslauncher, every
+         * update check here would offer the desktop launcher's APK - which is a different
+         * app with a different application id, so it would install alongside rather than
+         * over, and the person would end up with two launchers and no update.
+         */
+        const val GITHUB_REPO = "jovanovski/windowsphonelauncher"
 
         /**
          * Programs that belong to the phone shell and to nothing else.
@@ -3359,7 +3368,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     private fun fetchWP81ReleaseNotes(onReady: (String) -> Unit) {
         Thread {
             val text = try {
-                val url = URL("https://api.github.com/repos/jovanovski/windowslauncher/releases")
+                val url = URL("https://api.github.com/repos/$GITHUB_REPO/releases")
                 val connection = url.openConnection() as HttpURLConnection
                 connection.requestMethod = "GET"
                 connection.setRequestProperty("Accept", "application/vnd.github.v3+json")
@@ -3863,7 +3872,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         fun fetchChangeLogFromGitHub(callback: (String) -> Unit) {
             Thread {
                 try {
-                    val url = URL("https://api.github.com/repos/jovanovski/windowslauncher/releases")
+                    val url = URL("https://api.github.com/repos/$GITHUB_REPO/releases")
                     val connection = url.openConnection() as HttpURLConnection
                     connection.requestMethod = "GET"
                     connection.setRequestProperty("Accept", "application/vnd.github.v3+json")
@@ -3936,7 +3945,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         if (windowsStart != -1) {
             val windowsClickableSpan = object : ClickableSpan() {
                 override fun onClick(widget: View) {
-                    openUrlShortcut("https://github.com/jovanovski/windowslauncher/")
+                    openUrlShortcut("https://github.com/$GITHUB_REPO/")
                 }
 
                 override fun updateDrawState(ds: TextPaint) {
@@ -10805,7 +10814,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     private fun checkForUpdates(showCheckingNotification: Boolean = false) {
         Thread {
             try {
-                val apiUrl = URL("https://api.github.com/repos/jovanovski/windowslauncher/releases/latest")
+                val apiUrl = URL("https://api.github.com/repos/$GITHUB_REPO/releases/latest")
                 val connection = apiUrl.openConnection() as HttpURLConnection
                 connection.requestMethod = "GET"
                 connection.connectTimeout = 10000

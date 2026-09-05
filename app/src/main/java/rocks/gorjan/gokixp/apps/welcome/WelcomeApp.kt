@@ -168,7 +168,7 @@ class WelcomeApp(
 
         const val MARGIN_DP = 22
 
-        const val GITHUB_URL = "https://github.com/jovanovski/windowslauncher/"
+        val GITHUB_URL = "https://github.com/${rocks.gorjan.gokixp.MainActivity.GITHUB_REPO}/"
         const val COFFEE_URL = "https://buymeacoffee.com/jovanovski"
 
         const val AUTHOR = "Gorjan Jovanovski"
