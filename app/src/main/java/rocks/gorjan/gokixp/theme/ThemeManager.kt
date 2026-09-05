@@ -78,7 +78,6 @@ class ThemeManager(private val context: Context) {
      */
     fun getActivePlus95(): Plus95Theme? = null
 
-    fun plus95Path(slug: String, filename: String): String = "plus95/$slug/$filename"
 
 
 

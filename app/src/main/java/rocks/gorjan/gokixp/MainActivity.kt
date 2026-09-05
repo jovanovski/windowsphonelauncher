@@ -139,8 +139,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     /** Whether the shell has been put up in this activity. See [initializeTheme]. */
     private var shellApplied = false
     private val desktopIcons = mutableListOf<DesktopIcon>()
-    private var wallpaperSlideRunnable: Runnable? = null
-    private var wallpaperSlidePositionMs = 0L // elapsed within the slide cycle, so it resumes where it stopped
     private lateinit var floatingWindowManager: FloatingWindowManager
     private val customIconMappings = mutableMapOf<String, String>() // packageName -> customIconPath
     private val customNameMappings = mutableMapOf<String, String>() // packageName -> customName
@@ -944,10 +942,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     private fun getCurrentThemeWallpaperKeysTypeSafe(): Pair<String, String> =
         Pair(KEY_WALLPAPER_VISTA_PATH, KEY_WALLPAPER_VISTA_URI)
 
-    /**
-     * Gets the wallpaper X focus storage key for the current theme.
-     */
-    private fun getCurrentThemeWallpaperFocusXKey(): String = KEY_WALLPAPER_VISTA_FOCUS_X
 
 
 
@@ -3801,236 +3795,20 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         }
     }
 
-    /**
-     * Pans an ImageView's image horizontally using a focusX in [0,1] (0.5 == CENTER_CROP).
-     * Uses MATRIX scaleType and clamps so the image always covers the view.
-     */
-    private fun applyWallpaperFocusXToImageView(imageView: ImageView, focusX: Float) {
-        val drawable = imageView.drawable ?: return
-        val imgWidth = drawable.intrinsicWidth.toFloat()
-        val imgHeight = drawable.intrinsicHeight.toFloat()
-        if (imgWidth <= 0f || imgHeight <= 0f) return
 
-        val viewWidth = imageView.width.toFloat()
-        val viewHeight = imageView.height.toFloat()
-        if (viewWidth <= 0f || viewHeight <= 0f) {
-            imageView.post { applyWallpaperFocusXToImageView(imageView, focusX) }
-            return
-        }
 
-        val scale = maxOf(viewWidth / imgWidth, viewHeight / imgHeight)
-        val scaledImgWidth = imgWidth * scale
-        val scaledImgHeight = imgHeight * scale
 
-        val clampedFocusX = focusX.coerceIn(0f, 1f)
-        var translateX = viewWidth / 2f - clampedFocusX * scaledImgWidth
-        val minTranslateX = minOf(viewWidth - scaledImgWidth, 0f)
-        translateX = translateX.coerceIn(minTranslateX, 0f)
-        val translateY = (viewHeight - scaledImgHeight) / 2f
 
-        val matrix = android.graphics.Matrix()
-        matrix.setScale(scale, scale)
-        matrix.postTranslate(translateX, translateY)
-
-        imageView.scaleType = ImageView.ScaleType.MATRIX
-        imageView.imageMatrix = matrix
-    }
-
-    private fun getWallpaperImageView(): ImageView? {
-        return findViewById<RelativeLayout>(R.id.main_background)?.findViewWithTag<ImageView>("wallpaper")
-    }
 
     /**
-     * Starts (or restarts) the wallpaper slide animation if the setting is enabled.
-     * The wallpaper slowly pans from X offset 0 to the max X offset and back, looping.
-     * The configured duration covers the whole 0 -> max -> 0 cycle.
+     * Does nothing. The phone shell paints its own Start background - see
+     * applyWP81StartBackground - and never a desktop wallpaper behind it.
+     *
+     * Kept as an empty seam rather than unpicked from its four callers, which are the
+     * wallpaper picker and the slideshow; both still have a picture to hand and no longer
+     * have anywhere to put it.
      */
-    private fun startWallpaperSlideIfEnabled() {
-        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        if (!prefs.getBoolean(KEY_SLIDE_WALLPAPER_ENABLED, false)) return
-
-        val wallpaperImageView = getWallpaperImageView() ?: return
-        val drawable = wallpaperImageView.drawable ?: return
-        val imgWidth = drawable.intrinsicWidth.toFloat()
-        val imgHeight = drawable.intrinsicHeight.toFloat()
-        val viewWidth = wallpaperImageView.width.toFloat()
-        val viewHeight = wallpaperImageView.height.toFloat()
-
-        // Cancel any running loop (don't restore the manual offset; we're about to drive it).
-        wallpaperSlideRunnable?.let { wallpaperImageView.removeCallbacks(it) }
-        wallpaperSlideRunnable = null
-
-        // Wait until the view is laid out and the drawable has real dimensions.
-        if (imgWidth <= 0f || imgHeight <= 0f || viewWidth <= 0f || viewHeight <= 0f) {
-            wallpaperImageView.post { startWallpaperSlideIfEnabled() }
-            return
-        }
-
-        // The image is scaled to cover the view (center-crop). Work out exactly how many pixels
-        // of horizontal slack there are: that's the full distance we can pan.
-        val scale = maxOf(viewWidth / imgWidth, viewHeight / imgHeight)
-        val scaledImgWidth = imgWidth * scale
-        val scaledImgHeight = imgHeight * scale
-        val panRangePx = scaledImgWidth - viewWidth // >= 0; total horizontal travel
-        val translateY = (viewHeight - scaledImgHeight) / 2f
-
-        Log.d("WPSLIDE", "START img=${imgWidth}x${imgHeight} view=${viewWidth}x${viewHeight} scale=$scale scaledW=$scaledImgWidth panRangePx=$panRangePx")
-
-        // Nothing to slide if the image isn't wider than the view.
-        if (panRangePx < 1f) {
-            applyWallpaperFocusXToImageView(wallpaperImageView, 0.5f)
-            return
-        }
-
-        val durationSeconds = prefs.getSafeInt(KEY_SLIDE_WALLPAPER_DURATION, DEFAULT_SLIDE_WALLPAPER_DURATION)
-        // durationSeconds is the ONE-WAY time (left edge -> right edge); round trip is 2x.
-        val cycleMs = durationSeconds * 2 * 1000L
-        // Easing should total ~2s per leg: 1s ramping up + 1s ramping down, with the rest of the
-        // leg at constant speed. The ramp covers (1s / leg duration) of each end.
-        val rampFraction = (1f / durationSeconds).coerceIn(0.01f, 0.5f)
-
-        // Drive from REAL elapsed time via a per-frame Choreographer callback (postOnAnimation),
-        // which ignores the system "Animator duration scale" developer setting, so the configured
-        // duration is honored exactly. Translate X goes 0 -> -panRangePx -> 0, eased in/out.
-        // Offset the start so we resume from where the slide last stopped (e.g. after backgrounding).
-        val startTime = android.os.SystemClock.uptimeMillis() - (wallpaperSlidePositionMs % cycleMs)
-        var frameCount = 0
-        val runnable = object : Runnable {
-            override fun run() {
-                if (wallpaperSlideRunnable !== this) return // superseded/stopped
-                val elapsed = (android.os.SystemClock.uptimeMillis() - startTime) % cycleMs
-                wallpaperSlidePositionMs = elapsed // remember where we are so we can resume later
-                val phase = elapsed.toFloat() / cycleMs.toFloat()
-                // Linear progress of the current leg: 0->1 going out, 1->0 coming back.
-                val legProgress = if (phase < 0.5f) phase * 2f else 2f - phase * 2f
-                // Ease in/out so it accelerates from and decelerates to rest at each end (~1s each),
-                // with a constant-speed glide through the middle.
-                val eased = easeWithRamp(legProgress, rampFraction)
-                val translateX = -panRangePx * eased
-
-                val matrix = android.graphics.Matrix()
-                matrix.setScale(scale, scale)
-                matrix.postTranslate(translateX, translateY)
-                wallpaperImageView.scaleType = ImageView.ScaleType.MATRIX
-                wallpaperImageView.imageMatrix = matrix
-
-                if (frameCount % 30 == 0) {
-                    Log.d("WPSLIDE", "elapsedMs=$elapsed legProgress=$legProgress eased=$eased translateX=$translateX")
-                }
-                frameCount++
-                wallpaperImageView.postOnAnimation(this)
-            }
-        }
-        wallpaperSlideRunnable = runnable
-        wallpaperImageView.postOnAnimation(runnable)
-    }
-
-    /**
-     * Eases progress t in [0,1] -> [0,1] with smooth (cosine) acceleration over the first [ramp]
-     * fraction, a constant-speed glide through the middle, and symmetric deceleration over the
-     * last [ramp] fraction. Velocity starts and ends at zero. ramp=0.5 eases the whole leg;
-     * smaller values make the ease shorter (0.25 = half as long, longer constant-speed middle).
-     */
-    private fun easeWithRamp(t: Float, ramp: Float): Float {
-        val x = t.coerceIn(0f, 1f)
-        val r = ramp.coerceIn(0.001f, 0.5f)
-        val vMax = 1f / (1f - r) // peak speed so total travel is exactly 1
-        val pi = Math.PI.toFloat()
-        return when {
-            x < r -> vMax / 2f * (x - (r / pi) * kotlin.math.sin(pi * x / r))
-            x <= 1f - r -> vMax * r / 2f + vMax * (x - r)
-            else -> {
-                val s = 1f - x
-                1f - vMax / 2f * (s - (r / pi) * kotlin.math.sin(pi * s / r))
-            }
-        }
-    }
-
-
-    private fun applyWallpaperDrawable(drawable: Drawable, uri: Uri? = null) {
-        // The phone shell paints its own Start background and never a desktop wallpaper.
-        if (true) return
-
-        val mainBackground = findViewById<RelativeLayout>(R.id.main_background)
-
-        // Create or find existing wallpaper ImageView
-        var wallpaperImageView = mainBackground.findViewWithTag<ImageView>("wallpaper")
-
-        if (wallpaperImageView == null) {
-            // Create new ImageView for wallpaper
-            wallpaperImageView = ImageView(this)
-            wallpaperImageView.tag = "wallpaper"
-            wallpaperImageView.scaleType = ImageView.ScaleType.MATRIX
-            wallpaperImageView.adjustViewBounds = false
-
-            // The wallpaper uses a MATRIX scale type whose crop/pan is computed from the view's
-            // size. When that size changes (e.g. an orientation change), recompute the matrix so
-            // the wallpaper re-fits the new dimensions instead of keeping a stale transform.
-            wallpaperImageView.addOnLayoutChangeListener { view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
-                val sizeChanged = (right - left) != (oldRight - oldLeft) || (bottom - top) != (oldBottom - oldTop)
-                if (sizeChanged) {
-                    val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                    if (prefs.getBoolean(KEY_SLIDE_WALLPAPER_ENABLED, false)) {
-                        // Restart the slide so it recomputes its pan range for the new size.
-                        startWallpaperSlideIfEnabled()
-                    } else {
-                        val fx = prefs.getSafeFloat(getCurrentThemeWallpaperFocusXKey(), 0.5f)
-                        applyWallpaperFocusXToImageView(view as ImageView, fx)
-                    }
-                }
-            }
-
-            // Add as first child (behind everything else)
-            val layoutParams = RelativeLayout.LayoutParams(
-                RelativeLayout.LayoutParams.MATCH_PARENT,
-                RelativeLayout.LayoutParams.MATCH_PARENT
-            )
-            mainBackground.addView(wallpaperImageView, 0, layoutParams)
-        }
-
-        // Set the wallpaper image
-        wallpaperImageView.setImageDrawable(drawable)
-
-        // Apply the saved horizontal focus offset for the current theme
-        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        val focusX = prefs.getSafeFloat(getCurrentThemeWallpaperFocusXKey(), 0.5f)
-        applyWallpaperFocusXToImageView(wallpaperImageView, focusX)
-
-        // Resume sliding the wallpaper if the setting is enabled (new ImageView/drawable).
-        startWallpaperSlideIfEnabled()
-
-        // Remove any background from the RelativeLayout
-        mainBackground.background = null
-
-        // If URI is provided, save it to SharedPreferences
-        if (uri != null) {
-            val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-            val (pathKey, uriKey) = getCurrentThemeWallpaperKeys()
-
-            // Release any existing persistent URI permission for this theme
-            val oldUri = prefs.getString(uriKey, null)
-            if (oldUri != null) {
-                try {
-                    val oldUriParsed = oldUri.toUri()
-                    contentResolver.releasePersistableUriPermission(
-                        oldUriParsed,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION
-                    )
-                    Log.d("MainActivity", "Released old persistent URI permission for: $oldUri")
-                } catch (e: Exception) {
-                    Log.w("MainActivity", "Could not release old URI permission for: $oldUri", e)
-                }
-            }
-
-            // Save the URI as current wallpaper for the current theme
-            prefs.edit {
-                putString(uriKey, uri.toString())
-                // Clear path when setting custom URI
-                remove(pathKey)
-            }
-            Log.d("MainActivity", "Saved custom wallpaper URI: $uri")
-        }
-    }
+    private fun applyWallpaperDrawable(drawable: Drawable, uri: Uri? = null) = Unit
 
 
     /**
@@ -10194,18 +9972,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
 
     override fun attachBaseContext(newBase: Context) {
-        val prefs = newBase.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-
-        // Windows Classic asked for a 5% larger base font; nothing here does.
-        @Suppress("ConstantConditionIf")
-        if (false) {
-            val config = Configuration(newBase.resources.configuration)
-            config.fontScale = 1.05f
-            val ctx = newBase.createConfigurationContext(config)
-            super.attachBaseContext(ctx)
-        } else {
-            super.attachBaseContext(newBase)
-        }
+        // Nothing rescales the base font. Windows Classic asked for 5% more and had to do
+        // it here, before any resource was resolved; no shell here asks.
+        super.attachBaseContext(newBase)
     }
 
 
