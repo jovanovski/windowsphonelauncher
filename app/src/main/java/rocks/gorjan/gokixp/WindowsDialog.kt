@@ -16,7 +16,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.view.ViewCompat
 import androidx.core.view.updateLayoutParams
-import rocks.gorjan.gokixp.theme.ThemeManager
+import rocks.gorjan.gokixp.wp81.WP81Settings
 
 /**
  * Data class to store window state for persistence

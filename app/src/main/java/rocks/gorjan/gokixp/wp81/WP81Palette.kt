@@ -5,7 +5,6 @@ import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.widget.EditText
 import androidx.annotation.ColorInt
-import rocks.gorjan.gokixp.theme.ThemeManager
 
 /**
  * The resolved Windows Phone 8.1 colour scheme.
@@ -58,7 +57,7 @@ data class WP81Palette(
             return Color.HSVToColor(hsv)
         }
 
-        fun from(themeManager: ThemeManager): WP81Palette =
+        fun from(themeManager: WP81Settings): WP81Palette =
             of(themeManager.getWP81Accent(), themeManager.isWP81Dark())
 
         fun of(@ColorInt accent: Int, isDark: Boolean): WP81Palette =

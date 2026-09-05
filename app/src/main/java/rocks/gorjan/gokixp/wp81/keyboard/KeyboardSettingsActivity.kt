@@ -17,12 +17,12 @@ import androidx.core.view.ViewCompat
 import androidx.core.widget.doAfterTextChanged
 import androidx.core.view.WindowInsetsCompat
 import rocks.gorjan.gokixp.R
-import rocks.gorjan.gokixp.theme.ThemeManager
 import rocks.gorjan.gokixp.wp81.MetroPageHeader
 import rocks.gorjan.gokixp.wp81.MetroSlider
 import rocks.gorjan.gokixp.wp81.MetroToggle
 import rocks.gorjan.gokixp.wp81.WP81Palette
 import rocks.gorjan.gokixp.wp81.applyToField
+import rocks.gorjan.gokixp.wp81.WP81Settings
 
 /**
  * The keyboard's settings, as a page of the phone's own Settings.
@@ -46,14 +46,14 @@ import rocks.gorjan.gokixp.wp81.applyToField
 class KeyboardSettingsActivity : Activity() {
 
     private lateinit var palette: WP81Palette
-    private lateinit var themeManager: ThemeManager
+    private lateinit var themeManager: WP81Settings
 
     private lateinit var holdValue: TextView
     private lateinit var vibrationValue: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        themeManager = ThemeManager(this)
+        themeManager = WP81Settings(this)
         palette = WP81Palette.from(themeManager)
 
         // The page is the background, so the system bars are painted to match rather than
@@ -364,7 +364,7 @@ class KeyboardSettingsActivity : Activity() {
 
     /** What the current setting says under the heading. */
     private fun vibrationText(strength: Int): String = when {
-        strength == ThemeManager.WP81_KB_VIBRATION_SYSTEM -> "the phone's own"
+        strength == WP81Settings.WP81_KB_VIBRATION_SYSTEM -> "the phone's own"
         strength <= 0 -> "off"
         else -> "$strength%"
     }
@@ -376,12 +376,12 @@ class KeyboardSettingsActivity : Activity() {
      * and when the switch is turned back on the left is exactly where it should land.
      */
     private fun sliderPositionOf(setting: Int): Float =
-        if (setting <= 0) 0f else setting / ThemeManager.WP81_KB_VIBRATION_MAX.toFloat()
+        if (setting <= 0) 0f else setting / WP81Settings.WP81_KB_VIBRATION_MAX.toFloat()
 
     /** And what a slider position means. The far left is the phone's own, not the weakest. */
     private fun strengthOf(fraction: Float): Int {
-        if (fraction <= 0f) return ThemeManager.WP81_KB_VIBRATION_SYSTEM
-        val raw = (fraction * ThemeManager.WP81_KB_VIBRATION_MAX).toInt()
+        if (fraction <= 0f) return WP81Settings.WP81_KB_VIBRATION_SYSTEM
+        val raw = (fraction * WP81Settings.WP81_KB_VIBRATION_MAX).toInt()
         // In fives, so dragging gives 40 rather than 38.
         return ((raw / STEP_PERCENT) * STEP_PERCENT).coerceAtLeast(STEP_PERCENT)
     }
@@ -623,12 +623,12 @@ class KeyboardSettingsActivity : Activity() {
 
     /** The slider runs the range the setting allows, so its ends are the real limits. */
     private fun fractionOf(millis: Int): Float =
-        (millis - ThemeManager.WP81_KB_HOLD_MIN).toFloat() /
-            (ThemeManager.WP81_KB_HOLD_MAX - ThemeManager.WP81_KB_HOLD_MIN)
+        (millis - WP81Settings.WP81_KB_HOLD_MIN).toFloat() /
+            (WP81Settings.WP81_KB_HOLD_MAX - WP81Settings.WP81_KB_HOLD_MIN)
 
     private fun millisOf(fraction: Float): Int {
-        val span = ThemeManager.WP81_KB_HOLD_MAX - ThemeManager.WP81_KB_HOLD_MIN
-        val raw = ThemeManager.WP81_KB_HOLD_MIN + (fraction * span).toInt()
+        val span = WP81Settings.WP81_KB_HOLD_MAX - WP81Settings.WP81_KB_HOLD_MIN
+        val raw = WP81Settings.WP81_KB_HOLD_MIN + (fraction * span).toInt()
         // Rounded to something a person would recognise, so dragging gives 350, not 347.
         return (raw / STEP_MS) * STEP_MS
     }

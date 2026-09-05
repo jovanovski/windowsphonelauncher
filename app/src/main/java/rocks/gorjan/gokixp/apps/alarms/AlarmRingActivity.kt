@@ -16,7 +16,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.content.res.ResourcesCompat
 import rocks.gorjan.gokixp.R
-import rocks.gorjan.gokixp.theme.ThemeManager
+import rocks.gorjan.gokixp.wp81.WP81Settings
 import rocks.gorjan.gokixp.wp81.Haptics
 import rocks.gorjan.gokixp.wp81.TiltEffect
 import rocks.gorjan.gokixp.wp81.WP81Palette
@@ -74,7 +74,7 @@ class AlarmRingActivity : Activity() {
         }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        palette = WP81Palette.from(ThemeManager(this))
+        palette = WP81Palette.from(WP81Settings(this))
         setContentView(build())
         bind()
 

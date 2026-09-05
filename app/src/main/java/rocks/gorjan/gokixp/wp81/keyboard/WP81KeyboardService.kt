@@ -23,7 +23,6 @@ import androidx.core.view.inputmethod.EditorInfoCompat
 import androidx.core.view.inputmethod.InputConnectionCompat
 import androidx.core.view.inputmethod.InputContentInfoCompat
 import rocks.gorjan.gokixp.MainActivity
-import rocks.gorjan.gokixp.theme.ThemeManager
 import rocks.gorjan.gokixp.wp81.WP81Palette
 import rocks.gorjan.gokixp.wp81.keyboard.text.Bigrams
 import rocks.gorjan.gokixp.wp81.keyboard.text.Composer
@@ -32,6 +31,7 @@ import rocks.gorjan.gokixp.wp81.keyboard.text.Suggester
 import rocks.gorjan.gokixp.wp81.keyboard.text.UserDictionary
 import java.io.File
 import java.util.concurrent.Executors
+import rocks.gorjan.gokixp.wp81.WP81Settings
 
 /**
  * The Windows Phone keyboard.
@@ -55,7 +55,7 @@ import java.util.concurrent.Executors
  */
 class WP81KeyboardService : InputMethodService(), KeyView.Listener {
 
-    private lateinit var themeManager: ThemeManager
+    private lateinit var themeManager: WP81Settings
     private lateinit var palette: WP81Palette
     private var host: KeyboardHost? = null
     private val keyboard: KeyboardView? get() = host?.keyboard
@@ -160,15 +160,15 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
 
     private val prefsWatcher = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         when (key) {
-            ThemeManager.KEY_WP81_ACCENT, ThemeManager.KEY_WP81_DARK -> refreshPalette()
-            ThemeManager.KEY_WP81_KB_HOLD_MS,
-            ThemeManager.KEY_WP81_KB_AUTOCORRECT,
-            ThemeManager.KEY_WP81_KB_AUTOCAPS,
-            ThemeManager.KEY_WP81_KB_OFFLINE_VOICE,
-            ThemeManager.KEY_WP81_KB_SHORT_BOTTOM -> applySettings()
+            WP81Settings.KEY_WP81_ACCENT, WP81Settings.KEY_WP81_DARK -> refreshPalette()
+            WP81Settings.KEY_WP81_KB_HOLD_MS,
+            WP81Settings.KEY_WP81_KB_AUTOCORRECT,
+            WP81Settings.KEY_WP81_KB_AUTOCAPS,
+            WP81Settings.KEY_WP81_KB_OFFLINE_VOICE,
+            WP81Settings.KEY_WP81_KB_SHORT_BOTTOM -> applySettings()
             // Changed from the settings page, which is a different window: the system's own
             // list has to be brought back into step before the globe is next used.
-            ThemeManager.KEY_WP81_KB_LANGUAGES -> {
+            WP81Settings.KEY_WP81_KB_LANGUAGES -> {
                 KeyboardLanguages.applyToSystem(this, themeManager)
                 applySettings()
             }
@@ -215,7 +215,7 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
 
     override fun onCreate() {
         super.onCreate()
-        themeManager = ThemeManager(this)
+        themeManager = WP81Settings(this)
         palette = WP81Palette.from(themeManager)
         prefs.registerOnSharedPreferenceChangeListener(prefsWatcher)
         learned = UserDictionary.open(this)

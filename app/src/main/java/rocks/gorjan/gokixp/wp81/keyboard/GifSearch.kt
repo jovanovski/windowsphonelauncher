@@ -6,11 +6,11 @@ import android.os.Handler
 import android.os.Looper
 import android.util.LruCache
 import org.json.JSONObject
-import rocks.gorjan.gokixp.theme.ThemeManager
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
+import rocks.gorjan.gokixp.wp81.WP81Settings
 
 /**
  * One GIF, in the two sizes the keyboard has any use for.
@@ -43,7 +43,7 @@ internal data class Gif(
  * source would be one key answering for every install, against one rate limit, in a public
  * repository. Each user pastes in their own on the keyboard's settings page, and until one is
  * there the panel says so plainly rather than looking broken. See
- * [ThemeManager.getWP81KeyboardGiphyKey].
+ * [WP81Settings.getWP81KeyboardGiphyKey].
  */
 internal object GifSearch {
 
@@ -97,7 +97,7 @@ internal object GifSearch {
      * settings would not take effect until the phone was restarted.
      */
     private fun key(context: Context): String =
-        ThemeManager(context).getWP81KeyboardGiphyKey()
+        WP81Settings(context).getWP81KeyboardGiphyKey()
 
     /**
      * Trending when [query] is blank, matches when it is not.

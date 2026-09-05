@@ -4,7 +4,6 @@ import android.app.Notification
 import android.content.Context
 import android.os.Bundle
 import androidx.core.app.NotificationCompat
-import rocks.gorjan.gokixp.theme.ThemeManager
 
 /**
  * The look every notification this shell posts shares: the accent, and the program's own
@@ -36,12 +35,12 @@ import rocks.gorjan.gokixp.theme.ThemeManager
  * full-screen intent - and the support builder everywhere else. They do the same thing.
  */
 fun Notification.Builder.metroLook(context: Context): Notification.Builder = this
-    .setColor(ThemeManager(context).getWP81Accent())
+    .setColor(WP81Settings(context).getWP81Accent())
     .addExtras(Bundle().apply { putBoolean(PREFER_SMALL_ICON, true) })
 
 /** The same, for the support builder. See above. */
 fun NotificationCompat.Builder.metroLook(context: Context): NotificationCompat.Builder = this
-    .setColor(ThemeManager(context).getWP81Accent())
+    .setColor(WP81Settings(context).getWP81Accent())
     .addExtras(Bundle().apply { putBoolean(PREFER_SMALL_ICON, true) })
 
 /** `Notification.EXTRA_PREFER_SMALL_ICON`, which this app cannot yet name directly. */

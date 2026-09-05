@@ -3,7 +3,7 @@ package rocks.gorjan.gokixp.wp81.keyboard
 import android.content.Context
 import android.os.Build
 import android.view.inputmethod.InputMethodManager
-import rocks.gorjan.gokixp.theme.ThemeManager
+import rocks.gorjan.gokixp.wp81.WP81Settings
 
 /**
  * Which languages the keyboard offers, and telling Android about it.
@@ -20,7 +20,7 @@ import rocks.gorjan.gokixp.theme.ThemeManager
 internal object KeyboardLanguages {
 
     /** The layouts the user has turned on, in the order the keyboard should cycle them. */
-    fun enabled(themeManager: ThemeManager): List<KeyboardLayout> {
+    fun enabled(themeManager: WP81Settings): List<KeyboardLayout> {
         val chosen = themeManager.getWP81KeyboardLanguages()
         val kept = Layouts.ALL_LANGUAGES.filter { it.id in chosen }
         // A list that ended up empty - a stale setting naming a layout that no longer ships -
@@ -29,7 +29,7 @@ internal object KeyboardLanguages {
     }
 
     /** Whether [layout] is one of them. */
-    fun isEnabled(themeManager: ThemeManager, layout: KeyboardLayout): Boolean =
+    fun isEnabled(themeManager: WP81Settings, layout: KeyboardLayout): Boolean =
         layout.id in themeManager.getWP81KeyboardLanguages()
 
     /**
@@ -40,7 +40,7 @@ internal object KeyboardLanguages {
      */
     fun setEnabled(
         context: Context,
-        themeManager: ThemeManager,
+        themeManager: WP81Settings,
         layout: KeyboardLayout,
         on: Boolean
     ): Boolean {
@@ -65,7 +65,7 @@ internal object KeyboardLanguages {
      * is why this fails quietly rather than reporting: there is nothing to be done about it
      * and nothing useful to say.
      */
-    fun applyToSystem(context: Context, themeManager: ThemeManager) {
+    fun applyToSystem(context: Context, themeManager: WP81Settings) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return
         try {
             val imm = context.getSystemService(InputMethodManager::class.java) ?: return

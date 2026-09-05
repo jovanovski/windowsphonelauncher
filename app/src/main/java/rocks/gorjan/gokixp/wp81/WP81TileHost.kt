@@ -5,8 +5,6 @@ import rocks.gorjan.gokixp.DesktopIcon
 import rocks.gorjan.gokixp.IconType
 import rocks.gorjan.gokixp.MainActivity
 import rocks.gorjan.gokixp.R
-import rocks.gorjan.gokixp.theme.CUSTOM_ICONS_KEY
-import rocks.gorjan.gokixp.theme.ThemeManager
 
 /**
  * What goes on a Start screen, and how each tile is painted.
@@ -53,10 +51,10 @@ class WP81TileHost(
      * bar says nothing about wanting no clock in the car, where there is no status bar to
      * read. A surface that wants its own selection passes it.
      */
-    private val hiddenTiles: (ThemeManager) -> Set<String> = { it.getWP81HiddenTiles() }
+    private val hiddenTiles: (WP81Settings) -> Set<String> = { it.getWP81HiddenTiles() }
 ) {
 
-    private val themeManager = ThemeManager(context)
+    private val themeManager = WP81Settings(context)
 
     private val prefs =
         context.getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE)

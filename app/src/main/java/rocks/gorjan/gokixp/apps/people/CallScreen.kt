@@ -32,7 +32,7 @@ import rocks.gorjan.gokixp.wp81.WP81Palette
  * accent happened to be red would otherwise put a red button under "answer".
  *
  * Windows Phone's own Green, from the twenty the theme picker offered, so it still belongs
- * to the palette even where it is not the palette's choice. See ThemeManager.WP81_ACCENTS.
+ * to the palette even where it is not the palette's choice. See WP81Settings.WP81_ACCENTS.
  */
 internal const val CALL_GREEN = 0xFF60A917.toInt()
 

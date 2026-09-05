@@ -85,7 +85,9 @@ import androidx.activity.result.contract.ActivityResultContracts.CreateDocument
 import androidx.appcompat.content.res.AppCompatResources
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
-import rocks.gorjan.gokixp.theme.*
+import rocks.gorjan.gokixp.wp81.WP81Settings
+import rocks.gorjan.gokixp.wp81.CUSTOM_ICONS_KEY
+import rocks.gorjan.gokixp.wp81.DESKTOP_CUSTOM_ICON_KEYS
 import java.net.HttpURLConnection
 import java.net.URL
 import androidx.core.graphics.toColorInt
@@ -97,7 +99,7 @@ import kotlinx.coroutines.flow.collectLatest
 
 class MainActivity : AppCompatActivity(), AppChangeListener {
 
-    val themeManager by lazy { ThemeManager(this) }
+    val themeManager by lazy { WP81Settings(this) }
 
     private lateinit var binding: ActivityMainBinding
     // Was assigned in the desktop's setup, which is gone; there is nothing to wait for
@@ -898,7 +900,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      * re-inflated the layouts fresh (the reported "needs a restart to take effect" bug).
      */
     private val plus95RepaintableColors: Set<Int> by lazy {
-        ThemeManager.PLUS95_THEMES.mapTo(mutableSetOf(ThemeManager.CLASSIC_GRAY)) { it.menuColor }
+        WP81Settings.PLUS95_THEMES.mapTo(mutableSetOf(WP81Settings.CLASSIC_GRAY)) { it.menuColor }
     }
 
     private fun tintClassicGrayBackground(view: View, newColor: Int) {
@@ -2043,7 +2045,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     private fun saveCustomIconMappings() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-        val themeKey = rocks.gorjan.gokixp.theme.CUSTOM_ICONS_KEY
+        val themeKey = rocks.gorjan.gokixp.wp81.CUSTOM_ICONS_KEY
 
         val jsonString = customIconMappings.entries.joinToString(";") { "${it.key}:${it.value}" }
         Log.d("MainActivity", "Saving custom icons to $themeKey: $jsonString")
@@ -2155,14 +2157,14 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         fun serialise(mappings: Map<String, String>) =
             mappings.entries.joinToString(";") { "${it.key}:${it.value}" }
 
-        val phoneKey = rocks.gorjan.gokixp.theme.CUSTOM_ICONS_KEY
+        val phoneKey = rocks.gorjan.gokixp.wp81.CUSTOM_ICONS_KEY
         val phoneIcons = parse(phoneKey)
         val moved = mutableMapOf<String, String>()
 
         // Vista's is where the writes went, XP's is what the car screen was reading and
         // what the shell carried into memory when it was entered from XP. Both are swept,
         // and so is Classic's, for a setup carried over from the desktop launcher.
-        val donors = rocks.gorjan.gokixp.theme.DESKTOP_CUSTOM_ICON_KEYS
+        val donors = rocks.gorjan.gokixp.wp81.DESKTOP_CUSTOM_ICON_KEYS
 
         prefs.edit {
             for (donorKey in donors) {
@@ -2231,7 +2233,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 // Icons chosen by hand - one set per theme - and renamed shortcuts. Both
                 // are "package:value" pairs, and a renamed one escapes the colons in the
                 // value, so the package is always what stands before the first.
-                for (key in listOf(rocks.gorjan.gokixp.theme.CUSTOM_ICONS_KEY) + KEY_CUSTOM_NAMES) {
+                for (key in listOf(rocks.gorjan.gokixp.wp81.CUSTOM_ICONS_KEY) + KEY_CUSTOM_NAMES) {
                     purgeListedPackages(prefs, key, ";", retiring) { it.substringBefore(":") }
                 }
 
@@ -2276,7 +2278,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     private fun loadCustomIconMappings() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-        val themeKey = rocks.gorjan.gokixp.theme.CUSTOM_ICONS_KEY
+        val themeKey = rocks.gorjan.gokixp.wp81.CUSTOM_ICONS_KEY
 
         Log.d("MainActivity", "Loading custom icon mappings from $themeKey")
 
@@ -2416,7 +2418,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         val files = iconsDir.listFiles() ?: return
 
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val inUse = listOf(rocks.gorjan.gokixp.theme.CUSTOM_ICONS_KEY)
+        val inUse = listOf(rocks.gorjan.gokixp.wp81.CUSTOM_ICONS_KEY)
             .flatMap { key -> (prefs.getString(key, "") ?: "").split(";") }
             .mapNotNull { entry -> entry.substringAfter(":", "").takeIf { it.isNotEmpty() } }
             .toSet()
@@ -6689,8 +6691,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     /** Latest next-event summary for the Calendar live widget, or null when there is none. */
     private var wp81NextCalendarEvent: Pair<String, Long>? = null
 
-    private var wp81CalendarProvider:
-        rocks.gorjan.gokixp.quickglance.CalendarDataProvider? = null
+    private var wp81CalendarProvider: rocks.gorjan.gokixp.wp81.CalendarWatcher? = null
     /**
      * What is on the Start screen, and how each tile is painted.
      *
@@ -9805,14 +9806,12 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             it.startUpdates { runOnUiThread { refreshWP81Media() } }
         }
 
-        // Reuse the Quick Glance calendar provider rather than querying the calendar again:
-        // it already handles permissions, the all-day/next-event logic and its own refresh
-        // cadence, and pushes results back on the main thread.
-        wp81CalendarProvider = rocks.gorjan.gokixp.quickglance.CalendarDataProvider(this).also {
-            it.startUpdates { data ->
-                // The provider is the signal, not the content: it notices the calendar
-                // moving, and today is then re-read for what a tile actually shows - a
-                // name and a time, rather than "in twenty minutes".
+        // A plain ticker; see CalendarWatcher for what this used to borrow.
+        wp81CalendarProvider = rocks.gorjan.gokixp.wp81.CalendarWatcher().also {
+            it.start {
+                // The watcher is the signal, not the content: it marks the time passing,
+                // and today is then re-read for what a tile actually shows - a name and a
+                // time, rather than "in twenty minutes".
                 refreshWP81TodayEvent()
                 wp81Shell?.startScreen?.let { start ->
                     wp81LiveWidgetContent(
@@ -9862,7 +9861,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     private fun stopWP81LiveTiles() {
         wp81LiveTileRunnable?.let { wp81Handler.removeCallbacks(it) }
         wp81LiveTileRunnable = null
-        wp81CalendarProvider?.stopUpdates()
+        wp81CalendarProvider?.stop()
         wp81CalendarProvider = null
         wp81MediaSessions?.stopUpdates()
         wp81MediaSessions = null

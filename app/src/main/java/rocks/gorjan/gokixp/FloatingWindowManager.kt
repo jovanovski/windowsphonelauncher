@@ -3,7 +3,7 @@ package rocks.gorjan.gokixp
 import android.content.Context
 import android.view.ViewGroup
 import android.widget.FrameLayout
-import rocks.gorjan.gokixp.theme.ThemeManager
+import rocks.gorjan.gokixp.wp81.WP81Settings
 
 /**
  * Manager for creating floating windows within the app's view hierarchy.
@@ -11,7 +11,7 @@ import rocks.gorjan.gokixp.theme.ThemeManager
  */
 class FloatingWindowManager(private val context: Context, private val container: FrameLayout) {
     private val activeWindows = mutableListOf<WindowsDialog>()
-    private val themeManager = ThemeManager(context)
+    private val themeManager = WP81Settings(context)
 
     /**
      * Notified whenever the number of open windows changes.

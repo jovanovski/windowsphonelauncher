@@ -6,8 +6,8 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.view.View
-import rocks.gorjan.gokixp.theme.ThemeManager
 import rocks.gorjan.gokixp.wp81.Haptics
+import rocks.gorjan.gokixp.wp81.WP81Settings
 
 /**
  * How hard a key buzzes, and the one place in the shell allowed to answer that itself.
@@ -24,7 +24,7 @@ import rocks.gorjan.gokixp.wp81.Haptics
  * and of the person holding it, and it is the one haptic in this app somebody has a real
  * reason to want to move. Every keyboard worth using has this control.
  *
- * So it is **additive**: the default is [ThemeManager.WP81_KB_VIBRATION_SYSTEM], which calls
+ * So it is **additive**: the default is [WP81Settings.WP81_KB_VIBRATION_SYSTEM], which calls
  * straight through to [Haptics] and behaves exactly as the calculator does today, and the
  * vibrator is touched only by somebody who went and asked for it. That override is total -
  * it also overrides the system's touch-feedback switch, which is the point of an override and
@@ -36,17 +36,17 @@ import rocks.gorjan.gokixp.wp81.Haptics
  */
 internal object KeyboardHaptics {
 
-    /** [ThemeManager.WP81_KB_VIBRATION_SYSTEM], or 0 (silent) to 100. */
+    /** [WP81Settings.WP81_KB_VIBRATION_SYSTEM], or 0 (silent) to 100. */
     @Volatile
-    var strength: Int = ThemeManager.WP81_KB_VIBRATION_SYSTEM
+    var strength: Int = WP81Settings.WP81_KB_VIBRATION_SYSTEM
 
     private var vibrator: Vibrator? = null
 
     /** Read once. The answer cannot change while the app is running. */
     private var amplitudeControl: Boolean? = null
 
-    /** Takes the setting from [ThemeManager] and holds the vibrator this will need. */
-    fun refresh(context: Context, themeManager: ThemeManager) {
+    /** Takes the setting from [WP81Settings] and holds the vibrator this will need. */
+    fun refresh(context: Context, themeManager: WP81Settings) {
         strength = themeManager.getWP81KeyboardVibration()
         if (vibrator == null) vibrator = vibratorOf(context)
     }
@@ -59,7 +59,7 @@ internal object KeyboardHaptics {
      * back rather than inventing one.
      */
     fun key(view: View) {
-        if (strength == ThemeManager.WP81_KB_VIBRATION_SYSTEM) Haptics.key(view)
+        if (strength == WP81Settings.WP81_KB_VIBRATION_SYSTEM) Haptics.key(view)
         else buzz(KEY_MS)
     }
 
@@ -71,7 +71,7 @@ internal object KeyboardHaptics {
      * is the framework's two waveforms; here it is the duration.
      */
     fun tap(view: View) {
-        if (strength == ThemeManager.WP81_KB_VIBRATION_SYSTEM) Haptics.tap(view)
+        if (strength == WP81Settings.WP81_KB_VIBRATION_SYSTEM) Haptics.tap(view)
         else buzz(HOLD_MS)
     }
 
@@ -98,10 +98,10 @@ internal object KeyboardHaptics {
                 // motor's starting threshold on most phones, so the slider's own range is
                 // mapped onto the part of it that can actually be felt.
                 val amplitude = MIN_AMPLITUDE +
-                    (level * (255 - MIN_AMPLITUDE) / ThemeManager.WP81_KB_VIBRATION_MAX)
+                    (level * (255 - MIN_AMPLITUDE) / WP81Settings.WP81_KB_VIBRATION_MAX)
                 VibrationEffect.createOneShot(baseMs, amplitude.coerceIn(1, 255))
             } else {
-                val millis = baseMs * level / ThemeManager.WP81_KB_VIBRATION_MAX
+                val millis = baseMs * level / WP81Settings.WP81_KB_VIBRATION_MAX
                 VibrationEffect.createOneShot(
                     millis.coerceAtLeast(MIN_MS),
                     VibrationEffect.DEFAULT_AMPLITUDE

@@ -1,4 +1,4 @@
-package rocks.gorjan.gokixp.theme
+package rocks.gorjan.gokixp.wp81
 
 import android.content.ComponentName
 import android.content.Context
@@ -30,15 +30,23 @@ const val CUSTOM_ICONS_KEY = "custom_icons_wp8"
 val DESKTOP_CUSTOM_ICON_KEYS = listOf("custom_icons_vista", "custom_icons_xp", "custom_icons_98")
 
 /**
- * Centralized theme management class.
- * Handles theme selection, persistence, and resource mapping.
+ * Everything the Windows Phone shell remembers.
+ *
+ * This was WP81Settings, and it was a theme registry: which of four shells was running,
+ * and which artwork, font and layout each of them wanted. There is one shell now, so what
+ * is left is its settings - the accent, the Start background and its blur and drift, tile
+ * colours and counts, the column count, the hidden tiles, the news feeds and the whole
+ * keyboard block.
+ *
+ * The preference file and every key spelling are deliberately unchanged. They are what is
+ * already on disk, and what an import from the desktop launcher will be carrying.
  *
  * BACKWARD COMPATIBILITY:
  * - Uses existing SharedPreferences key "selected_theme"
  * - Preserves string values "Windows XP" and "Windows Classic"
  * - No breaking changes to user settings
  */
-class ThemeManager(private val context: Context) {
+class WP81Settings(private val context: Context) {
     private val prefs = context.getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE)
 
 

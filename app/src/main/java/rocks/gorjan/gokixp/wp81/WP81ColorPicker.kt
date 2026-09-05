@@ -11,7 +11,6 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.content.res.ResourcesCompat
 import rocks.gorjan.gokixp.R
-import rocks.gorjan.gokixp.theme.ThemeManager
 
 /**
  * Picks a tile's colour, from the same twenty the phone's accent comes from.
@@ -91,7 +90,7 @@ class WP81ColorPicker(
     /** The twenty accents, four to a row, all the same size. */
     private fun buildSwatches() {
         var row: LinearLayout? = null
-        for ((i, entry) in ThemeManager.WP81_ACCENTS.withIndex()) {
+        for ((i, entry) in WP81Settings.WP81_ACCENTS.withIndex()) {
             if (i % COLUMNS == 0) {
                 row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
                 grid.addView(row, wide())

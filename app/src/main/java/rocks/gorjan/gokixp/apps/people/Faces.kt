@@ -8,7 +8,7 @@ import android.net.Uri
 import android.util.Log
 import androidx.annotation.DrawableRes
 import androidx.core.content.ContextCompat
-import rocks.gorjan.gokixp.theme.ThemeManager
+import rocks.gorjan.gokixp.wp81.WP81Settings
 
 /**
  * Somebody's picture, decoded for the notification shade.
@@ -70,7 +70,7 @@ fun glyphFace(context: Context, @DrawableRes glyph: Int): Bitmap? {
             ?: return null
         val bitmap = Bitmap.createBitmap(FACE_PX, FACE_PX, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
-        canvas.drawColor(ThemeManager(context).getWP81Accent())
+        canvas.drawColor(WP81Settings(context).getWP81Accent())
         val side = (FACE_PX * MARK).toInt()
         val edge = (FACE_PX - side) / 2
         mark.setBounds(edge, edge, edge + side, edge + side)

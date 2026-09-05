@@ -375,7 +375,7 @@ class WP81SettingsView(
 
         val perRow = ACCENTS_PER_ROW
         var row: LinearLayout? = null
-        for ((i, entry) in rocks.gorjan.gokixp.theme.ThemeManager.WP81_ACCENTS.withIndex()) {
+        for ((i, entry) in rocks.gorjan.gokixp.wp81.WP81Settings.WP81_ACCENTS.withIndex()) {
             if (i % perRow == 0) {
                 row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
                 // The first row stays out; the rest wait behind the chevron.
@@ -443,7 +443,7 @@ class WP81SettingsView(
     private fun repaintAccentSwatches() {
         for ((i, swatch) in accentSwatches.withIndex()) {
             val selected =
-                rocks.gorjan.gokixp.theme.ThemeManager.WP81_ACCENTS[i].second == selectedAccent
+                rocks.gorjan.gokixp.wp81.WP81Settings.WP81_ACCENTS[i].second == selectedAccent
             // The active accent stands full size; the rest sit back a little.
             swatch.scaleX = if (selected) 1f else 0.78f
             swatch.scaleY = if (selected) 1f else 0.78f

@@ -23,7 +23,7 @@ import androidx.car.app.navigation.NavigationManager
 import androidx.car.app.navigation.NavigationManagerCallback
 import androidx.car.app.navigation.model.NavigationTemplate
 import rocks.gorjan.gokixp.NotificationListenerService
-import rocks.gorjan.gokixp.theme.ThemeManager
+import rocks.gorjan.gokixp.wp81.WP81Settings
 import rocks.gorjan.gokixp.wp81.StartScreenView
 import rocks.gorjan.gokixp.wp81.Tile
 import rocks.gorjan.gokixp.wp81.TileSize
@@ -206,7 +206,7 @@ class CarStartScreen(carContext: CarContext) : Screen(carContext) {
             }
             virtualDisplay = display
 
-            val themeManager = ThemeManager(carContext)
+            val themeManager = WP81Settings(carContext)
             val palette = WP81Palette.from(themeManager)
 
             // The same object the launcher builds its wall from, so a tile resized or

@@ -6,7 +6,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
-import rocks.gorjan.gokixp.theme.ThemeManager
+import rocks.gorjan.gokixp.wp81.WP81Settings
 import rocks.gorjan.gokixp.wp81.WP81Palette
 
 /**
@@ -44,7 +44,7 @@ class InCallActivity : Activity() {
 
         // The shell's accent, because this is the shell's phone - the one thing the call
         // screen takes from the theme. Its black and its white are its own; see CallScreen.
-        val palette = WP81Palette.from(ThemeManager(this))
+        val palette = WP81Palette.from(WP81Settings(this))
         val view = CallScreen(this, palette) { finishAndRemoveTask() }
         screen = view
         setContentView(view)
