@@ -20,6 +20,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Windows Launcher"
+rootProject.name = "Windows Phone Launcher"
 include(":app")
  

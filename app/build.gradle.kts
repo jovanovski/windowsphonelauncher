@@ -3,15 +3,29 @@ plugins {
 }
 
 android {
+    /*
+     * Deliberately still the desktop launcher's package name.
+     *
+     * `namespace` names the Kotlin/R package, not the app, and every one of the ~200
+     * source files declares `package rocks.gorjan.gokixp`. `applicationId` below is what
+     * the phone actually installs under, and it is independent of this - which is what
+     * lets the two launchers sit side by side without a 200-file rename. Relative names
+     * in the manifest (`.MainActivity`) are expanded against this namespace before the
+     * applicationId is stamped in, so they keep resolving correctly.
+     */
     namespace = "rocks.gorjan.gokixp"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "rocks.gorjan.gokixp"
+        // The Windows Phone launcher is its own app: a different id from the desktop
+        // launcher, so both can be installed at once. That is not a nicety - the
+        // migration handoff reads the old app's saved Start screen while it is still
+        // there, so they have to coexist.
+        applicationId = "rocks.gorjan.gokiwp"
         minSdk = 29
         targetSdk = 36
-        versionCode = 21
-        versionName = "2.0.1"
+        versionCode = 1
+        versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
