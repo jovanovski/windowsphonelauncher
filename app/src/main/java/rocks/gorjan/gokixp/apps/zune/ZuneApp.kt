@@ -1414,7 +1414,7 @@ class ZuneApp(
      */
     private fun queryPlaylists(known: List<ZuneTrack>): List<Pair<String, List<ZuneTrack>>> {
         val byPath = known.filter { it.path.isNotBlank() }.associateBy { it.path }
-        return rocks.gorjan.gokixp.apps.winamp.PlaylistStore.load(context)
+        return PlaylistStore.load(context)
             .map { playlist -> playlist.name to playlist.tracks.mapNotNull { byPath[it] } }
             .filter { it.second.isNotEmpty() }
     }
@@ -2169,13 +2169,11 @@ class ZuneApp(
             TiltEffect.apply(this)
         }
 
-    /** Files a song into one of the launcher's playlists, where Winamp will find it too. */
+    /** Files a song into one of the launcher's playlists. */
     private fun addToPlaylist(track: ZuneTrack, playlistName: String) {
         if (track.path.isBlank()) return
-        rocks.gorjan.gokixp.apps.winamp.PlaylistStore.addTrack(
+        PlaylistStore.addTrack(
             context, playlistName, track.path)
-        // Re-read rather than patching the copy in hand: Winamp may have written to the
-        // same store since this list was loaded.
         playlists = queryPlaylists(library)
         bindPlaylists(null)
         // A kept playlist just grew by one, and its row says how long it is.

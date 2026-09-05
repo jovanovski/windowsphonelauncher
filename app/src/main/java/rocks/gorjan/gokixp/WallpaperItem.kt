@@ -7,9 +7,9 @@ data class WallpaperItem(
     /**
      * A preview of the picture, decoded small - or null where nothing is showing one.
      *
-     * Null by default because the XP picker lists wallpapers by *name*: it decoded all
-     * seventy-odd of them at full resolution to fill a list that never drew one, and held
-     * them for as long as the dialog lived. Whoever needs a picture asks for it.
+     * Null by default, and the phone's Settings page is the reason it stays that way: it
+     * shows a strip of thumbnails, not the whole library at once. Decoding every wallpaper
+     * at full resolution to fill a list is what this default exists to avoid.
      */
     val drawable: Drawable? = null,
     val isCurrent: Boolean = false,

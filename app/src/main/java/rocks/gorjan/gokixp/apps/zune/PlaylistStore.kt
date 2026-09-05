@@ -1,4 +1,4 @@
-package rocks.gorjan.gokixp.apps.winamp
+package rocks.gorjan.gokixp.apps.zune
 
 import android.content.Context
 import android.util.Log
@@ -6,12 +6,12 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 
 /**
- * The launcher's playlists, shared by every player in it.
+ * The launcher's playlists.
  *
- * Winamp wrote the format and still owns it - a list of names, each holding file paths -
- * so it lives here rather than in a neutral place that would only pretend the two are
- * peers. Zune reads and writes the same store, which is what makes a playlist built in
- * one of them the same playlist in the other rather than two lists with the same name.
+ * Winamp wrote this format - a list of names, each holding file paths - and the two players
+ * shared it while they shipped together. Winamp is in the desktop launcher now and Zune is
+ * the only reader left, but the format and the `winamp_prefs` file name are kept exactly as
+ * they were: they are what is already on disk on every phone this has run on.
  *
  * Paths rather than MediaStore ids, because that is what was already written to disk on
  * every phone this has ever run on, and a format change would silently empty everybody's
@@ -21,6 +21,17 @@ import com.google.gson.reflect.TypeToken
  * and whichever saves last is the one on disk. In practice the other picks the change up
  * the next time it loads.
  */
+/**
+ * A playlist: a name and the file paths in it.
+ *
+ * Defined alongside the store now. It lived on Winamp, which wrote the format; the JSON
+ * field names are unchanged so lists already saved still load.
+ */
+data class Playlist(
+    val name: String,
+    val tracks: MutableList<String> = mutableListOf()
+)
+
 object PlaylistStore {
 
     const val PREFS_NAME = "winamp_prefs"

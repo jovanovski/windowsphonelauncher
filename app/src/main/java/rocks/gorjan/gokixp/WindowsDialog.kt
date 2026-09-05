@@ -632,8 +632,9 @@ class WindowsDialog @JvmOverloads constructor(
      * Sets up the resize drag view functionality if it exists in the content
      */
     private fun setupResizeDragView() {
-        // Find the resize drag view in the content area
-        resizeDragView = contentArea.findViewById(R.id.resize_drag_view)
+        // No resize grip to find. It was a corner handle in the desktop programs' own
+        // layouts, and those shipped with the desktop; the phone's programs fill the
+        // screen and are not resized. The listener below is simply never attached.
 
         // Calculate minimum size in pixels using configurable dp values
         val density = resources.displayMetrics.density

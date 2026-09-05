@@ -352,62 +352,10 @@ class CalendarDataProvider(private val context: Context) : QuickGlanceDataProvid
     }
     
     
-    private fun getWeatherSubtitle(): String {
-        return try {
-            // Get MainActivity instance to access cached weather
-            val mainActivity = MainActivity.getInstance()
-            val weatherJson = mainActivity?.getCachedWeatherJson()
-            
-            if (weatherJson != null && mainActivity.isWeatherDataFresh(60)) {
-                val currentWeather = weatherJson.getJSONObject("current")
-                val temperature = currentWeather.getDouble("temperature_2m")
-                val weatherCode = currentWeather.getInt("weather_code")
-                val formattedTemp = mainActivity.formatTemperatureForWidget(temperature)
-
-                val condition = getWeatherCondition(weatherCode)
-                "$formattedTemp and $condition"
-            } else {
-                "your pal, Clippy 3"
-            }
-        } catch (e: Exception) {
-            Log.e("CalendarDataProvider", "Error getting weather subtitle", e)
-            "your pal, Clippy 4"
-        }
-    }
-    
-    private fun getWeatherCondition(weatherCode: Int): String {
-        return when (weatherCode) {
-            0 -> "clear sky"
-            1 -> "mainly clear"
-            2 -> "partly cloudy"
-            3 -> "overcast"
-            45 -> "fog"
-            48 -> "rime fog"
-            51 -> "light drizzle"
-            53 -> "moderate drizzle"
-            55 -> "dense drizzle"
-            56 -> "light freezing drizzle"
-            57 -> "dense freezing drizzle"
-            61 -> "light rain"
-            63 -> "moderate rain"
-            65 -> "heavy rain"
-            66 -> "light freezing rain"
-            67 -> "heavy freezing rain"
-            71 -> "light snowfall"
-            73 -> "moderate snowfall"
-            75 -> "heavy snowfall"
-            77 -> "snow grains"
-            80 -> "light rain showers"
-            81 -> "moderate rain showers"
-            82 -> "violent rain showers"
-            85 -> "light snow showers"
-            86 -> "heavy snow showers"
-            95 -> "thunderstorm"
-            96 -> "thunderstorm with slight hail"
-            99 -> "thunderstorm with heavy hail"
-            else -> "unknown conditions"
-        }
-    }
+    // The weather line that used to sit under the date belonged to the desktop's
+    // Quick Glance panel, which shipped with the desktop. Nothing calls it here: the
+    // phone reads this provider as a signal that the calendar moved, and paints its
+    // own tile - see MainActivity.refreshWP81TodayEvent.
     
     private fun processEvent(
         title: String, 

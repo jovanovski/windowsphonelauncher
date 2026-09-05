@@ -116,87 +116,10 @@ class ThemeManager(private val context: Context) {
      */
     fun getSelectedTheme(): AppTheme = AppTheme.WindowsPhone81
 
-    /**
-     * Sets the selected theme in SharedPreferences.
-     * Writes the same key and string values as legacy code.
-     * Also resets the Plus! slug to "default" whenever the theme leaves Classic.
-     */
-    fun setSelectedTheme(theme: AppTheme) {
-        prefs.edit {
-            putString(KEY_SELECTED_THEME, theme.toString())
-            if (theme !is AppTheme.WindowsClassic) {
-                putString(KEY_PLUS95_THEME, PLUS95_DEFAULT)
-            }
-        }
-    }
 
     // ========== The app's own icon ==========
 
-    /**
-     * Points the launcher entry at the alias carrying [theme]'s Windows logo.
-     *
-     * `android:icon` is baked into the APK and cannot be rewritten at runtime, so the only
-     * way to repaint an app's icon is to change which component answers MAIN/LAUNCHER.
-     * The manifest declares one alias per theme, each with its own logo; exactly one is
-     * left enabled here and the rest are switched off.
-     *
-     * The wanted alias is enabled first so there is never an instant with no launcher
-     * entry at all - a gap the app drawer will happily redraw into. DONT_KILL_APP matters
-     * just as much: without it the system tears the process down, and this runs during a
-     * theme change, with a shell on screen.
-     *
-     * Safe to call on every start. Component state that already agrees is left alone, so
-     * a run that has nothing to do writes nothing - which is the usual case, and worth
-     * having because a fresh install starts on the manifest's defaults rather than on the
-     * theme restored from a backup.
-     */
-    fun applyLauncherIcon(theme: AppTheme = getSelectedTheme()) {
-        val pm = context.packageManager
-        val pkg = context.packageName
-        val wanted = launcherAliasFor(theme)
 
-        // Enabled first, then the others; see above.
-        val aliases = AppTheme.all().map(::launcherAliasFor).sortedByDescending { it == wanted }
-        for (alias in aliases) {
-            val shouldBeEnabled = alias == wanted
-            val component = ComponentName(pkg, pkg + alias)
-            try {
-                val isEnabled = when (pm.getComponentEnabledSetting(component)) {
-                    PackageManager.COMPONENT_ENABLED_STATE_ENABLED -> true
-                    PackageManager.COMPONENT_ENABLED_STATE_DEFAULT -> alias == DEFAULT_LAUNCHER_ALIAS
-                    else -> false
-                }
-                if (isEnabled == shouldBeEnabled) continue
-                pm.setComponentEnabledSetting(
-                    component,
-                    if (shouldBeEnabled) PackageManager.COMPONENT_ENABLED_STATE_ENABLED
-                    else PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
-                    PackageManager.DONT_KILL_APP
-                )
-            } catch (e: Exception) {
-                // An icon is not worth failing a theme change over.
-                Log.w("ThemeManager", "Could not set launcher alias $alias", e)
-            }
-        }
-    }
-
-    /**
-     * The manifest alias holding [theme]'s logo.
-     *
-     * Keyed on the theme and not on [DesktopChrome]: Windows Phone 8.1 borrows Vista's
-     * window frames but is emphatically not Vista on the home screen, and this is the
-     * shell's face rather than its chrome.
-     *
-     * The returned names are part of the installed package's identity - renaming one
-     * resets its enabled state on the next update - so they stay put even if the themes
-     * are renamed around them.
-     */
-    private fun launcherAliasFor(theme: AppTheme): String = when (theme) {
-        AppTheme.WindowsXP -> ".LauncherIconXP"
-        AppTheme.WindowsClassic -> ".LauncherIcon98"
-        AppTheme.WindowsVista -> ".LauncherIconVista"
-        AppTheme.WindowsPhone81 -> ".LauncherIconWP8"
-    }
 
     // ========== Plus! 95 theme support ==========
 
@@ -211,20 +134,18 @@ class ThemeManager(private val context: Context) {
         val startupAsset: String?
     )
 
-    fun getAllPlus95Themes(): List<Plus95Theme> = PLUS95_THEMES
 
-    fun getPlus95Slug(): String = prefs.getString(KEY_PLUS95_THEME, PLUS95_DEFAULT) ?: PLUS95_DEFAULT
 
-    fun setPlus95Slug(slug: String) {
-        prefs.edit { putString(KEY_PLUS95_THEME, slug) }
-    }
 
-    fun getActivePlus95(): Plus95Theme? {
-        if (getSelectedTheme() !is AppTheme.WindowsClassic) return null
-        val slug = getPlus95Slug()
-        if (slug == PLUS95_DEFAULT) return null
-        return PLUS95_THEMES.firstOrNull { it.slug == slug }
-    }
+    /**
+     * Always null here.
+     *
+     * Microsoft Plus! dressed up Windows Classic, and Classic ships in the desktop
+     * launcher. The callers - the window chrome, the context menu, the click and startup
+     * sounds - all already treat null as "no Plus! theme", which is the only answer this
+     * launcher can give. Kept as a seam rather than unpicked from five files at once.
+     */
+    fun getActivePlus95(): Plus95Theme? = null
 
     fun plus95Path(slug: String, filename: String): String = "plus95/$slug/$filename"
 
@@ -234,21 +155,7 @@ class ThemeManager(private val context: Context) {
      */
     fun isClassicTheme(): Boolean = getSelectedTheme() is AppTheme.WindowsClassic
 
-    /**
-     * Returns true if the current theme is Windows XP.
-     * Convenience method for boolean checks.
-     */
-    fun isXPTheme(): Boolean = getSelectedTheme() is AppTheme.WindowsXP
 
-    /**
-     * True only for the actual Windows Vista theme.
-     *
-     * Use this for *shell*-level decisions - taskbar height, startup sound, cursor,
-     * desktop icon fades - none of which run under Windows Phone 8.1. For anything
-     * drawn inside a window, use [isVistaChrome] instead, so WP8.1 (which renders its
-     * windows in Vista chrome) takes the same branch.
-     */
-    fun isVistaTheme(): Boolean = getSelectedTheme() is AppTheme.WindowsVista
 
     /**
      * True when windows are drawn with Vista chrome - i.e. Windows Vista *or*
@@ -591,23 +498,7 @@ class ThemeManager(private val context: Context) {
         AppTheme.WindowsPhone81 -> R.style.Theme_GokiXP_WP81
     }
 
-    /**
-     * Gets the taskbar layout resource ID for the given theme.
-     */
-    fun getTaskbarLayoutRes(theme: AppTheme): Int = when (theme.chrome) {
-        DesktopChrome.CLASSIC -> R.layout.taskbar_98
-        DesktopChrome.XP -> R.layout.taskbar_xp
-        DesktopChrome.VISTA -> R.layout.taskbar_vista
-    }
 
-    /**
-     * Gets the start menu layout resource ID for the given theme.
-     */
-    fun getStartMenuLayoutRes(theme: AppTheme): Int = when (theme.chrome) {
-        DesktopChrome.CLASSIC -> R.layout.start_menu_98
-        DesktopChrome.XP -> R.layout.start_menu_xp
-        DesktopChrome.VISTA -> R.layout.start_menu_vista
-    }
 
     /**
      * Gets the dialog content layout resource ID for the given theme.
@@ -618,29 +509,8 @@ class ThemeManager(private val context: Context) {
         DesktopChrome.VISTA -> R.layout.windows_dialog_content_vista
     }
 
-    /**
-     * Gets the spinner item layout resource ID for the given theme.
-     */
-    fun getSpinnerItemLayoutRes(theme: AppTheme): Int = when (theme.chrome) {
-        DesktopChrome.CLASSIC -> R.layout.spinner_item_classic
-        DesktopChrome.XP -> R.layout.spinner_item_xp
-        DesktopChrome.VISTA -> R.layout.spinner_item_vista
-    }
 
-    /**
-     * Gets the spinner dropdown layout resource ID for the given theme.
-     */
-    fun getSpinnerDropdownLayoutRes(theme: AppTheme): Int = when (theme.chrome) {
-        DesktopChrome.CLASSIC -> R.layout.spinner_dropdown_item_classic
-        DesktopChrome.XP -> R.layout.spinner_dropdown_item_xp
-        DesktopChrome.VISTA -> R.layout.spinner_dropdown_item_vista
-    }
 
-    fun getIELayout(): Int = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> R.layout.program_internet_explorer
-        DesktopChrome.XP -> R.layout.program_internet_explorer
-        DesktopChrome.VISTA -> R.layout.program_internet_explorer_7
-    }
 
 
 
@@ -683,11 +553,6 @@ class ThemeManager(private val context: Context) {
         DesktopChrome.VISTA -> R.drawable.wmp_vista_icon
     }
 
-    fun getPhotosIcon(): Int = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.photos_98_icon
-        DesktopChrome.XP -> R.drawable.photos_xp_icon
-        DesktopChrome.VISTA -> R.drawable.photos_vista_icon
-    }
 
     fun getMinesweeperIcon(): Int = when (getSelectedTheme().chrome) {
         DesktopChrome.CLASSIC -> R.drawable.minesweeper_icon_98
@@ -715,60 +580,15 @@ class ThemeManager(private val context: Context) {
         DesktopChrome.VISTA -> R.drawable.my_computer_vista_icon
     }
 
-    fun getFileGenericIcon(): Int = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.file_generic_98
-        DesktopChrome.XP -> R.drawable.file_generic_xp
-        DesktopChrome.VISTA -> R.drawable.file_generic_vista
-    }
-
-    fun getFileImageIcon(): Int = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.file_image_98
-        DesktopChrome.XP -> R.drawable.file_image_xp
-        DesktopChrome.VISTA -> R.drawable.file_image_vista
-    }
 
 
-    fun getPDFImageIcon(): Int = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.file_pdf_98
-        DesktopChrome.XP -> R.drawable.file_pdf_xp
-        DesktopChrome.VISTA -> R.drawable.file_pdf_vista
-    }
 
-    fun getFileAudioIcon(): Int = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.file_audio_98
-        DesktopChrome.XP -> R.drawable.file_audio_xp
-        DesktopChrome.VISTA -> R.drawable.file_audio_vista
-    }
 
-    fun getFileVideoIcon(): Int = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.file_video_98
-        DesktopChrome.XP -> R.drawable.file_video_xp
-        DesktopChrome.VISTA -> R.drawable.file_video_vista
-    }
 
-    fun getDriveFloppyIcon(): Int = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.drive_floppy_98
-        DesktopChrome.XP -> R.drawable.drive_floppy_xp
-        DesktopChrome.VISTA -> R.drawable.drive_floppy_vista
-    }
 
-    fun getDriveLocalIcon(): Int = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.drive_local_98
-        DesktopChrome.XP -> R.drawable.drive_local_xp
-        DesktopChrome.VISTA -> R.drawable.drive_local_vista
-    }
 
-    fun getDriveOpticalIcon(): Int = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.drive_optical_98
-        DesktopChrome.XP -> R.drawable.drive_optical_xp
-        DesktopChrome.VISTA -> R.drawable.drive_optical_vista
-    }
 
-    fun getWmpLayout(): Int = when (getSelectedTheme().chrome) {
-        DesktopChrome.CLASSIC -> R.layout.program_wmp_98
-        DesktopChrome.XP -> R.layout.program_wmp_xp
-        DesktopChrome.VISTA -> R.layout.program_wmp_vista
-    }
+
 
     fun getMaximizeIcon(): Int = when (getSelectedTheme().chrome) {
         DesktopChrome.CLASSIC -> R.drawable.win98_title_bar_maximize
@@ -791,14 +611,6 @@ class ThemeManager(private val context: Context) {
         DesktopChrome.VISTA -> R.layout.taskbar_button_vista
     }
 
-    /**
-     * Gets the Windows Explorer layout resource ID for the given theme.
-     */
-    fun getWindowsExplorerLayoutRes(theme: AppTheme): Int = when (theme.chrome) {
-        DesktopChrome.CLASSIC -> R.layout.windows_explorer_98
-        DesktopChrome.XP -> R.layout.windows_explorer_xp
-        DesktopChrome.VISTA -> R.layout.windows_explorer_vista
-    }
 
     // ========== Icon Resource Mappings ==========
 
@@ -811,95 +623,14 @@ class ThemeManager(private val context: Context) {
         DesktopChrome.VISTA -> R.drawable.folder_vista
     }
 
-    /**
-     * Gets the recycle bin icon drawable resource ID for the given theme.
-     * @param isEmpty Whether the recycle bin is empty
-     */
-    fun getRecycleBinIconRes(theme: AppTheme, isEmpty: Boolean): Int = when (theme.chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.recycle_98
-        DesktopChrome.XP -> R.drawable.recycle
-        DesktopChrome.VISTA -> R.drawable.recycle_vista
-    }
 
-    /**
-     * Gets the start button drawable resource ID for the given theme.
-     */
-    fun getStartButtonRes(theme: AppTheme): Int = when (theme.chrome) {
-        DesktopChrome.CLASSIC -> R.drawable.start_98
-        DesktopChrome.XP -> R.drawable.start
-        DesktopChrome.VISTA -> R.drawable.start_vista
-    }
 
     // ========== Font Resource Mappings ==========
 
-    /**
-     * Gets the primary font family resource ID for the given theme.
-     */
-    // Keyed on the theme, not the chrome: WP8.1 needs Segoe where Vista keeps Tahoma.
-    fun getPrimaryFontRes(theme: AppTheme): Int = when (theme) {
-        AppTheme.WindowsClassic -> R.font.micross_font_family
-        AppTheme.WindowsXP -> R.font.tahoma_font_family
-        AppTheme.WindowsVista -> R.font.tahoma_font_family  // Use Tahoma for now, can be replaced with Segoe UI
-        AppTheme.WindowsPhone81 -> R.font.segoe_wp_family
-    }
 
-    /**
-     * Gets the bold font resource ID for the given theme.
-     */
-    fun getBoldFontRes(theme: AppTheme): Int = when (theme) {
-        AppTheme.WindowsClassic -> R.font.micross_block_bold
-        AppTheme.WindowsXP -> R.font.tahoma
-        AppTheme.WindowsVista -> R.font.tahoma  // Use Tahoma for now
-        AppTheme.WindowsPhone81 -> R.font.segoeui_semibold
-    }
 
     // ========== Scrollbar Styling ==========
 
-    /**
-     * Applies themed scrollbar drawables to a view that supports scrollbars.
-     * Supports Windows XP, Windows Classic, and Windows Vista themes.
-     *
-     * @param view The view to apply scrollbars to (must support scrollbars, e.g., EditText, RecyclerView)
-     * @param theme The theme to apply (optional, defaults to current selected theme)
-     */
-    fun applyThemedScrollbars(view: android.view.View, theme: AppTheme = getSelectedTheme()) {
-        // Get theme-specific scrollbar drawables
-        val (trackRes, thumbRes) = when (theme.chrome) {
-            DesktopChrome.XP -> R.drawable.scrollbar_track_xp to R.drawable.scrollbar_thumb_xp
-            DesktopChrome.CLASSIC -> R.drawable.scrollbar_track_98 to R.drawable.win98_start_menu_border
-            DesktopChrome.VISTA -> R.drawable.scrollbar_track_vista to R.drawable.scrollbar_thumb_vista
-        }
-
-        // Get theme-appropriate drawables
-        val trackDrawable = androidx.core.content.ContextCompat.getDrawable(context, trackRes) ?: return
-        val thumbDrawable = androidx.core.content.ContextCompat.getDrawable(context, thumbRes) ?: return
-
-        // API 29+ has direct methods to set scrollbar drawables
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-            // Set scrollbar size to 16dp
-            val scrollBarSize = (16 * context.resources.displayMetrics.density).toInt()
-
-            // Enable vertical scrollbar
-            view.isVerticalScrollBarEnabled = true
-            view.scrollBarStyle = android.view.View.SCROLLBARS_OUTSIDE_OVERLAY
-            view.isScrollbarFadingEnabled = false
-
-            // Set scrollbar size if the view supports it
-            when (view) {
-                is android.widget.TextView -> view.scrollBarSize = scrollBarSize
-                is androidx.recyclerview.widget.RecyclerView -> view.scrollBarSize = scrollBarSize
-            }
-
-            // Use the direct API methods (API 29+)
-            view.setVerticalScrollbarThumbDrawable(thumbDrawable)
-            view.setVerticalScrollbarTrackDrawable(trackDrawable)
-
-            android.util.Log.d("ThemeManager", "Successfully set scrollbar drawables using API 29+ methods")
-        } else {
-            // Fallback for older APIs - just log that it's not supported
-            android.util.Log.w("ThemeManager", "Themed scrollbars require API 29+, current API is ${android.os.Build.VERSION.SDK_INT}")
-        }
-    }
 
     companion object {
         private const val KEY_SELECTED_THEME = "selected_theme"

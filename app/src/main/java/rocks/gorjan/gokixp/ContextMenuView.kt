@@ -8,6 +8,7 @@ import android.view.View.MeasureSpec
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.content.res.ResourcesCompat
 import rocks.gorjan.gokixp.theme.AppTheme
 import rocks.gorjan.gokixp.theme.ThemeAware
 
@@ -146,15 +147,24 @@ class ContextMenuView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * The face the menu is set in.
+     *
+     * Asked of MainActivity before, which chose between four themes' fonts. There is one
+     * theme here, so the font is simply Segoe - the same one the rest of the phone shell
+     * is drawn in.
+     */
+    private val menuTypeface by lazy {
+        ResourcesCompat.getFont(context, R.font.segoeui_regular)
+    }
+
     private fun updateExistingMenuItemFonts(isWindows98: Boolean) {
         // Update fonts for all existing menu items
         for (i in 0 until childCount) {
             val child = getChildAt(i)
             if (child is LinearLayout) {
                 val textView = child.findViewById<TextView>(R.id.menu_item_text)
-                textView?.let { tv ->
-                    MainActivity.getInstance()?.applyThemeFontToTextView(tv)
-                }
+                textView?.let { tv -> tv.typeface = menuTypeface }
             }
         }
     }
@@ -209,8 +219,7 @@ class ContextMenuView @JvmOverloads constructor(
 
                 textView.text = item.title
 
-                // Apply theme-appropriate font
-                MainActivity.getInstance()?.applyThemeFontToTextView(textView)
+                textView.typeface = menuTypeface
                 if (item.isEnabled) {
                     textView.setTextColor(context.getColorStateList(R.color.context_menu_text_selector))
                 } else {

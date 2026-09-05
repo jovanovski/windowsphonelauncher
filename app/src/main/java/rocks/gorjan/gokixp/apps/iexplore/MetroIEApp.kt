@@ -370,7 +370,7 @@ class MetroIEApp(
         // that losing them to that would make tabs useless.
         val restored = loadTabs()
         if (restored.isEmpty()) {
-            val lastUrl = prefs.getString(InternetExplorerApp.KEY_LAST_URL, null)
+            val lastUrl = prefs.getString(BrowserPrefs.KEY_LAST_URL, null)
             val opened = openTab(initialUrl ?: lastUrl ?: homepage)
             if (initialUrl != null) opened.external = fromAnotherApp
         } else {
@@ -2720,13 +2720,13 @@ class MetroIEApp(
     private fun saveLastUrl(url: String) {
         if (url == "about:blank" || url.startsWith("file://")) return
         context.getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE)
-            .edit().putString(InternetExplorerApp.KEY_LAST_URL, url).apply()
+            .edit().putString(BrowserPrefs.KEY_LAST_URL, url).apply()
     }
 
     /** The desktop browser's own list, read in its own format. */
     private fun loadFavourites(): MutableList<Favourite> {
         val json = context.getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE)
-            .getString(InternetExplorerApp.KEY_FAVOURITES, null) ?: return mutableListOf()
+            .getString(BrowserPrefs.KEY_FAVOURITES, null) ?: return mutableListOf()
         return try {
             val type = object : TypeToken<MutableList<Favourite>>() {}.type
             Gson().fromJson<MutableList<Favourite>>(json, type) ?: mutableListOf()
@@ -2738,7 +2738,7 @@ class MetroIEApp(
 
     private fun saveFavourites() {
         context.getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE)
-            .edit().putString(InternetExplorerApp.KEY_FAVOURITES, Gson().toJson(favourites)).apply()
+            .edit().putString(BrowserPrefs.KEY_FAVOURITES, Gson().toJson(favourites)).apply()
     }
 
     private fun loadHistory(): MutableList<HistoryEntry> {
