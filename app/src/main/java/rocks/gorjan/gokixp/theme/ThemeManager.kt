@@ -105,13 +105,16 @@ class ThemeManager(private val context: Context) {
 
 
     /**
-     * Gets the currently selected theme from SharedPreferences.
-     * Reads the same key used by legacy code.
+     * The theme this launcher renders. Always Windows Phone 8.1 - it is the only one here.
+     *
+     * Deliberately ignores the stored `selected_theme` rather than reading it. A Start
+     * screen imported from the desktop launcher carries that key along with everything
+     * else, and it may say "Windows XP" - which is the desktop launcher's default and
+     * would otherwise boot this app into a desktop it no longer contains. The key is left
+     * in preferences untouched so an import stays a faithful copy; it just does not get a
+     * vote on which shell runs.
      */
-    fun getSelectedTheme(): AppTheme {
-        val stored = prefs.getString(KEY_SELECTED_THEME, "Windows XP")
-        return AppTheme.fromString(stored)
-    }
+    fun getSelectedTheme(): AppTheme = AppTheme.WindowsPhone81
 
     /**
      * Sets the selected theme in SharedPreferences.

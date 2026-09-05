@@ -51,9 +51,6 @@ class WP81SettingsView(
      */
     var onWallpaperLongPress: ((String, Float) -> Unit)? = null
 
-    /** Fired when a different launcher theme is chosen. Carries AppTheme.toString(). */
-    var onThemePicked: ((String) -> Unit)? = null
-
     /** Fired while the blur slider moves, 0 (sharp) to 1. */
     var onBlurChanged: ((Float) -> Unit)? = null
 
@@ -96,14 +93,6 @@ class WP81SettingsView(
     private val themeRows = mutableListOf<Pair<View, Boolean>>()
     private val columnRows = mutableListOf<Pair<View, Int>>()
     private var selectedColumns = 4
-    private val launcherThemeRows = mutableListOf<Pair<View, String>>()
-    private val launcherThemeSection = LinearLayout(context)
-    private val themeValueRow = LinearLayout(context)
-    private val themeValueLabel = TextView(context)
-    private val themeChevron = ImageView(context)
-    private val themeOptions = LinearLayout(context)
-    private var currentThemeName: String = ""
-    private var themeExpanded = false
     private val wallpaperTiles = mutableListOf<Pair<StripTile, String?>>()
     private val blurLabel = TextView(context).apply {
         text = "blur"
@@ -247,11 +236,9 @@ class WP81SettingsView(
         column.addView(openLinksRow.view, wide())
         column.addView(defaultBrowserRow.view, wide())
 
-        // Last, because it is the most drastic thing here: choosing another theme tears
-        // this shell down entirely and rebuilds the launcher as a desktop.
-        column.addView(sectionLabel("theme"), wide())
-        buildThemePicker()
-        column.addView(launcherThemeSection, wide())
+        // There is no "theme" section. This launcher is the Windows Phone shell and has
+        // nothing to switch to - the desktop themes it once listed ship as a separate app
+        // now, and picking one here could only lead somewhere that is not installed.
 
         scroll.isFillViewport = true
         scroll.overScrollMode = OVER_SCROLL_NEVER
@@ -371,111 +358,6 @@ class WP81SettingsView(
         }
     }
 
-    // ---------------------------------------------------------------- launcher theme
-
-    /**
-     * Lists the launcher's themes as a Windows Phone list picker.
-     *
-     * Collapsed it shows only the current value; tapping it unrolls the alternatives in
-     * place and picking one rolls it back up. That is how WP8.1 handled a single choice
-     * from a handful of options - a column of radio markers is a Vista control, and with
-     * four themes it also took more of the page than the thing it was choosing.
-     *
-     * Populated by the host rather than read here, so this view keeps knowing nothing
-     * about ThemeManager beyond the accent palette.
-     */
-    fun setLauncherThemes(names: List<String>, current: String) {
-        currentThemeName = current
-        themeValueLabel.text = current
-
-        themeOptions.removeAllViews()
-        launcherThemeRows.clear()
-        for (name in names) {
-            themeOptions.addView(themeOption(name), wide())
-        }
-        collapseThemePicker()
-        repaintLauncherThemeRows()
-    }
-
-    private fun buildThemePicker() {
-        themeValueRow.orientation = LinearLayout.HORIZONTAL
-        themeValueRow.gravity = Gravity.CENTER_VERTICAL
-        themeValueRow.setPadding(dp(24), dp(12), dp(24), dp(12))
-        themeValueRow.isClickable = true
-        themeValueRow.setOnClickListener {
-            if (themeExpanded) collapseThemePicker() else expandThemePicker()
-        }
-        TiltEffect.apply(themeValueRow)
-
-        themeValueLabel.textSize = 17f
-        themeValueLabel.typeface = ResourcesCompat.getFont(context, R.font.segoeui_regular)
-        themeValueRow.addView(themeValueLabel, LinearLayout.LayoutParams(
-            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-
-        themeChevron.setImageResource(R.drawable.wp81_edit_resize)
-        themeValueRow.addView(themeChevron, LinearLayout.LayoutParams(dp(18), dp(18)))
-
-        themeOptions.orientation = LinearLayout.VERTICAL
-        themeOptions.visibility = View.GONE
-
-        launcherThemeSection.orientation = LinearLayout.VERTICAL
-        launcherThemeSection.addView(themeValueRow, wide())
-        launcherThemeSection.addView(themeOptions, wide())
-    }
-
-    private fun themeOption(name: String): View {
-        val row = TextView(context).apply {
-            text = name
-            textSize = 17f
-            typeface = ResourcesCompat.getFont(context, R.font.segoeui_regular)
-            setPadding(dp(36), dp(12), dp(24), dp(12))
-            isClickable = true
-            setOnClickListener {
-                collapseThemePicker()
-                if (name != currentThemeName) onThemePicked?.invoke(name)
-            }
-            TiltEffect.apply(this)
-        }
-        launcherThemeRows.add(row to name)
-        return row
-    }
-
-    private fun expandThemePicker() {
-        themeExpanded = true
-        themeOptions.visibility = View.VISIBLE
-        themeChevron.animate().rotation(180f).setDuration(160).start()
-        // The picker sits at the foot of the page, so its options open below the fold: the
-        // row was tapped, something happened off-screen, and the page looked unchanged.
-        // Posted, because how far down they reach is only known once they have been laid
-        // out. Only ever scrolls forward - if the whole list is already on screen there is
-        // nothing to do, and moving the page then would just take the row out from under
-        // the finger that opened it.
-        themeOptions.post {
-            val bottom = launcherThemeSection.bottom + column.paddingBottom
-            val target = (bottom - scroll.height).coerceAtLeast(0)
-            if (target > scroll.scrollY) scroll.smoothScrollTo(0, target)
-        }
-    }
-
-    private fun collapseThemePicker() {
-        themeExpanded = false
-        themeOptions.visibility = View.GONE
-        themeChevron.rotation = 0f
-    }
-
-    private fun repaintLauncherThemeRows() {
-        themeValueLabel.setTextColor(palette.foreground)
-        themeChevron.imageTintList =
-            android.content.res.ColorStateList.valueOf(palette.foreground)
-        themeValueRow.setBackgroundColor(palette.inactive)
-        for ((row, name) in launcherThemeRows) {
-            // The current value is picked out in the accent, so the open list still shows
-            // where you are.
-            (row as TextView).setTextColor(
-                if (name == currentThemeName) palette.accent else palette.foreground)
-        }
-    }
-
     // ---------------------------------------------------------------- accent
 
     /**
@@ -548,7 +430,6 @@ class WP81SettingsView(
      */
     fun onOpened() {
         setAccentExpanded(false)
-        collapseThemePicker()
         scroll.scrollTo(0, 0)
     }
 
@@ -863,7 +744,6 @@ class WP81SettingsView(
         repaintColumnRows()
         blurSlider.applyPalette(p)
         repaintThemeRows()
-        repaintLauncherThemeRows()
         repaintAccentSwatches()
         repaintWallpaperTiles()
     }

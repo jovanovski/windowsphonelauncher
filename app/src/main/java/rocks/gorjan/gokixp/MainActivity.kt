@@ -5767,7 +5767,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
         // Get current theme for content layout selection
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        val selectedTheme = prefs.getString("selected_theme", "Windows XP") ?: "Windows XP"
+        val selectedTheme = AppTheme.WindowsPhone81.toString()
 
         // Create and set the content with theme-appropriate layout
         val contentLayoutResId = if (selectedTheme == "Windows Classic") {
@@ -7944,7 +7944,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
         // Get current theme for button styling
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        val selectedTheme = prefs.getString("selected_theme", "Windows XP") ?: "Windows XP"
+        val selectedTheme = AppTheme.WindowsPhone81.toString()
 
         // Create content view from XML layout
         val contentView = layoutInflater.inflate(R.layout.wallpaper_target_dialog_content, null)
@@ -11506,7 +11506,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         val iconView = when (appInfo.packageName) {
             "recycle.bin" -> {
                 val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                val selectedTheme = prefs.getString("selected_theme", "Windows XP") ?: "Windows XP"
+                val selectedTheme = AppTheme.WindowsPhone81.toString()
                 Log.d("MainActivity", "OPA: selectedTheme = $selectedTheme")
 
                 RecycleBinView(this).apply {
@@ -12154,7 +12154,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                             RecycleBinView(this).apply {
                                 setDesktopIcon(desktopIcon)
                                 // Apply current theme for recycle bin
-                                val selectedTheme = prefs.getString("selected_theme", "Windows XP") ?: "Windows XP"
+                                val selectedTheme = AppTheme.WindowsPhone81.toString()
                                 Log.d("MainActivity", "LoadDesktopIcons: selectedTheme = $selectedTheme")
                                 setThemeFont(themeManager.getSelectedTheme() is AppTheme.WindowsClassic)
                                 setThemeIcon(themeManager.getSelectedTheme() is AppTheme.WindowsClassic)
@@ -12195,7 +12195,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                     desktopContainer.addView(iconView, layoutParams)
                     desktopIconViews.add(iconView)
                     // Apply current theme font
-                    val selectedTheme = prefs.getString("selected_theme", "Windows XP") ?: "Windows XP"
+                    val selectedTheme = AppTheme.WindowsPhone81.toString()
                     iconView.setThemeFont(selectedTheme == "Windows Classic")
 
                     // Set position after adding to container
@@ -18267,21 +18267,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // revoked on Android's own screen, so the row can only report what it finds.
         shell.settingsPage.setLastAppAccess(hasUsageAccess())
         shell.settingsPage.onLastAppAccess = { requestUsageAccess() }
-        shell.settingsPage.setLauncherThemes(
-            AppTheme.all().map { it.toString() },
-            themeManager.getSelectedTheme().toString()
-        )
-        shell.settingsPage.onThemePicked = { name ->
-            // Same path the desktop Display Properties uses: persist, then applyTheme(),
-            // which plays the grayscale transition and recreates the activity.
-            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit {
-                putString("selected_theme", name)
-                if (AppTheme.fromString(name) !is AppTheme.WindowsClassic) {
-                    putString(ThemeManager.KEY_PLUS95_THEME, ThemeManager.PLUS95_DEFAULT)
-                }
-            }
-            applyTheme(name)
-        }
+        // No launcher-theme row: this app is the Windows Phone shell and nothing else.
+        // The desktop themes it used to offer live in the other launcher now, and a row
+        // that switched to one of them would be switching to a shell that is not here.
         shell.settingsPage.onBrowse = {
             setPendingImagePick(PICK_TARGET_WP81_BACKGROUND)
             imagePickerLauncher.launch("image/*")
@@ -19361,7 +19349,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     override fun attachBaseContext(newBase: Context) {
         val prefs = newBase.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-        val selectedTheme = prefs.getString("selected_theme", "Windows XP") ?: "Windows XP"
+        val selectedTheme = AppTheme.WindowsPhone81.toString()
         val shouldScaleFont = selectedTheme == "Windows Classic"
         if(shouldScaleFont) {
             val config = Configuration(newBase.resources.configuration)
@@ -19413,7 +19401,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // desktop's Display Properties writes - and this used to test for one of them. A
         // theme stored under the other name matched no branch at all, so nothing was
         // applied: the desktop stayed up with the phone's colours on it and no shell.
-        val stored = prefs.getString("selected_theme", "Windows XP") ?: "Windows XP"
+        val stored = AppTheme.WindowsPhone81.toString()
         val selectedTheme = AppTheme.fromString(stored).toString()
         Log.d("MainActivity", "initializeTheme: stored='$stored' resolved='$selectedTheme'")
 
