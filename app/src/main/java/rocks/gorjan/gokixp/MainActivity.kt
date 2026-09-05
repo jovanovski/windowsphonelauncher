@@ -142,7 +142,13 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     private var shellApplied = false
     private val desktopIcons = mutableListOf<DesktopIcon>()
     private lateinit var floatingWindowManager: FloatingWindowManager
-    private val customIconMappings = mutableMapOf<String, String>() // packageName -> customIconPath
+    /**
+     * The icons a package is shown with. Holds the picked-icon map and the bitmap cache.
+     *
+     * System programs' artwork is passed in rather than looked up there: which drawable
+     * Zune or Internet Explorer wears is the shell's business, not the store's.
+     */
+    val iconStore by lazy { IconStore(this) { pkg -> loadAppIcon(pkg) } }
     private val customNameMappings = mutableMapOf<String, String>() // packageName -> customName
 
     // Foldable device state
@@ -774,10 +780,10 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
         // Icons the user imported from their device live here, under filesDir.
         // Icon mappings store them as "imported_icons/<file>.png" so they're told apart from asset icons.
-        private const val IMPORTED_ICONS_DIR = "imported_icons"
+        const val IMPORTED_ICONS_DIR = "imported_icons"
 
         // Standard size icons are rendered at
-        private const val ICON_SIZE_PX = 288
+        const val ICON_SIZE_PX = 288
 
         /**
          * Longest edge a bundled wallpaper is decoded to when it is only being previewed.
@@ -788,31 +794,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         private const val WALLPAPER_PREVIEW_PX = 512
 
         private var instance: MainActivity? = null
-
-        /**
-         * Every app icon the launcher has squared off, for the life of the process.
-         *
-         * A process-wide cache rather than a field on the activity, because a theme switch
-         * is a recreate: one per activity meant the new one started with nothing and
-         * decoded, scaled and squared every installed app again - a second or so of work
-         * on the way into a theme, and a second full set of icons in memory for as long as
-         * the outgoing activity was still being collected. The contents do not depend on
-         * the theme: system programs take their artwork straight from the theme without
-         * coming through here, and a hand-picked icon is keyed by the file it came from.
-         *
-         * An eighth of the heap, and the memory-pressure callbacks still trim it.
-         */
-        private val iconBitmapCache: LruCache<String, Bitmap> by lazy {
-            val maxMemory = (Runtime.getRuntime().maxMemory() / 1024).toInt() // KB
-            val cacheSize = maxMemory / 8 // Use 1/8th of available memory
-            Log.d("MainActivity", "Initializing icon cache with size: ${cacheSize}KB (max memory: ${maxMemory}KB)")
-
-            object : LruCache<String, Bitmap>(cacheSize) {
-                override fun sizeOf(key: String, bitmap: Bitmap): Int {
-                    return bitmap.byteCount / 1024 // Size in KB
-                }
-            }
-        }
 
         fun getInstance(): MainActivity? = instance
 
@@ -1015,7 +996,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         purgeRetiredSystemApps()
 
         // Load custom icon mappings first so they're available when loading desktop icons
-        loadCustomIconMappings()
+        iconStore.load()
 
         // Load saved desktop icons (now with custom mappings available)
         loadDesktopIcons()
@@ -1288,7 +1269,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 name = "Internet Explorer",
                 exeName = "iexplore.exe",
                 packageName = "system.internet_explorer",
-                icon = createSquareDrawable(ieDrawable),
+                icon = iconStore.square(ieDrawable),
                 minWindowWidthDp = 360
             ))
         }
@@ -1300,7 +1281,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 name = "Registry Editor",
                 exeName = "regedit.exe",
                 packageName = "system.registry_editor",
-                icon = createSquareDrawable(regeditDrawable)
+                icon = iconStore.square(regeditDrawable)
             ))
         }
 
@@ -1311,7 +1292,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 name = "Phone Dialer",
                 exeName = "dialer.exe",
                 packageName = "system.dialer",
-                icon = createSquareDrawable(dialerDrawable)
+                icon = iconStore.square(dialerDrawable)
             ))
         }
 
@@ -1322,7 +1303,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 name = "Notepad",
                 exeName = "notepad.exe",
                 packageName = "system.notepad",
-                icon = createSquareDrawable(notepadDrawable)
+                icon = iconStore.square(notepadDrawable)
             ))
         }
 
@@ -1333,7 +1314,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 name = "Winamp",
                 exeName = "winamp.exe",
                 packageName = "system.winamp",
-                icon = createSquareDrawable(winampDrawable)
+                icon = iconStore.square(winampDrawable)
             ))
         }
 
@@ -1344,7 +1325,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 name = "Windows Media Player",
                 exeName = "wmplayer.exe",
                 packageName = "system.wmp",
-                icon = createSquareDrawable(wmpDrawable)
+                icon = iconStore.square(wmpDrawable)
             ))
         }
 
@@ -1358,7 +1339,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 name = "Music",
                 exeName = "zune.exe",
                 packageName = "system.zune",
-                icon = createSquareDrawable(glyph)
+                icon = iconStore.square(glyph)
             ))
         }
 
@@ -1372,7 +1353,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 name = "Welcome",
                 exeName = "welcome.exe",
                 packageName = "system.welcome",
-                icon = createSquareDrawable(tinted)
+                icon = iconStore.square(tinted)
             ))
         }
 
@@ -1388,7 +1369,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 name = "Calculator",
                 exeName = "calc.exe",
                 packageName = "system.calculator",
-                icon = createSquareDrawable(tinted)
+                icon = iconStore.square(tinted)
             ))
         }
 
@@ -1403,7 +1384,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 name = "People",
                 exeName = "people.exe",
                 packageName = "system.people",
-                icon = createSquareDrawable(tinted)
+                icon = iconStore.square(tinted)
             ))
         }
 
@@ -1420,7 +1401,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 name = "News",
                 exeName = "news.exe",
                 packageName = "system.news",
-                icon = createSquareDrawable(tinted)
+                icon = iconStore.square(tinted)
             ))
         }
 
@@ -1437,7 +1418,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 name = "Alarms",
                 exeName = "alarms.exe",
                 packageName = "system.alarms",
-                icon = createSquareDrawable(tinted)
+                icon = iconStore.square(tinted)
             ))
         }
 
@@ -1454,7 +1435,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 name = "Weather",
                 exeName = "weather.exe",
                 packageName = "system.weather",
-                icon = createSquareDrawable(tinted)
+                icon = iconStore.square(tinted)
             ))
         }
 
@@ -1472,7 +1453,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 name = "Files",
                 exeName = "files.exe",
                 packageName = "system.files",
-                icon = createSquareDrawable(tinted)
+                icon = iconStore.square(tinted)
             ))
         }
 
@@ -1483,7 +1464,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 name = "Minesweeper",
                 exeName = "minesweeper.exe",
                 packageName = "system.minesweeper",
-                icon = createSquareDrawable(minesweeperDrawable)
+                icon = iconStore.square(minesweeperDrawable)
             ))
         }
 
@@ -1494,7 +1475,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 name = "Solitaire",
                 exeName = "solitare.exe",
                 packageName = "system.solitare",
-                icon = createSquareDrawable(solitareDrawable)
+                icon = iconStore.square(solitareDrawable)
             ))
         }
 
@@ -1505,7 +1486,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 name = "Pinball",
                 exeName = "pinball.exe",
                 packageName = "system.pinball",
-                icon = createSquareDrawable(pinballDrawable)
+                icon = iconStore.square(pinballDrawable)
             ))
         }
 
@@ -1517,7 +1498,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 name = "Clock",
                 exeName = "clock.exe",
                 packageName = "system.clock",
-                icon = createSquareDrawable(clockDrawable)
+                icon = iconStore.square(clockDrawable)
             ))
         }
 
@@ -2042,18 +2023,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     }
 
 
-    private fun saveCustomIconMappings() {
-        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-
-        val themeKey = rocks.gorjan.gokixp.wp81.CUSTOM_ICONS_KEY
-
-        val jsonString = customIconMappings.entries.joinToString(";") { "${it.key}:${it.value}" }
-        Log.d("MainActivity", "Saving custom icons to $themeKey: $jsonString")
-
-        prefs.edit {
-            putString(themeKey, jsonString)
-        }
-    }
 
     // Migrate all settings from old separate SharedPreferences files to current PREFS_NAME
     // This function can be deleted in a future version after users have migrated
@@ -2275,48 +2244,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         if (kept.size != entries.size) putString(key, kept.joinToString(separator))
     }
 
-    private fun loadCustomIconMappings() {
-        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-
-        val themeKey = rocks.gorjan.gokixp.wp81.CUSTOM_ICONS_KEY
-
-        Log.d("MainActivity", "Loading custom icon mappings from $themeKey")
-
-        // Try to load theme-specific mappings first
-        val jsonString = prefs.getString(themeKey, "") ?: ""
-        Log.d("MainActivity", "Theme-specific mappings found: ${jsonString.isNotEmpty()}")
-
-        // TEMPORARILY DISABLED: If no theme-specific mapping exists, try to migrate from legacy storage
-        // This migration might be causing cross-theme pollution
-        /*
-        if (jsonString.isEmpty()) {
-            val legacyString = prefs.getString(KEY_CUSTOM_ICONS, "") ?: ""
-            Log.d("MainActivity", "Legacy mappings found: ${legacyString.isNotEmpty()}")
-            if (legacyString.isNotEmpty()) {
-                // Migrate legacy mappings to current theme
-                jsonString = legacyString
-
-                // Save to theme-specific key
-                prefs.edit {
-                    putString(themeKey, legacyString)
-                    // Don't remove legacy key yet in case both themes were used
-                }
-                Log.d("MainActivity", "Migrated legacy mappings to $themeKey")
-            }
-        }
-        */
-
-        customIconMappings.clear()
-        if (jsonString.isNotEmpty()) {
-            jsonString.split(";").forEach { entry ->
-                val parts = entry.split(":")
-                if (parts.size == 2) {
-                    customIconMappings[parts[0]] = parts[1]
-                }
-            }
-        }
-        Log.d("MainActivity", "Loaded ${customIconMappings.size} custom icon mappings: ${customIconMappings.keys}")
-    }
     
     private fun saveCustomNameMappings() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -2349,12 +2276,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         return customNameMappings[packageName] ?: originalName
     }
     
-    /**
-     * Loads an icon referenced by an icon mapping. Paths either point into the bundled assets
-     * or, for icons the user imported from their device, into [IMPORTED_ICONS_DIR] under filesDir.
-     */
-    private fun loadIconFromPath(iconPath: String): Drawable? =
-        rocks.gorjan.gokixp.wp81.WP81TileHost.loadIconFromPath(this, iconPath)
 
     /**
      * Copies an image the user picked from their device into the app's own icon storage,
@@ -2409,128 +2330,30 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         }
     }
 
+
     /**
-     * Deletes imported icon files that no theme's icon mappings reference any more,
-     * so replacing a custom icon doesn't leave the old image behind forever.
+     * The icon a package is shown with, from the one store that knows.
+     *
+     * Kept as a method rather than every caller reaching for iconStore: it is named in ten
+     * places here and in the tile host, and the shell's own artwork has to be handed in
+     * (see [IconStore]), so this is where the two halves meet.
      */
-    private fun pruneUnusedImportedIcons() {
-        val iconsDir = File(filesDir, IMPORTED_ICONS_DIR)
-        val files = iconsDir.listFiles() ?: return
-
-        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val inUse = listOf(rocks.gorjan.gokixp.wp81.CUSTOM_ICONS_KEY)
-            .flatMap { key -> (prefs.getString(key, "") ?: "").split(";") }
-            .mapNotNull { entry -> entry.substringAfter(":", "").takeIf { it.isNotEmpty() } }
-            .toSet()
-
-        files.forEach { file ->
-            if ("$IMPORTED_ICONS_DIR/${file.name}" !in inUse) {
-                if (file.delete()) Log.d("MainActivity", "Removed unused imported icon: ${file.name}")
-            }
-        }
-    }
+    fun getAppIcon(packageName: String, skipCustom: Boolean = false): Drawable? =
+        iconStore.iconFor(packageName, skipCustom)
 
     /**
-     * Central function to get app icon - returns custom icon if available, otherwise default icon
-     * This function handles theme awareness and should be used from all places (desktop, command list, app list)
-     */
-    fun getAppIcon(packageName: String, skipCustom: Boolean = false): Drawable? {
-
-        if(!skipCustom) {
-            // First check if there's a custom icon mapping for current theme
-            val customIconPath = customIconMappings[packageName]
-            if (customIconPath != null) {
-                try {
-                    val drawable = loadIconFromPath(customIconPath)
-                    if (drawable != null) {
-                        // Create a square drawable with consistent sizing and cache it
-                        val cacheKey = "custom_${packageName}_${customIconPath}"
-                        return createSquareDrawable(drawable, cacheKey)
-                    }
-                } catch (e: Exception) {
-                    Log.w(
-                        "MainActivity",
-                        "Failed to load custom icon for $packageName, falling back to default",
-                        e
-                    )
-                    // Remove invalid mapping
-                    customIconMappings.remove(packageName)
-                    saveCustomIconMappings()
-                }
-            }
-        }
-
-        // Fall back to default app icon with caching
-        return loadAppIcon(packageName)?.let {
-            val cacheKey = "app_${packageName}"
-            createSquareDrawable(it, cacheKey)
-        }
-    }
-    
-    private fun createSquareDrawable(originalDrawable: Drawable, cacheKey: String? = null): Drawable {
-        val iconSize = ICON_SIZE_PX // Standard size for desktop icons
-
-        // Check cache first if we have a cache key
-        if (cacheKey != null) {
-            val cachedBitmap = iconBitmapCache.get(cacheKey)
-            if (cachedBitmap != null) {
-                return cachedBitmap.toDrawable(resources)
-            }
-        }
-
-        // Create a bitmap with square dimensions
-        val bitmap = createBitmap(iconSize, iconSize)
-        val canvas = Canvas(bitmap)
-
-        // Calculate scaling to fit the drawable in the square while maintaining aspect ratio
-        val originalWidth = originalDrawable.intrinsicWidth
-        val originalHeight = originalDrawable.intrinsicHeight
-
-        val scale = if (originalWidth > 0 && originalHeight > 0) {
-            minOf(iconSize.toFloat() / originalWidth, iconSize.toFloat() / originalHeight)
-        } else {
-            1f
-        }
-
-        val scaledWidth = (originalWidth * scale).toInt()
-        val scaledHeight = (originalHeight * scale).toInt()
-
-        // Center the drawable in the square
-        val left = (iconSize - scaledWidth) / 2
-        val top = (iconSize - scaledHeight) / 2
-        val right = left + scaledWidth
-        val bottom = top + scaledHeight
-
-        // Set bounds and draw
-        originalDrawable.setBounds(left, top, right, bottom)
-        originalDrawable.draw(canvas)
-
-        // Cache the bitmap if we have a cache key
-        if (cacheKey != null) {
-            iconBitmapCache.put(cacheKey, bitmap)
-        }
-
-        // Create drawable from bitmap
-        return bitmap.toDrawable(resources)
-    }
-
-    /**
-     * Drops every cached bitmap belonging to a package so the next getAppIcon() call re-reads it
-     * from the system. An in-place app update keeps the same package name, so without this the
-     * LruCache keeps handing back the icon the app shipped with before the update - including
-     * when the user picks "Default" in the Change Icon dialog.
+     * Drops a package's cached artwork, and the app list along with it.
+     *
+     * The store cannot do the second half - the cached list is the activity's - but the
+     * two must happen together: the list holds the old drawables, so invalidating one
+     * without the other leaves the stale icon on screen wherever the list is read.
      */
     private fun invalidateIconCache(packageName: String) {
-        val staleKeys = iconBitmapCache.snapshot().keys.filter { key ->
-            key == "app_$packageName" || key.startsWith("custom_${packageName}_")
-        }
-        staleKeys.forEach { iconBitmapCache.remove(it) }
-
-        // The cached app list holds the old drawables too, so it has to be rebuilt
+        iconStore.invalidate(packageName)
         cachedAppList = null
-
-        Log.d("MainActivity", "Invalidated ${staleKeys.size} cached icons for $packageName")
     }
+    
+
 
     /** A package's artwork changed, so the tiles wearing it are redrawn. */
     private fun repaintDesktopIconsFor(packageName: String) {
@@ -5423,7 +5246,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             }
             ComponentCallbacks2.TRIM_MEMORY_RUNNING_MODERATE -> {
                 // App is running but system wants to reclaim memory
-                iconBitmapCache.trimToSize(iconBitmapCache.maxSize() / 2)
+                iconStore.trim(fraction = 2)
             }
             ComponentCallbacks2.TRIM_MEMORY_BACKGROUND,
             ComponentCallbacks2.TRIM_MEMORY_MODERATE,
@@ -5442,10 +5265,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      * Clear all bitmap caches aggressively
      */
     private fun clearAllBitmapCaches() {
-        val initialSize = iconBitmapCache.size()
-        iconBitmapCache.evictAll()
-        Log.d("MainActivity", "Cleared icon bitmap cache (was $initialSize items)")
-
+        iconStore.evictAll()
         // Clear cached app list
         cachedAppList = null
         Log.d("MainActivity", "Cleared cached app list")
@@ -5455,11 +5275,8 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      * Clear non-essential caches while keeping visible items
      */
     private fun clearNonEssentialCaches() {
-        // Trim icon cache to 25% of max size
-        val targetSize = iconBitmapCache.maxSize() / 4
-        iconBitmapCache.trimToSize(targetSize)
-
-        // Clear cached app list (will reload when needed)
+        iconStore.trim()
+        // The app list holds drawables too, and rebuilds itself when next asked for.
         cachedAppList = null
     }
 
@@ -6872,7 +6689,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // still holding the previous theme's mappings - showing its icons on the tiles,
         // and writing that borrowed set back out under the phone's key the moment one
         // tile icon was changed.
-        loadCustomIconMappings()
+        iconStore.load()
         wp81IconProvider.invalidateAll()
 
         refreshWP81Tiles()
@@ -8267,7 +8084,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // layer, its notification silhouette, and the built-in glyphs for system tiles.
         // Without this check the provider preferred an app's Android 13 themed icon, and a
         // custom icon simply never appeared for any app that ships one.
-        if (hasCustomIcon(tile.packageName)) {
+        if (iconStore.has(tile.packageName)) {
             getAppIcon(tile.packageName)?.let { drawable ->
                 return rocks.gorjan.gokixp.wp81.MonochromeIconProvider.Glyph.FullColor(
                     drawable,
@@ -8873,7 +8690,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                     if (!name.matches(".*\\.(svg|png|jpg|jpeg|webp)$".toRegex(RegexOption.IGNORE_CASE))) continue
                     val path = "$folder/$name"
                     val drawable = try {
-                        loadIconFromPath(path)
+                        iconStore.fromPath(path)
                     } catch (e: Exception) {
                         null
                     } ?: continue
@@ -8894,10 +8711,8 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
     /** Commits a chosen icon through the same mappings the desktop themes read. */
     private fun applyWP81CustomIcon(packageName: String, path: String) {
-        if (path == "default") customIconMappings.remove(packageName)
-        else customIconMappings[packageName] = path
-        saveCustomIconMappings()
-        pruneUnusedImportedIcons()
+        iconStore.set(packageName, path)
+        iconStore.pruneImported()
         invalidateIconCache(packageName)
         // The artwork changed, so its measured proportions have to go too, or the new icon
         // is drawn scaled for the old one.
@@ -9990,8 +9805,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         shellApplied = true
     }
 
-    /** True if the user has set a custom icon for this package (folders check this before re-theming). */
-    fun hasCustomIcon(packageName: String): Boolean = customIconMappings.containsKey(packageName)
 
 
 
