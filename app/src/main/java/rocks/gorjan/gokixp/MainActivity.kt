@@ -3300,12 +3300,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      * itself as off while working perfectly well.
      */
     private fun isOwnKeyboardEnabled(): Boolean = try {
-        val enabled = getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+        getSystemService(android.view.inputmethod.InputMethodManager::class.java)
             ?.enabledInputMethodList
-            .orEmpty()
-        val mine = enabled.any { it.packageName == packageName }
-        Log.d("MainActivity", "Keyboard enabled=$mine among ${enabled.map { it.packageName }}")
-        mine
+            ?.any { it.packageName == packageName } == true
     } catch (e: Exception) {
         Log.w("MainActivity", "Could not read the enabled keyboards", e)
         false
