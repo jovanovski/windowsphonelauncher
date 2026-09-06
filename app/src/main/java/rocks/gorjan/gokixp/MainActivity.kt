@@ -720,6 +720,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         /** Anything asked for from the welcome app's permissions page. */
         private const val WELCOME_PERMISSION_REQUEST_CODE = 1010
 
+        /** That the out-of-box Start screen has been laid out. See seedDefaultWallIfFirstRun. */
+        private const val KEY_DEFAULT_WALL_SEEDED = "wp81_default_wall_seeded"
+
         /** Asked for by the Photos tile, the first time it is tapped. */
         private const val PHOTOS_PERMISSION_REQUEST_CODE = 1005
 
@@ -1003,6 +1006,11 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
         // Load saved desktop icons (now with custom mappings available)
         loadDesktopIcons()
+
+        // And if there were none, because this is a fresh install, lay out the wall the
+        // launcher ships with. After the load, so it can tell a first run from a wall the
+        // user has emptied.
+        seedDefaultWallIfFirstRun()
 
         // Load custom name mappings
         loadCustomNameMappings()
@@ -3116,6 +3124,75 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      * One list of what changed, fetched rather than bundled, so it is never a build behind
      * what is actually out.
      */
+    /**
+     * The wall a fresh install opens on.
+     *
+     * Windows Phone was never a blank screen: it shipped arranged, and an empty wall is a
+     * launcher that looks broken before it has been used. So the first run lays out the
+     * tiles below and pins the three programs among them.
+     *
+     * Only ever on a genuinely fresh install. An arrangement already in preferences is the
+     * user's - or the desktop launcher's, carried over by [DesktopImport] - and replacing
+     * either with a default would be the one thing this must not do. The marker is written
+     * whatever happens, so a wall the user has since emptied is not filled in again behind
+     * them.
+     */
+    private fun seedDefaultWallIfFirstRun() {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        if (prefs.getBoolean(KEY_DEFAULT_WALL_SEEDED, false)) return
+        prefs.edit { putBoolean(KEY_DEFAULT_WALL_SEEDED, true) }
+
+        val hasIcons = !prefs.getString(KEY_DESKTOP_ICONS, null).isNullOrBlank()
+        val hasWall = !prefs.getString(
+            rocks.gorjan.gokixp.wp81.WP81TileHost.KEY_BUILTIN_TILES, null).isNullOrBlank()
+        if (hasIcons || hasWall) return
+
+        val host = rocks.gorjan.gokixp.wp81.WP81TileHost
+        // Ordered, because the wall packs in index order and the sizes below only tile a
+        // four-column screen in this sequence.
+        wp81TileHost.saveBuiltInPlacements(
+            mapOf(
+                host.WIDGET_CLOCK to (rocks.gorjan.gokixp.wp81.TileSize.SMALL_WIDE to 0),
+                host.WIDGET_CALENDAR to (rocks.gorjan.gokixp.wp81.TileSize.SMALL_WIDE to 1),
+                host.WIDGET_WEATHER to (rocks.gorjan.gokixp.wp81.TileSize.MEDIUM to 2),
+                host.WIDGET_PHOTOS to (rocks.gorjan.gokixp.wp81.TileSize.MEDIUM to 3),
+                host.WIDGET_NEWS to (rocks.gorjan.gokixp.wp81.TileSize.MEDIUM to 4),
+                host.WIDGET_PEOPLE to (rocks.gorjan.gokixp.wp81.TileSize.SMALL to 8)
+            )
+        )
+
+        // The two built-in tiles the default wall leaves off. Hidden rather than left
+        // unplaced: an unplaced tile takes a negative index, which would put it in front
+        // of everything above. Both are still in the app list, and both can be put back
+        // from the shell's own settings.
+        themeManager.setWP81HiddenTiles(setOf(host.WIDGET_AQI, "system.welcome"))
+
+        // The three programs pinned among the widgets, at the indices that put them where
+        // the sizes above leave room.
+        val system = getSystemAppsList().associateBy { it.packageName }
+        listOf(
+            Triple("system.notepad", rocks.gorjan.gokixp.wp81.TileSize.SMALL, 5),
+            Triple("system.alarms", rocks.gorjan.gokixp.wp81.TileSize.SMALL, 6),
+            Triple("system.zune", rocks.gorjan.gokixp.wp81.TileSize.SMALL_WIDE_3, 7)
+        ).forEach { (packageName, size, index) ->
+            val app = system[packageName] ?: return@forEach
+            desktopIcons.add(
+                DesktopIcon(
+                    name = app.name,
+                    packageName = packageName,
+                    icon = app.icon,
+                    x = 0f,
+                    y = 0f,
+                    type = IconType.APP,
+                    tileSize = size.name,
+                    tileIndex = index
+                )
+            )
+        }
+        saveDesktopIcons()
+        Log.d("MainActivity", "Laid out the default Start screen")
+    }
+
     /**
      * Everything the launcher needs permission to do, for the welcome app's own page.
      *

@@ -524,8 +524,14 @@ class WP81Settings(private val context: Context) {
         const val KEY_WP81_COLUMNS = "wp81_columns"
         const val KEY_WP81_HIDDEN_TILES = "wp81_hidden_tiles"
 
-        /** WP8.1 shipped Cyan as the out-of-box accent. */
-        val WP81_DEFAULT_ACCENT: Int = 0xFF1BA1E2.toInt()
+        /**
+         * The accent a fresh install starts in: Red, from the palette below.
+         *
+         * WP8.1 itself shipped Cyan. This launcher does not, because its own mark is the
+         * one on the app icon and in the drawer, and a wall that opens in the same blue as
+         * every other phone's is a wall nobody remembers.
+         */
+        val WP81_DEFAULT_ACCENT: Int = 0xFFE51400.toInt()
 
         /**
          * The twenty accent colours Windows Phone 8.1 offered, in the order the

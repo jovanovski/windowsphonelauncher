@@ -47,6 +47,10 @@
     <color name="vista_title_bar_active">#FF1D5D8C</color>
     <color name="vista_title_bar_inactive">#FF808080</color>
     <color name="vista_border_color">#FF0078D7</color>
-    <!-- The launcher icon's ground: WP81_DEFAULT_ACCENT, the blue this shell ships in. -->
-    <color name="ic_launcher_wp8_background">#FF1BA1E2</color>
+    <!--
+      The launcher icon's ground. Kept in step with WP81Settings.WP81_DEFAULT_ACCENT, the
+      accent a fresh install opens in - the icon cannot follow the accent at runtime, so
+      the least it can do is match the one the shell introduces itself in.
+    -->
+    <color name="ic_launcher_wp8_background">#FFE51400</color>
 </resources>
