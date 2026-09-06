@@ -88,29 +88,35 @@ class ForecastPanelView(
 
         val pad = dp(EDGE_DP)
         val columnWidth = (width - 2 * pad) / columns.size.toFloat()
-
-        // A strip has the width for three readings and not the height for three bands, so
-        // the column turns on its side: the sky beside the figure instead of over it, and
-        // no label - "now" above a sun is what a two-deep tile has the room to say.
-        if (height - 2 * pad < dp(STACKED_MIN_DP)) {
-            drawCompact(canvas, pad, columnWidth)
-            return
-        }
         // One size for the whole panel rather than one per column: three readings side by
         // side are one row of type, and a "9°" set larger than the "35°C" beside it would
         // read as the more important of the two rather than the shorter.
         val room = columnWidth - dp(COLUMN_GAP_DP)
-        labelPaint.textSize = fit(labelPaint, columns.map { it.label }, room, LABEL_SP)
-        readingPaint.textSize = fit(readingPaint, columns.map { it.reading }, room, READING_SP)
+
+        // The height is shared out before either line is set, so the same three bands fit
+        // a strip as fit a two-deep tile. Sized to the band and then capped at what the
+        // wall uses elsewhere, so a tall tile is unchanged and a short one shrinks to fit
+        // rather than losing the mark between its two lines - which is what happened when
+        // the mark was given only what the type had left over.
+        val usable = height - 2 * pad
+        val gap = minOf(dp(BAND_GAP_DP), usable * GAP_MAX_SHARE)
+        val bands = usable - 2 * gap
+        labelPaint.textSize = minOf(
+            fit(labelPaint, columns.map { it.label }, room, LABEL_SP),
+            sizeForHeight(labelPaint, bands * LABEL_HEIGHT_SHARE, LABEL_SP)
+        )
+        readingPaint.textSize = minOf(
+            fit(readingPaint, columns.map { it.reading }, room, READING_SP),
+            sizeForHeight(readingPaint, bands * READING_HEIGHT_SHARE, READING_SP)
+        )
 
         val labelHeight = labelPaint.descent() - labelPaint.ascent()
         val readingHeight = readingPaint.descent() - readingPaint.ascent()
-        val gap = dp(BAND_GAP_DP)
         // What is left between the two lines is the mark's, up to the point where it would
         // be wider than its column.
         val side = minOf(
             columnWidth * GLYPH_WIDTH_SHARE,
-            height - 2 * pad - labelHeight - readingHeight - 2 * gap
+            usable - labelHeight - readingHeight - 2 * gap
         ).coerceAtLeast(0f)
 
         val block = labelHeight + gap + side + gap + readingHeight
@@ -139,49 +145,6 @@ class ForecastPanelView(
     }
 
     /**
-     * The same three readings, laid the short way round for a one-row tile.
-     *
-     * Sky then figure, side by side, centred in the column. The label goes: at this height
-     * it would be the size of the gap between the two lines, and a mark of the sun says
-     * "the weather" without being told.
-     */
-    private fun drawCompact(canvas: Canvas, pad: Float, columnWidth: Float) {
-        val side = minOf(
-            (height - 2 * pad) * COMPACT_GLYPH_HEIGHT_SHARE,
-            columnWidth * COMPACT_GLYPH_WIDTH_SHARE
-        ).coerceAtLeast(0f)
-
-        // What is left of the column once the mark and the gap have taken theirs.
-        val room = columnWidth - side - dp(COMPACT_GAP_DP) - dp(COLUMN_GAP_DP) / 2f
-        readingPaint.textSize = fit(readingPaint, columns.map { it.reading }, room, COMPACT_READING_SP)
-
-        val middle = height / 2f
-        val baseline = middle - (readingPaint.descent() + readingPaint.ascent()) / 2f
-
-        for ((index, column) in columns.withIndex()) {
-            val centre = pad + columnWidth * (index + 0.5f)
-            val block = side + dp(COMPACT_GAP_DP) + readingPaint.measureText(column.reading)
-            var x = centre - block / 2f
-
-            icon(column.glyph)?.let { mark ->
-                mark.setBounds(
-                    x.toInt(), (middle - side / 2f).toInt(),
-                    (x + side).toInt(), (middle + side / 2f).toInt()
-                )
-                mark.draw(canvas)
-            }
-            x += side + dp(COMPACT_GAP_DP)
-
-            // Left-aligned here rather than centred: the figure sits against the mark it
-            // belongs to, and the pair is what was centred in the column.
-            val was = readingPaint.textAlign
-            readingPaint.textAlign = Paint.Align.LEFT
-            canvas.drawText(column.reading, x, baseline, readingPaint)
-            readingPaint.textAlign = was
-        }
-    }
-
-    /**
      * The largest size in [max] at which every one of [texts] fits [room].
      *
      * Measured against the longest of them rather than each in turn: the columns share a
@@ -194,6 +157,22 @@ class ForecastPanelView(
         val widest = texts.maxOfOrNull { paint.measureText(it) } ?: 0f
         if (widest <= room) return ceiling
         return (ceiling * room / widest).coerceAtLeast(sp(MIN_SP))
+    }
+
+    /**
+     * The largest size in [max] at which a line of this paint is no taller than [room].
+     *
+     * A paint's height scales with its size, so the ratio of the two is the answer. The
+     * floor is the same one the width fit uses: however little room there is, what is in
+     * it is still meant to be read.
+     */
+    private fun sizeForHeight(paint: Paint, room: Float, max: Float): Float {
+        val ceiling = sp(max)
+        if (room <= 0f) return sp(MIN_SP)
+        paint.textSize = ceiling
+        val height = paint.descent() - paint.ascent()
+        if (height <= room) return ceiling
+        return (ceiling * room / height).coerceAtLeast(sp(MIN_SP))
     }
 
     /** The mark for a condition, tinted and held. */
@@ -241,18 +220,12 @@ class ForecastPanelView(
         /** How much of its column the condition mark may take. */
         private const val GLYPH_WIDTH_SHARE = 0.62f
 
-        /**
-         * The height below which the three bands stop fitting and the column turns on its
-         * side. A one-row tile is about half a two-row one, and the stacked form needs a
-         * label, a mark and a figure with a gap either side of the mark.
-         */
-        private const val STACKED_MIN_DP = 74
+        // How the height is shared out between the three bands before the type is set.
+        // The mark takes what the two lines leave, which is the rest.
+        private const val LABEL_HEIGHT_SHARE = 0.24f
+        private const val READING_HEIGHT_SHARE = 0.34f
 
-        // The compact form: the mark takes most of the height and rather less of the
-        // width, since the figure beside it needs the rest.
-        private const val COMPACT_GLYPH_HEIGHT_SHARE = 0.86f
-        private const val COMPACT_GLYPH_WIDTH_SHARE = 0.46f
-        private const val COMPACT_GAP_DP = 4
-        private const val COMPACT_READING_SP = 17f
+        /** The gap between bands gives way on a short tile rather than squeezing the mark. */
+        private const val GAP_MAX_SHARE = 0.07f
     }
 }
