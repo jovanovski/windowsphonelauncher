@@ -1,0 +1,98 @@
+MIT License
+
+Copyright (c) 2026 Gorjan Jovanovski
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
+WHAT THE LICENCE ABOVE COVERS
+================================================================================
+
+The source code written for this project: everything under `app/src/`, the
+build scripts in `tools/`, and the Gradle configuration.
+
+It does not cover the artwork, fonts or data files described below. Those are
+not mine to license, and including them here is not a claim that they are. They
+are in the repository because this is a nostalgia project that recreates a
+particular phone, and it cannot do that without them.
+
+If you fork this, the code is yours to do as you like with. The rest is between
+you and whoever owns it.
+
+
+================================================================================
+THIRD-PARTY MATERIAL IN THIS REPOSITORY
+================================================================================
+
+Fonts - app/src/main/res/font/
+    segoeui_*.ttf and tahoma.ttf are Microsoft typefaces. Microsoft owns them
+    and licenses them with Windows; they are neither mine to relicense nor
+    covered by the MIT grant above.
+
+Wallpapers - app/src/main/assets/wallpapers/
+    The Lumia wallpapers that shipped with Windows Phone. Microsoft's.
+
+Icons - app/src/main/assets/custom_icons_8/
+    1,261 Metro-style SVG icons. The `appbar.*` file naming is that of the
+    Modern UI Icons set by Austin Andrews (modernuiicons.com); this has not
+    been verified against that project's terms, and anybody redistributing
+    them should check rather than take this file's word for it.
+
+Emoji list - app/src/main/assets/keyboard/emoji.txt
+    Built by tools/emojibuild/build_emoji.py from Unicode's own
+    emoji-test.txt. Subject to the Unicode Terms of Use,
+    https://www.unicode.org/terms_of_use.html
+
+
+================================================================================
+THE WORD LISTS
+================================================================================
+
+Files:  app/src/main/assets/keyboard/en.trie
+        app/src/main/assets/keyboard/en.bigrams
+
+These are built by tools/dictbuild/ from word frequencies published by
+hermitdave/FrequencyWords, which are themselves counted from the OpenSubtitles
+corpus distributed through OPUS. Those frequency lists are licensed
+CC BY-SA 3.0, so these files are offered on the same terms:
+
+    Word frequencies from https://github.com/hermitdave/FrequencyWords
+    (OpenSubtitles, via OPUS), licensed CC BY-SA 3.0.
+    https://creativecommons.org/licenses/by-sa/3.0/
+
+English, the only list that currently ships, is additionally filtered against
+dwyl/english-words, which is public domain (Unlicense).
+
+tools/dictbuild/ can build the other twenty-one languages, and filters those
+against their Hunspell dictionaries from wooorm/dictionaries. Those dictionaries
+are read on the machine running the build and are never committed here or
+shipped in the app; their licences vary and six are GPL - Czech, German,
+Italian, Macedonian, Norwegian and Ukrainian. tools/dictbuild/build_dict.py
+names each one and its licence. Should those lists ever ship, they carry the
+same CC BY-SA 3.0 attribution as English does, for the same reason.
+
+
+================================================================================
+DOWNLOADED AT RUNTIME, NOT DISTRIBUTED HERE
+================================================================================
+
+Speech models for on-device dictation are fetched from alphacephei.com when a
+user first asks for offline dictation. They are Vosk's, under Apache 2.0, and
+are not part of this repository or of the APK.
