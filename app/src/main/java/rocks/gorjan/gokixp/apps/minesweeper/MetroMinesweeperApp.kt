@@ -22,6 +22,7 @@ import rocks.gorjan.gokixp.R
 import rocks.gorjan.gokixp.wp81.Haptics
 import rocks.gorjan.gokixp.wp81.MetroAppBar
 import rocks.gorjan.gokixp.wp81.WP81Palette
+import rocks.gorjan.gokixp.wp81.WP81Program
 import kotlin.random.Random
 
 /**
@@ -44,8 +45,8 @@ import kotlin.random.Random
  */
 class MetroMinesweeperApp(
     private val context: Context,
-    private val palette: WP81Palette
-) {
+    private var palette: WP81Palette
+) : WP81Program {
 
     /** How large the field is, and how much of it is mined. */
     private enum class Level(val label: String, val size: Int, val mines: Int) {
@@ -92,6 +93,14 @@ class MetroMinesweeperApp(
             showTime()
             main.postDelayed(this, 1000L)
         }
+    }
+
+    /**
+     * Rebuilds the program in a new theme. See [WP81Program].
+     */
+    override fun applyPalette(palette: WP81Palette): View {
+        this.palette = palette
+        return createView()
     }
 
     fun createView(): View {

@@ -135,6 +135,23 @@ class WP81Settings(private val context: Context) {
     }
 
     /**
+     * Whether the three keys along the bottom wear the accent instead of the page.
+     *
+     * Off by default, which is the phone this shell is copying: WP8.1's keys were
+     * capacitive and the strip under them was simply the bottom of the display. The
+     * accent bar is the one Windows 10 Mobile offered once the keys were drawn rather
+     * than printed, and it is worth having for the same reason it was then - the strip is
+     * the only piece of chrome on screen at all times, so a user who wants their colour
+     * in sight has nowhere else to put it.
+     */
+    fun getWP81AccentNavBar(): Boolean =
+        prefs.getBoolean(KEY_WP81_ACCENT_NAV_BAR, false)
+
+    fun setWP81AccentNavBar(enabled: Boolean) {
+        prefs.edit { putBoolean(KEY_WP81_ACCENT_NAV_BAR, enabled) }
+    }
+
+    /**
      * Whether a tile says *how much* is waiting rather than merely that something is.
      *
      * On by default, because it is what Windows Phone did and it is strictly more than the
@@ -362,6 +379,24 @@ class WP81Settings(private val context: Context) {
         prefs.edit { putBoolean(KEY_WP81_DARK, dark) }
     }
 
+    /**
+     * Whether the phone's own launcher wall is kept in step with the Light/Dark setting.
+     *
+     * It is, until the user puts a picture there themselves. That wall is not usually
+     * looked at - this shell is drawn over it - but it is what shows for the moment
+     * between a program being asked for and being on screen, and a black flash in front
+     * of a white Start screen is the one place the phone's wall is ever seen.
+     *
+     * Turned off for good by the first picture applied to it, because a picture somebody
+     * chose is an answer to the same question and outranks the default.
+     */
+    fun keepsDeviceWallInStep(): Boolean =
+        prefs.getBoolean(KEY_WP81_DEVICE_WALL_IN_STEP, true)
+
+    fun setKeepsDeviceWallInStep(inStep: Boolean) {
+        prefs.edit { putBoolean(KEY_WP81_DEVICE_WALL_IN_STEP, inStep) }
+    }
+
     // ========== Resource Mapping Methods ==========
     // These methods centralize all theme-specific resource lookups
 
@@ -388,6 +423,7 @@ class WP81Settings(private val context: Context) {
     companion object {
         private const val KEY_SELECTED_THEME = "selected_theme"
         const val KEY_WP81_ACCENT = "wp81_accent"
+        private const val KEY_WP81_DEVICE_WALL_IN_STEP = "wp81_device_wall_in_step"
         const val KEY_WP81_KB_AUTOCORRECT = "wp81_kb_autocorrect"
         const val KEY_WP81_KB_AUTOCAPS = "wp81_kb_autocaps"
         const val KEY_WP81_KB_OFFLINE_VOICE = "wp81_kb_offline_voice"
@@ -423,6 +459,7 @@ class WP81Settings(private val context: Context) {
         const val KEY_WP81_NEWS_FEEDS = "wp81_news_feeds"
         const val KEY_WP81_TILE_COLORS = "wp81_tile_colors"
         const val KEY_WP81_HIDE_TILE_COLORS = "wp81_hide_tile_colors"
+        const val KEY_WP81_ACCENT_NAV_BAR = "wp81_accent_nav_bar"
         const val KEY_WP81_TILE_COUNTS = "wp81_tile_counts"
         const val KEY_WP81_COLUMNS = "wp81_columns"
         const val KEY_WP81_HIDDEN_TILES = "wp81_hidden_tiles"

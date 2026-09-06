@@ -23,6 +23,7 @@ import rocks.gorjan.gokixp.wp81.NewsImages
 import rocks.gorjan.gokixp.wp81.NewsStory
 import rocks.gorjan.gokixp.wp81.TiltEffect
 import rocks.gorjan.gokixp.wp81.WP81Palette
+import rocks.gorjan.gokixp.wp81.WP81Program
 import rocks.gorjan.gokixp.wp81.MetroPanorama
 
 /**
@@ -45,13 +46,13 @@ import rocks.gorjan.gokixp.wp81.MetroPanorama
  */
 class NewsApp(
     private val context: Context,
-    private val palette: WP81Palette,
+    private var palette: WP81Palette,
     private val feed: NewsFeed,
     private val onOpenStory: (NewsStory) -> Unit,
     private val onRefresh: () -> Unit,
     private val enabledFeeds: () -> Set<String>,
     private val onFeedsChanged: (Set<String>) -> Unit
-) {
+) : WP81Program {
 
     private lateinit var root: FrameLayout
     private lateinit var panorama: MetroPanorama
@@ -99,6 +100,14 @@ class NewsApp(
      * before they act, so only the last attempt ever gets as far as scrolling.
      */
     private var revealTurn = 0
+
+    /**
+     * Rebuilds the program in a new theme. See [WP81Program].
+     */
+    override fun applyPalette(palette: WP81Palette): View {
+        this.palette = palette
+        return createView()
+    }
 
     fun createView(): View {
         root = FrameLayout(context).apply { setBackgroundColor(palette.background) }

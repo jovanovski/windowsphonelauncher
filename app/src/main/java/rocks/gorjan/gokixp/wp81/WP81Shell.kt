@@ -3,7 +3,6 @@ package rocks.gorjan.gokixp.wp81
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.Context
-import android.graphics.Color
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -46,7 +45,7 @@ class WP81Shell(
      * The app bar: the commands for whatever is being held or filled, on a strip that
      * slides up over the wall. The keys below it never change - see [WP81SecondaryBar].
      */
-    val secondaryBar = WP81SecondaryBar(context)
+    val secondaryBar = WP81SecondaryBar(context, palette)
     val startScreen = StartScreenView(context, palette)
     val appList = AppListView(context, palette, iconProvider)
 
@@ -108,8 +107,12 @@ class WP81Shell(
 
         // Backdrop for windowed programs. Non-maximizable windows - Winamp, the Phone
         // Dialer - keep their fixed size and Vista chrome, so without this they would
-        // float over the Start screen; WP8.1 has no such notion, so they get black.
-        windowBackdrop.setBackgroundColor(Color.BLACK)
+        // float over the Start screen; WP8.1 has no such notion, so they get a page.
+        //
+        // The page's own colour, not black. It fades in over the Start screen while the
+        // program is still finding its feet, and under the Light theme a black one did
+        // exactly what a black backdrop does over a white page: flashed.
+        windowBackdrop.setBackgroundColor(palette.background)
         windowBackdrop.visibility = GONE
         windowBackdrop.isClickable = true
         addView(windowBackdrop, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
@@ -543,6 +546,8 @@ class WP81Shell(
         palette = p
         setBackgroundColor(p.background)
         navBar.applyPalette(p)
+        secondaryBar.applyPalette(p)
+        windowBackdrop.setBackgroundColor(p.background)
         colorPicker.applyPalette(p)
         startScreen.applyPalette(p)
         appList.applyPalette(p)

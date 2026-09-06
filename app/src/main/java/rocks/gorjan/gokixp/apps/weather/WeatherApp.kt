@@ -30,6 +30,7 @@ import rocks.gorjan.gokixp.wp81.MetroPanorama
 import rocks.gorjan.gokixp.wp81.TiltEffect
 import rocks.gorjan.gokixp.wp81.WP81ContextMenu
 import rocks.gorjan.gokixp.wp81.WP81Palette
+import rocks.gorjan.gokixp.wp81.WP81Program
 import rocks.gorjan.gokixp.wp81.WeatherCodes
 import rocks.gorjan.gokixp.wp81.WeatherDay
 import rocks.gorjan.gokixp.wp81.WeatherHour
@@ -61,14 +62,14 @@ import java.util.TimeZone
  */
 class WeatherApp(
     private val context: Context,
-    private val palette: WP81Palette,
+    private var palette: WP81Palette,
     /** The shell's own toast, for the few things that happen off-screen. */
     private val onNotify: (String, String) -> Unit,
     /** Asks for location permission, which only the launcher's Activity can do. */
     private val onAskForLocation: () -> Unit,
     /** Told after a fetch lands, so the Start screen's weather tile keeps up with it. */
     private val onWeatherChanged: () -> Unit
-) {
+) : WP81Program {
 
     private lateinit var root: FrameLayout
     private lateinit var panorama: MetroPanorama
@@ -101,6 +102,14 @@ class WeatherApp(
     private var pendingSearch: Runnable? = null
 
     // ---------------------------------------------------------------- construction
+
+    /**
+     * Rebuilds the program in a new theme. See [WP81Program].
+     */
+    override fun applyPalette(palette: WP81Palette): View {
+        this.palette = palette
+        return createView()
+    }
 
     fun createView(): View {
         root = FrameLayout(context).apply { setBackgroundColor(palette.background) }

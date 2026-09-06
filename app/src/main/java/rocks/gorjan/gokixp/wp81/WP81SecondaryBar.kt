@@ -1,14 +1,8 @@
 package rocks.gorjan.gokixp.wp81
 
+import android.annotation.SuppressLint
 import android.content.Context
-import android.content.res.ColorStateList
-import android.graphics.Color
-import android.view.Gravity
-import android.view.View
-import android.view.ViewOutlineProvider
 import android.view.animation.DecelerateInterpolator
-import android.widget.ImageView
-import android.widget.LinearLayout
 import rocks.gorjan.gokixp.R
 
 /**
@@ -32,11 +26,15 @@ import rocks.gorjan.gokixp.R
  * cover is one dismissal away, and re-laying out the whole Start screen every time a tile
  * was held would be a far louder thing than the bar itself.
  *
- * Its near-black and white rings are IE's app bar, not the palette's: this is a surface
- * that sits *over* the shell rather than part of it, and the commands on it have to stay
- * legible over any accent or a white theme. See [applyPalette]'s absence.
+ * It *is* a [MetroAppBar] - same ground, same rings, same height, same theme - with a
+ * slide and a set of modes on top. What a held tile can be told to do is a program's app
+ * bar in every respect except that the program is the shell.
  */
-class WP81SecondaryBar(context: Context) : LinearLayout(context) {
+@SuppressLint("ViewConstructor")
+class WP81SecondaryBar(
+    context: Context,
+    palette: WP81Palette
+) : MetroAppBar(context, palette) {
 
     /** Editing a tile: choose the colour it is painted in. */
     var onTileColor: (() -> Unit)? = null
@@ -65,9 +63,11 @@ class WP81SecondaryBar(context: Context) : LinearLayout(context) {
         FOLDER
     }
 
-    private val colorButton = circleButton(R.drawable.wp81_nav_color) { onTileColor?.invoke() }
-    private val menuButton = circleButton(R.drawable.wp81_handle_menu) { onTileMenu?.invoke() }
-    private val addButton = circleButton(R.drawable.wp81_nav_add) { onAddApp?.invoke() }
+    // Made rather than added: which of the three is on the strip is the mode's business,
+    // and setMode puts them there. See MetroAppBar.makeCommand.
+    private val colorButton = makeCommand(R.drawable.wp81_nav_color) { onTileColor?.invoke() }
+    private val menuButton = makeCommand(R.drawable.wp81_handle_menu) { onTileMenu?.invoke() }
+    private val addButton = makeCommand(R.drawable.wp81_nav_add) { onAddApp?.invoke() }
 
     var mode: Mode = Mode.NONE
         private set
@@ -76,16 +76,8 @@ class WP81SecondaryBar(context: Context) : LinearLayout(context) {
     private var out = false
 
     init {
-        orientation = HORIZONTAL
-        // Centred rather than spread: three hardware keys are spread because they are the
-        // whole width of the phone and always the same three. Two commands spread to the
-        // corners read as two unrelated buttons; together in the middle they read as the
-        // pair of things this tile can be told to do.
-        gravity = Gravity.CENTER
-        setBackgroundColor(BAR_COLOUR)
-        // A tap on the bar is a tap on the bar. Without this it would fall through and
-        // dismiss the very tile whose commands are being offered.
-        isClickable = true
+        // A tap on the bar is a tap on the bar - which the strip already sees to - but it
+        // starts life parked out of sight rather than standing at the bottom of a page.
         visibility = GONE
         translationY = parkedY()
     }
@@ -118,22 +110,11 @@ class WP81SecondaryBar(context: Context) : LinearLayout(context) {
         // Nothing to do only if the bar is already out with these very commands on it:
         // the same mode with the bar parked - a tile reselected after being let go - still
         // has to bring it back.
-        if (out && mode == this.mode && shown == currentButtons()) return
+        if (out && mode == this.mode && shown == commands()) return
         this.mode = mode
-
-        // Re-added rather than shown and hidden in place, so a command's position on the
-        // bar is its position in the list above rather than the order the buttons happened
-        // to be constructed in.
-        removeAllViews()
-        for ((i, button) in shown.withIndex()) {
-            addView(button, LayoutParams(dp(BUTTON_DP), dp(BUTTON_DP)).apply {
-                if (i > 0) marginStart = dp(GAP_DP)
-            })
-        }
+        setCommands(shown)
         slideOut()
     }
-
-    private fun currentButtons(): List<View> = (0 until childCount).map { getChildAt(it) }
 
     // ---------------------------------------------------------------- the slide
 
@@ -171,44 +152,12 @@ class WP81SecondaryBar(context: Context) : LinearLayout(context) {
      * Measured from the constant rather than from [getHeight], which is zero until the
      * first layout - and the first hold on a tile can come before one.
      */
-    private fun parkedY(): Float = dp(HEIGHT_DP).toFloat()
-
-    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
-
-    /**
-     * A white ring, open in the middle, with a white glyph inside it.
-     *
-     * The same button IE puts on its own app bar - see wp81_appbar_circle. Unfilled: there
-     * is nothing behind it but the bar, so the ring alone is the button.
-     */
-    private fun circleButton(iconRes: Int, onTap: () -> Unit): ImageView =
-        ImageView(context).apply {
-            setBackgroundResource(R.drawable.wp81_appbar_circle)
-            setImageResource(iconRes)
-            imageTintList = ColorStateList.valueOf(Color.WHITE)
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            setPadding(dp(GLYPH_INSET_DP), dp(GLYPH_INSET_DP), dp(GLYPH_INSET_DP), dp(GLYPH_INSET_DP))
-            outlineProvider = ViewOutlineProvider.BACKGROUND
-            clipToOutline = true
-            isClickable = true
-            setOnClickListener {
-                Haptics.tap(it)
-                onTap()
-            }
-            TiltEffect.apply(this)
-        }
+    private fun parkedY(): Float =
+        HEIGHT_DP * resources.displayMetrics.density
 
     companion object {
-        const val HEIGHT_DP = 62
-
-        /** IE's app bar black, which is not the palette's and never was. */
-        private const val BAR_COLOUR = 0xFF1F1F1F.toInt()
-
-        private const val BUTTON_DP = 44
-        private const val GAP_DP = 28
-
-        /** How far the glyph sits inside its ring. */
-        private const val GLYPH_INSET_DP = 5
+        /** Kept for the callers that reserve room for the strip. Every strip is this tall. */
+        const val HEIGHT_DP = MetroAppBar.HEIGHT_DP
 
         private const val SLIDE_MS = 200L
     }

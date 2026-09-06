@@ -101,6 +101,14 @@ class Suggester(
     /** The characters spelling the current path, so a candidate can be read off on arrival. */
     private val path = CharArray(MAX_DEPTH)
 
+    /**
+     * The typed text folded to lower case, and where each of its characters sits in the
+     * proximity table. Worked out once per keystroke, because the walk's inner loop reads
+     * them once per typed character per trie edge - hundreds of thousands of times.
+     */
+    private val typedLower = CharArray(MAX_TYPED)
+    private val typedSlots = IntArray(MAX_TYPED)
+
     private val found = ArrayList<Candidate>(64)
 
     /**
@@ -116,6 +124,26 @@ class Suggester(
     /** Nodes touched by the current completion walk, against [MAX_COMPLETION_NODES]. */
     private var visited = 0
 
+    /**
+     * Whether the answer being worked out is still wanted.
+     *
+     * Held for the duration of one call, like [searching], and for the same reason: it is
+     * consulted from inside a walk that visits tens of thousands of nodes and must not be
+     * carried on every frame of it.
+     */
+    private var abandoned: () -> Boolean = NEVER
+
+    /**
+     * Set when the current walk has been called off, and sticky until the next one starts.
+     *
+     * A flag rather than a `return`, because a walk is recursive and a return unwinds one
+     * level of it: the node above carries straight on to its next edge, and the one above
+     * that to its next, so a search that stopped went on visiting nodes at very nearly full
+     * speed. Every level has to be told, and the cheapest way to tell them is a field they
+     * all read.
+     */
+    private var stopped = false
+
     /** The lowest score currently kept, so a hopeless candidate costs no allocation. */
     private var worstKept = Int.MIN_VALUE
 
@@ -128,14 +156,32 @@ class Suggester(
      * @param previousWord the word before this one. Words known to follow it are lifted, so
      *   that `thank y` finds `you` ahead of `your` and `year`. Both sources of pairs have an
      *   opinion - the shipped table and what has been learned - and [followers] merges them.
+     * @param abandoned asked periodically during the search, and answering true stops it. The
+     *   caller knows something this cannot: that the user has typed another letter, so this
+     *   answer is about a word that no longer exists and every further node is wasted. Left
+     *   running, a burst of fast keys costs a full search *each*, all but the last of them
+     *   thrown away - which is the whole of a core spent falling further behind the thumb.
      */
-    fun candidates(typed: CharSequence, previousWord: String? = null): List<Candidate> {
+    fun candidates(
+        typed: CharSequence,
+        previousWord: String? = null,
+        abandoned: () -> Boolean = NEVER
+    ): List<Candidate> {
         found.clear()
         worstKept = Int.MIN_VALUE
         if (typed.isEmpty() || typed.length > MAX_TYPED) return emptyList()
 
         searching = typed.toString()
+        this.abandoned = abandoned
         val budget = budgetFor(typed.length)
+
+        // Once per keystroke, for a loop that would otherwise fold the case of every typed
+        // character and look up its key against every edge of every node it walks.
+        for (i in typed.indices) {
+            val lower = typed[i].lowercaseChar()
+            typedLower[i] = lower
+            typedSlots[i] = proximity.slotOf(lower)
+        }
 
         // Two searches, because completing a word and correcting one are different problems
         // and one search cannot be good at both.
@@ -162,6 +208,7 @@ class Suggester(
 
             if (budget > 0) {
                 visited = 0
+                stopped = false
                 val first = rows[0]
                 // Row zero: the cost of having typed j characters against the empty prefix,
                 // which is j deletions. The boundary condition the recurrence hangs off.
@@ -175,6 +222,14 @@ class Suggester(
         // is small enough that scanning it costs nothing.
         user?.let { collectLearned(it, typed) }
         previousWord?.let { collectFollowing(typed, it) }
+
+        // Typed on while this was being worked out, so it is about a word that is no longer
+        // there. Dropped whole rather than returned half-done: the caller would discard it
+        // anyway, and a partial list is not a shorter answer but a wrong one.
+        if (abandoned()) {
+            found.clear()
+            return emptyList()
+        }
 
         // If the keyboard can finish the word, it should not also offer to shorten it.
         //
@@ -299,6 +354,7 @@ class Suggester(
             }
         }
         visited = 0
+        stopped = false
         gather(dict, node, typed.length, typed.length)
     }
 
@@ -309,7 +365,12 @@ class Suggester(
 
         val children = dict.childCount(node)
         for (edge in 0 until children) {
+            if (stopped) return
             if (visited++ >= MAX_COMPLETION_NODES) return
+            if ((visited and ABANDON_EVERY) == 0 && abandoned()) {
+                stopped = true
+                return
+            }
             path[depth] = dict.charAt(node, edge)
             if (dict.isWord(node, edge)) {
                 // Everything found under a matched prefix is by definition a completion.
@@ -346,9 +407,20 @@ class Suggester(
 
         val children = dict.childCount(node)
         for (edge in 0 until children) {
+            if (stopped) return
             if (visited++ >= MAX_CORRECTION_NODES) return
+            if ((visited and ABANDON_EVERY) == 0 && abandoned()) {
+                stopped = true
+                return
+            }
             val ch = dict.charAt(node, edge)
             path[depth] = ch
+
+            // This edge's character, folded and placed against the keyboard once rather than
+            // once per column below. The fold is what makes shift not a typo; the slot is
+            // where [Proximity] keeps this key's row of distances.
+            val chLower = ch.lowercaseChar()
+            val chSlot = proximity.slotOf(chLower)
 
             // Column zero: this candidate is `depth + 1` characters long and nothing has been
             // typed to match them against yet, so each one is an insertion.
@@ -356,7 +428,13 @@ class Suggester(
             var best = current[0]
 
             for (j in 1..m) {
-                val substitution = previous[j - 1] + proximity.substitute(typed[j - 1], ch)
+                // The same character costs nothing wherever it is on the keyboard, which
+                // covers the characters the layout has no key for at all - an apostrophe
+                // typed against an apostrophe is a match, not a substitution.
+                val swap =
+                    if (typedLower[j - 1] == chLower) 0
+                    else proximity.cost(typedSlots[j - 1], chSlot)
+                val substitution = previous[j - 1] + swap
                 val insertion = previous[j] + INSERT
                 val deletion = current[j - 1] + DELETE
                 var cost = if (substitution < insertion) substitution else insertion
@@ -739,5 +817,18 @@ class Suggester(
         /** The builder caps words at 32 characters. */
         const val MAX_DEPTH = 32
         const val MAX_TYPED = 32
+
+        /**
+         * How often the walk looks up to see whether anybody still wants the answer.
+         *
+         * A mask rather than a count, so the test is an `and` against the node counter that
+         * is being incremented anyway. Every 256 nodes is a few microseconds of work between
+         * checks - far below anything a thumb can notice - and it keeps the question itself,
+         * which crosses to a field written by another thread, out of the innermost loop.
+         */
+        const val ABANDON_EVERY = 0xFF
+
+        /** The default: nobody is waiting to call this off. */
+        val NEVER: () -> Boolean = { false }
     }
 }

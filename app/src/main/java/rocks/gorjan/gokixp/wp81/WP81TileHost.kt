@@ -354,284 +354,53 @@ class WP81TileHost(
     fun weatherWord(code: Int): String? = WeatherCodes.word(code)
 
     /**
-     * The same conditions as a mark rather than a word, for a face that has no room for
-     * the word - which is the forecast panel, where three of them stand in a row and the
-     * label under each is already spoken for by which day it is.
+     * Everything the weather tile says, as one face.
      *
-     * [night] is true of tonight's low, and of the reading taken now when it is taken
-     * after dark: a forecast for tomorrow is about tomorrow's daylight, whatever hour it
-     * is being read at.
+     * Where it is, what the sky is doing, what it is out there and how far the day moves.
+     * The tile used to turn through three readings - now, the next thing the sky did, and
+     * tomorrow - which meant a glance at it landed on whichever of the three it happened
+     * to be showing; this is all of it at once, and the tile stopped turning. See
+     * WeatherFaceView, which lays it out and drops what a short tile has no room for.
+     *
+     * The figure carries its scale here where the run of faces did not. Three readings in
+     * a row printed the letter three times to say one thing; one reading prints it once,
+     * and a tile that says 31 without saying of what is a tile somebody has to remember a
+     * setting to read.
+     *
+     * Null when there is no cached reading at all, which leaves the tile as it was.
      */
-    fun weatherGlyph(code: Int, night: Boolean = false): Int? =
-        WeatherCodes.glyph(code, night)
-
-    /**
-     * One of the readings the weather tile shows: the figure, the sky it was taken under,
-     * and which of them it is.
-     *
-     * [name] is the plain word - "now", "noon", "tonight", "tomorrow" - which is what a
-     * column in the panel is headed by, having a column's width for it. [spelled] is the
-     * same reading said in full, for a face with a whole tile to say it on: "noon" alone
-     * does not say that the figure under it is a maximum. Where the word is already the
-     * whole of it, the two are the same.
-     */
-    private data class WeatherReading(
-        val temperature: Int,
-        val code: Int,
-        val name: String,
-        val spelled: String = name,
-        /**
-         * Whether this reading falls after dark: the one taken now, when it is taken at
-         * night, and tonight's low always.
-         */
-        val night: Boolean = false
-    )
-
-    /**
-     * What there is to say about the weather, in the order the tile says it.
-     *
-     * Now, then what the sky does next, then tomorrow's high. The middle of the three
-     * turns over during the day: while the day can still reach its peak it is today's
-     * high, and once that peak is behind us it is tonight's low instead. A high already
-     * spent is a number that can only be higher than the reading beside it, for a reason
-     * that has passed; the night after it has not happened yet, and the tile is worth
-     * three readings either way. See [todayHighAhead] and [tonightReading].
-     *
-     * Empty when there is no cached reading at all, and one long when the forecast has not
-     * arrived with it - or two, in an evening whose hourly figures have run out and can no
-     * longer say what tonight does.
-     */
-    private fun weatherReadings(): List<WeatherReading> {
-        val cached = cachedWeatherJson() ?: return emptyList()
+    fun weatherFace(): WeatherFaceView.Reading? {
+        val cached = cachedWeatherJson() ?: return null
         return try {
             val current = cached.getJSONObject("current")
-            // The cache is metric whoever wrote it - see WeatherStore - so every figure
-            // out of it is converted here rather than at the point it is drawn. This is the
-            // only place the scale is applied, and the tile prints no letter to say which
-            // one it is, so the number has to be right on its own.
+            // The cache is metric whoever wrote it - see WeatherStore - so every figure out
+            // of it is converted here rather than at the point it is drawn.
             val unit = weatherUnit()
-            val readings = mutableListOf(
-                WeatherReading(
-                    WeatherStore.temperature(current.getDouble("temperature_2m"), unit),
-                    current.optInt("weather_code", -1),
-                    "now",
-                    night = current.optInt("is_day", 1) == 0
-                )
-            )
             val daily = cached.optJSONObject("daily")
-            val highs = daily?.optJSONArray("temperature_2m_max")
-            val codes = daily?.optJSONArray("weather_code")
-            if (highs != null && codes != null && highs.length() >= 2) {
-                if (todayHighAhead(cached)) {
-                    // Headed "noon" rather than "today", which the reading beside it is
-                    // also of: what separates the two is the hour, not the day.
-                    readings += WeatherReading(
-                        WeatherStore.temperature(highs.getDouble(0), unit),
-                        codes.optInt(0, -1),
-                        "noon",
-                        "max today"
-                    )
-                } else {
-                    tonightReading(cached, unit)?.let { readings += it }
-                }
-                readings += WeatherReading(
-                    WeatherStore.temperature(highs.getDouble(1), unit),
-                    codes.optInt(1, -1),
-                    "tomorrow",
-                    "max tomorrow"
-                )
-            }
-            readings
+            // Today's two ends, which is what a range on a tile is: not the week's, and not
+            // the next twelve hours', but how far the day the reader is standing in moves.
+            val high = daily?.optJSONArray("temperature_2m_max")?.optDouble(0)
+            val low = daily?.optJSONArray("temperature_2m_min")?.optDouble(0)
+            WeatherFaceView.Reading(
+                // What the Weather app is showing, which is where the reading came from.
+                place = WeatherStore.selected(context)?.name.orEmpty(),
+                condition = weatherWord(current.optInt("weather_code", -1)),
+                temperature =
+                    WeatherStore.temperature(current.getDouble("temperature_2m"), unit).toString(),
+                unit = "\u00b0$unit",
+                high = degrees(high, unit),
+                low = degrees(low, unit)
+            )
         } catch (e: Exception) {
             android.util.Log.w(TAG, "could not read the weather", e)
-            emptyList()
-        }
-    }
-
-    /**
-     * Whether today's high is still to come.
-     *
-     * The daily block carries the figure but not the hour it falls on, so the hourly
-     * temperatures are what separate an afternoon still ahead from one already over: find
-     * the hour today reaches its highest - the last of them, if the peak is flat - and see
-     * whether it is behind the current hour.
-     *
-     * True whenever the answer cannot be read - a cache saved before the hourly figures
-     * were asked for, or one left over from another day - which leaves the tile as it was
-     * rather than hiding a face on a guess.
-     */
-    private fun todayHighAhead(cached: org.json.JSONObject): Boolean {
-        return try {
-            val hourly = cached.optJSONObject("hourly") ?: return true
-            val times = hourly.optJSONArray("time") ?: return true
-            val temperatures = hourly.optJSONArray("temperature_2m") ?: return true
-
-            val now = localHour(cached)
-            val today = now.substring(0, 10)
-
-            var peak = Double.NEGATIVE_INFINITY
-            var peakHour: String? = null
-            for (i in 0 until minOf(times.length(), temperatures.length())) {
-                val time = times.optString(i)
-                if (!time.startsWith(today)) continue
-                val temperature = temperatures.optDouble(i, Double.NaN)
-                if (temperature.isNaN()) continue
-                // >= rather than >: a peak held over several hours has not passed until
-                // the last hour holding it has.
-                if (temperature >= peak) {
-                    peak = temperature
-                    peakHour = time
-                }
-            }
-
-            // The peak landing on the current hour still counts as ahead - it is being
-            // reached now, not spent.
-            peakHour?.let { it.substring(0, minOf(it.length, 13)) >= now } ?: true
-        } catch (e: Exception) {
-            android.util.Log.w(TAG, "could not tell when today's high falls", e)
-            true
-        }
-    }
-
-    /**
-     * The hour it is where the weather is, as "yyyy-MM-ddTHH".
-     *
-     * Times come back in the location's own zone (timezone=auto), which is not necessarily
-     * the phone's, so an hour of the forecast is held against this rather than against the
-     * device clock: the wall clock there is a UTC formatting of an instant shifted by the
-     * offset the response states.
-     *
-     * Cut to the hour so that it sorts against the response's own times, which are longer
-     * - it falls below every minute of its own hour and above all of the one before.
-     */
-    private fun localHour(cached: org.json.JSONObject): String {
-        val offsetMillis = cached.optLong("utc_offset_seconds", 0L) * 1000L
-        val stamp = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH", java.util.Locale.US)
-        stamp.timeZone = java.util.TimeZone.getTimeZone("UTC")
-        return stamp.format(java.util.Date(System.currentTimeMillis() + offsetMillis))
-    }
-
-    /**
-     * Tonight's low, and the sky it falls under.
-     *
-     * The daily block has no such reading. Its minimum is the whole day's, and by the
-     * evening that figure is this morning's - already spent, which is the same fault that
-     * takes the day's high out of the run. So the hours answer it instead: from this one
-     * until the sun is up again, the coldest of them, under whatever the sky is doing at
-     * that hour.
-     *
-     * Morning is tomorrow's sunrise where the response states one and nine o'clock where
-     * it does not. The window is only ever asked for once today's peak has passed, so it
-     * runs from an afternoon or an evening forward into the night rather than across a
-     * whole day.
-     *
-     * Null when the hourly figures are missing, or have nothing left between now and the
-     * morning: a tile two readings wide is better than a low nobody looked up.
-     */
-    private fun tonightReading(cached: org.json.JSONObject, unit: String): WeatherReading? {
-        return try {
-            val hourly = cached.optJSONObject("hourly") ?: return null
-            val times = hourly.optJSONArray("time") ?: return null
-            val temperatures = hourly.optJSONArray("temperature_2m") ?: return null
-
-            val daily = cached.optJSONObject("daily")
-            val sunrise = daily?.optJSONArray("sunrise")?.optString(1).orEmpty()
-            val date = daily?.optJSONArray("time")?.optString(1).orEmpty()
-            val morning = when {
-                sunrise.isNotEmpty() -> sunrise
-                date.isNotEmpty() -> "${date}T09:00"
-                else -> return null
-            }
-
-            val now = localHour(cached)
-            var lowest = Double.NaN
-            var at = -1
-            for (i in 0 until minOf(times.length(), temperatures.length())) {
-                val time = times.optString(i)
-                // The hour it is now is tonight's as much as the ones after it - what is
-                // left of it is still to come - and the stamp sorts below it, so it is in.
-                if (time < now || time > morning) continue
-                val temperature = temperatures.optDouble(i, Double.NaN)
-                if (temperature.isNaN()) continue
-                // < rather than <=: a trough held flat for hours belongs to the first of
-                // them, whose sky is the nearer of the two to now.
-                if (at < 0 || temperature < lowest) {
-                    lowest = temperature
-                    at = i
-                }
-            }
-            if (at < 0) return null
-
-            WeatherReading(
-                WeatherStore.temperature(lowest, unit),
-                hourly.optJSONArray("weather_code")?.optInt(at, -1) ?: -1,
-                "tonight",
-                "low tonight",
-                night = true
-            )
-        } catch (e: Exception) {
-            android.util.Log.w(TAG, "could not read tonight's low", e)
             null
         }
     }
 
-    /**
-     * The readings the weather tile turns over, one face each.
-     *
-     * What a tile falls back on rather than what it prefers: a tile with two cells or more
-     * shows the lot of them at once and never asks for this - see [weatherPanel]. This is
-     * the 1x1 and the strips, which have room for one reading at a time.
-     *
-     * A run of faces rather than one reading, which is why this does not come out of
-     * [liveContent] - the caller hands it to setLiveWidgetRotation instead.
-     *
-     * Each is labelled. A temperature with no label is a number, and three of them in turn
-     * without labels are numbers that appear to disagree; the 1x1 shortens the labels
-     * rather than dropping them, because "max tomorrow" does not fit across it and
-     * "tomorrow" says the necessary half.
-     */
-    fun weatherFaces(size: TileSize): List<TileView.LiveFace> {
-        val small = size == TileSize.SMALL
-        return weatherReadings().map { reading ->
-            TileView.LiveFace(
-                // The degree and no letter. Which scale it is in was settled once, in the
-                // Weather app's own settings, and a wall that repeated the answer on every
-                // face would be answering a question nobody is still asking - the room goes
-                // to the number, which is what the tile is for.
-                title = "${reading.temperature}°",
-                // What the sky is doing, and under it which reading this is. That order
-                // because the weather is what the tile is about and the label is only
-                // which of the run it is showing.
-                detail = listOfNotNull(
-                    weatherWord(reading.code),
-                    if (small) reading.name else reading.spelled
-                ).joinToString("\n")
-            )
-        }
-    }
-
-    /**
-     * The same readings as columns, for a tile with the width to hold them side by side.
-     *
-     * Nothing is dropped to make them fit: the panel sets itself to the column it has, and
-     * a tile too narrow for that is a tile that should be turning faces instead. The
-     * labels are the plain words - a column is headed by the day, not by what the figure
-     * is of, which the row of them says once by being a row.
-     *
-     * Takes no size, unlike [weatherFaces]: what a column can hold is a question the panel
-     * answers for itself once it knows how wide the tile made it.
-     */
-    fun weatherPanel(): List<ForecastPanelView.Column> {
-        return weatherReadings().map { reading ->
-            ForecastPanelView.Column(
-                label = reading.name,
-                glyph = weatherGlyph(reading.code, reading.night),
-                // Bare, as on a turning face - and more so here, where three of them are
-                // read across one row and the letter would be printed three times to say
-                // one thing. See [weatherFaces].
-                reading = "${reading.temperature}°"
-            )
-        }
+    /** One end of the day, in the scale the tile is set in, or null where there is none. */
+    private fun degrees(celsius: Double?, unit: String): String? {
+        if (celsius == null || celsius.isNaN()) return null
+        return "${WeatherStore.temperature(celsius, unit)}\u00b0"
     }
 
     // ----------------------------------------------------------------- calendar

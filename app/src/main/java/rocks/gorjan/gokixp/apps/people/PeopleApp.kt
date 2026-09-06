@@ -34,6 +34,7 @@ import rocks.gorjan.gokixp.wp81.TiltEffect
 import rocks.gorjan.gokixp.wp81.WP81ContextMenu
 import rocks.gorjan.gokixp.wp81.WP81InputDialog
 import rocks.gorjan.gokixp.wp81.WP81Palette
+import rocks.gorjan.gokixp.wp81.WP81Program
 import rocks.gorjan.gokixp.wp81.applyToField
 import rocks.gorjan.gokixp.wp81.applyToPageText
 
@@ -58,7 +59,7 @@ import rocks.gorjan.gokixp.wp81.applyToPageText
  */
 class PeopleApp(
     private val context: Context,
-    private val palette: WP81Palette,
+    private var palette: WP81Palette,
     /**
      * Asks the host for permissions. Contacts, the call log and calling are asked for
      * where they are first needed rather than in a heap on first run - an address book is
@@ -80,7 +81,7 @@ class PeopleApp(
      */
     private val onBecomeMessenger: () -> Unit,
     private val onNotify: (String, String) -> Unit
-) {
+) : WP81Program {
 
     private lateinit var root: FrameLayout
     private lateinit var panorama: MetroPanorama
@@ -188,6 +189,14 @@ class PeopleApp(
         rocks.gorjan.gokixp.MainActivity.PREFS_NAME, Context.MODE_PRIVATE)
 
     // ---------------------------------------------------------------- construction
+
+    /**
+     * Rebuilds the program in a new theme. See [WP81Program].
+     */
+    override fun applyPalette(palette: WP81Palette): View {
+        this.palette = palette
+        return createView()
+    }
 
     fun createView(): View {
         root = FrameLayout(context).apply { setBackgroundColor(palette.background) }
@@ -1481,36 +1490,26 @@ class PeopleApp(
     /**
      * One of the rings on a [reachRow].
      *
-     * The app bar's own button, built here rather than borrowed from [MetroAppBar]: that
-     * one is nailed to a strip, and it draws itself white because the strip it sits on is
-     * always near-black. A profile is the palette's own background, which is white under
-     * the Light theme, so the ring and the glyph are both tinted with the foreground - the
-     * ring shape is drawn white precisely so a tint can decide what colour it really is,
-     * which is how the bar marks a command that is in force.
+     * The app bar's own button - see [MetroAppBar.ring] - drawn on a page rather than on a
+     * strip, so it takes the page's foreground for its ink. The ring shape is drawn white
+     * precisely so a tint can decide what colour it really is, which is also how the strip
+     * marks a command that is in force.
      *
-     * Not built out of [footKey] either, for the tick: the foot of the keypad is part of
-     * the keypad and takes the light keystroke one, where these are commands on a page and
+     * Not built out of [footKey], for the tick: the foot of the keypad is part of the
+     * keypad and takes the light keystroke one, where these are commands on a page and
      * take the shell's own. See Haptics, which draws exactly that line.
      */
     private fun reachKey(icon: String, onTap: () -> Unit): View =
-        ImageView(context).apply {
-            setBackgroundResource(R.drawable.wp81_appbar_circle)
-            backgroundTintList =
-                android.content.res.ColorStateList.valueOf(palette.foreground)
-            setImageDrawable(rocks.gorjan.gokixp.wp81.SvgIcon.fromAsset(context, icon))
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            setPadding(dp(REACH_GLYPH_INSET_DP), dp(REACH_GLYPH_INSET_DP),
-                dp(REACH_GLYPH_INSET_DP), dp(REACH_GLYPH_INSET_DP))
-            imageTintList =
-                android.content.res.ColorStateList.valueOf(palette.foreground)
-            outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
-            clipToOutline = true
-            isClickable = true
+        MetroAppBar.ring(
+            context,
+            palette.foreground,
+            rocks.gorjan.gokixp.wp81.SvgIcon.fromAsset(context, icon),
+            REACH_GLYPH_INSET_DP
+        ).apply {
             setOnClickListener {
                 Haptics.tap(it)
                 onTap()
             }
-            TiltEffect.apply(this)
         }
 
     private fun confirmDelete(person: PeopleStore.Contact, page: View) {

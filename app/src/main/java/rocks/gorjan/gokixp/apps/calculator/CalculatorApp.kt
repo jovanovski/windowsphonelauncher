@@ -19,6 +19,7 @@ import rocks.gorjan.gokixp.R
 import rocks.gorjan.gokixp.wp81.Haptics
 import rocks.gorjan.gokixp.wp81.TiltEffect
 import rocks.gorjan.gokixp.wp81.WP81Palette
+import rocks.gorjan.gokixp.wp81.WP81Program
 import java.text.DecimalFormatSymbols
 
 /**
@@ -37,8 +38,8 @@ import java.text.DecimalFormatSymbols
  */
 class CalculatorApp(
     private val context: Context,
-    private val palette: WP81Palette
-) {
+    private var palette: WP81Palette
+) : WP81Program {
 
     private val engine = CalculatorEngine()
     private val symbols = DecimalFormatSymbols.getInstance()
@@ -53,6 +54,14 @@ class CalculatorApp(
     private var keyH = 0f
     private var gap = 0f
     private var displayHeight = 0
+
+    /**
+     * Rebuilds the program in a new theme. See [WP81Program].
+     */
+    override fun applyPalette(palette: WP81Palette): View {
+        this.palette = palette
+        return createView()
+    }
 
     fun createView(): View {
         val root = CalcLayout(context)

@@ -246,6 +246,51 @@ class SuggesterTest {
         assertTrue("a keystroke took %.1f ms, which is too slow".format(each), each < 16.0)
     }
 
+    /**
+     * A search nobody wants any more stops, and stops *immediately*.
+     *
+     * The keyboard searches off the main thread and a thumb is quicker than a search, so on
+     * any fast run of keys most searches are about a word that has already grown another
+     * letter by the time they finish. Those have to be dropped where they stand: left
+     * running, a burst costs a full search for every key in it, all but the last thrown away,
+     * and the thread falls further behind the further you type - which is exactly what the
+     * lag felt like.
+     *
+     * Measured rather than asserted on the result, because the way to get this wrong is to
+     * stop *slowly*. The walk is recursive, and a plain `return` unwinds one level of it and
+     * leaves the node above carrying on to its next edge - a search that has been called off
+     * and goes on visiting nodes at nearly full speed, which no test of the answer would
+     * notice. The margin here is wide: what it is catching is a stop that does not propagate,
+     * which costs whole milliseconds, not tens of microseconds.
+     */
+    @Test
+    fun anOvertakenSearchIsDroppedAtOnce() {
+        val words = listOf("constellatio", "different", "somethin", "keyboa")
+        repeat(5) { words.forEach { suggester.candidates(it, null) { false } } }   // warm up
+
+        var whole = 0.0
+        var calledOff = 0.0
+        for (word in words) {
+            var running = System.nanoTime()
+            repeat(20) { suggester.candidates(word, null) { false } }
+            whole += (System.nanoTime() - running) / 1e6 / 20
+
+            running = System.nanoTime()
+            repeat(20) { suggester.candidates(word, null) { true } }
+            calledOff += (System.nanoTime() - running) / 1e6 / 20
+        }
+        println("whole %.3f ms, called off %.3f ms".format(whole / words.size, calledOff / words.size))
+        assertTrue(
+            "a search called off cost %.3f ms against %.3f ms run whole - it is not stopping"
+                .format(calledOff / words.size, whole / words.size),
+            calledOff * 4 < whole
+        )
+        assertTrue(
+            "a search called off should offer nothing",
+            suggester.candidates("keyboa", null) { true }.isEmpty()
+        )
+    }
+
     /** Learned words are offered, and learned pairs predict what comes next. */
     @Test
     fun whatIsLearnedIsOffered() {

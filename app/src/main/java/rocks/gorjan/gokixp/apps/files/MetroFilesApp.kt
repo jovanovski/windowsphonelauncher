@@ -34,6 +34,7 @@ import rocks.gorjan.gokixp.wp81.TiltEffect
 import rocks.gorjan.gokixp.wp81.WP81ContextMenu
 import rocks.gorjan.gokixp.wp81.WP81InputDialog
 import rocks.gorjan.gokixp.wp81.WP81Palette
+import rocks.gorjan.gokixp.wp81.WP81Program
 import java.io.File
 import java.io.IOException
 import java.text.SimpleDateFormat
@@ -75,12 +76,12 @@ import java.util.Locale
  */
 class MetroFilesApp(
     private val context: Context,
-    private val palette: WP81Palette,
+    private var palette: WP81Palette,
     /** Handing a file to whatever opens that kind of file. The shell decides, not this app. */
     private val onOpen: (File) -> Unit,
     /** The shell's own toast: what it says when work finishes, and when it cannot be done. */
     private val onNotify: (String, String) -> Unit
-) {
+) : WP81Program {
 
     /** A place the phone keeps files, at the top of the tree. See [rootsOf]. */
     private data class Root(val label: String, val dir: File, val icon: String)
@@ -117,6 +118,7 @@ class MetroFilesApp(
     private lateinit var photosScroller: ScrollView
 
     private lateinit var barSlot: FrameLayout
+    private lateinit var viewer: PhotoViewer
     private lateinit var contextMenu: WP81ContextMenu
     private lateinit var dialog: WP81InputDialog
 
@@ -176,6 +178,18 @@ class MetroFilesApp(
 
     // ------------------------------------------------------------------------ the page
 
+    /**
+     * Rebuilds the program in a new theme. See [WP81Program].
+     */
+    override fun applyPalette(palette: WP81Palette): View {
+        // The viewer holds a decoder thread of its own and a new one is built with the
+        // rest of the page; put this one down rather than leaving it running behind the
+        // rebuild. See PhotoViewer.release.
+        viewer.release()
+        this.palette = palette
+        return createView()
+    }
+
     fun createView(): View {
         root = FrameLayout(context).apply { setBackgroundColor(palette.background) }
 
@@ -221,6 +235,17 @@ class MetroFilesApp(
         // commands on them, and MetroAppBar is built to be filled once and left alone.
         barSlot = FrameLayout(context)
         root.addView(barSlot, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
+
+        // Over the pages and their strip, and under the two below: a picture being looked
+        // at covers the app, and the prompt asking whether to delete it covers the picture.
+        viewer = PhotoViewer(
+            context = context,
+            palette = palette,
+            onShare = { file -> share(listOf(file)) },
+            onDelete = { file -> askToDelete(listOf(file)) },
+            onOpenWith = { file -> onOpen(file) }
+        )
+        root.addView(viewer.view(), FrameLayout.LayoutParams(MATCH, MATCH))
 
         // Both of these sit over everything: a menu that dims the page it belongs to
         // cannot be inside it.
@@ -363,6 +388,9 @@ class MetroFilesApp(
     fun handleBack(): Boolean {
         if (dialog.isShowing()) { dialog.dismiss(); return true }
         if (contextMenu.isShowing()) { contextMenu.dismiss(); return true }
+        // Before select mode, because a picture opened out of a listing covers that
+        // listing: the key the user is pressing is the one that puts the page back.
+        if (viewer.handleBack()) return true
         if (selecting) { endSelecting(); return true }
         // Recents is flat, with nothing above it to climb to: on that page the key means
         // what it means everywhere else and the window closes. Photos has exactly one step
@@ -376,6 +404,7 @@ class MetroFilesApp(
 
     fun cleanup() {
         released = true
+        viewer.release()
         waitingRows.clear()
         handler.removeCallbacksAndMessages(null)
     }
@@ -902,6 +931,9 @@ class MetroFilesApp(
      * put back on the wall rather than left looking at it.
      */
     private fun pruneRecents() {
+        // The picture being looked at, deleted from the strip under it. Nothing else can
+        // put the viewer away, because the delete it was asked for is what closes it.
+        if (viewer.showing()?.exists() == false) viewer.hide()
         val liveRecents = recents.filter { it.file.exists() }
         if (liveRecents.size != recents.size) {
             recents = liveRecents
@@ -1957,13 +1989,43 @@ class MetroFilesApp(
 
     // ------------------------------------------------------------------------- commands
 
+    /**
+     * A file tapped, wherever it was tapped.
+     *
+     * Everything goes out to the phone except a picture, which opens here. See
+     * [PhotoViewer] for why that one is the exception - and why it is the exception in
+     * every section rather than only on the photos page. The same JPEG found by browsing
+     * to it, by seeing it near the top of recents and by tapping it on a wall of them is
+     * one file, and an app that opened it three different ways depending on which door it
+     * came through would be three apps.
+     *
+     * A clip is not a picture for this purpose. A viewer that showed the first frame of a
+     * video and called that opening it would be worse than the chooser it replaced, and
+     * playing one is a program this app has no business being.
+     */
     private fun openFile(file: File) {
         if (!file.canRead()) {
             onNotify("Files", "${file.name} cannot be opened")
             return
         }
+        if (FileThumbnails.kindOf(file) == FileThumbnails.Kind.IMAGE) {
+            viewer.show(file, standInFor(file))
+            return
+        }
         onOpen(file)
     }
+
+    /**
+     * The thumbnail of [file] that whichever page was tapped has already read, if it has.
+     *
+     * Two sizes are asked for because two kinds of page open pictures: a cell of the photo
+     * grid, and a mark on a row. Whichever of them the tap came from is holding one, and
+     * it goes up in the same frame while the full picture is read. Nothing is decoded
+     * here - a miss simply means the viewer opens on black for a moment.
+     */
+    private fun standInFor(file: File): Bitmap? =
+        FileThumbnails.held(file, cellSide(PHOTO_COLUMNS, dp(PHOTO_GAP_DP)))
+            ?: FileThumbnails.held(file, dp(ICON_DP * DECODE_OVER))
 
     private fun askForNewFolder() {
         val here = folderHere() ?: return

@@ -4,6 +4,9 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Matrix
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -15,6 +18,7 @@ import androidx.core.content.res.ResourcesCompat
 import androidx.recyclerview.widget.RecyclerView
 import rocks.gorjan.gokixp.AppInfo
 import rocks.gorjan.gokixp.R
+import java.util.concurrent.Executors
 
 /**
  * The Windows Phone 8.1 app list - the alphabetical page you reach by swiping left from
@@ -50,9 +54,12 @@ class AppListView(
      * The host decides which apps are the shell's own - it is the only thing that knows
      * what a package opens into - and hands back the drawable to draw. Everything else is
      * asked of [MonochromeIconProvider], which finds the app's own flat artwork where it
-     * has any; see [glyphOf]. This outranks the provider, because a glyph written for this
+     * has any; see [resolveGlyph]. This outranks the provider, because a glyph written for this
      * shell says what the program *is* where a themed icon only says who made it.
+     *
+     * Volatile because it is asked on the worker that resolves artwork, and set here.
      */
+    @Volatile
     var metroGlyph: ((AppInfo) -> Int?)? = null
 
     /**
@@ -85,25 +92,122 @@ class AppListView(
     fun setApps(apps: List<AppInfo>) {
         // A fresh list is the one moment the art can have changed underneath the cache:
         // it is what an install, an uninstall, a chosen icon and a theme swap all end in.
+        // Anything still being resolved is about the old list, and is counted out by the
+        // batch rather than filed under the new one.
         glyphs.clear()
-        setItems(apps.sortedBy { it.name.lowercase() })
+        pending.clear()
+        queued.clear()
+        swept = false
+        batch++
+        val sorted = apps.sortedBy { it.name.lowercase() }
+        // Every name folded once here, rather than once per app per letter typed: the
+        // search reads all of them, and reads them again the moment the next key goes
+        // down. See [matches].
+        lowered.clear()
+        sorted.forEach { lowered[it.packageName] = it.name.lowercase() }
+        setItems(sorted)
     }
 
     /**
-     * The mark for one app, resolved once and kept.
+     * The mark for one app, once it has been resolved.
      *
-     * Resolving means asking the package manager for the app's icon and rasterising it to
-     * measure - far too much to do on every bind of a list that recycles its rows under a
-     * flicked finger. Emptied whenever the list is set again, which is what every change
-     * to an app's artwork ends in. See [setApps].
+     * Emptied whenever the list is set again, which is what every change to an app's
+     * artwork ends in. See [setApps]. Read and written on the main thread only; what
+     * fills it runs on [resolver].
      */
     private val glyphs = mutableMapOf<String, MonochromeIconProvider.Glyph?>()
 
-    private fun glyphOf(app: AppInfo): MonochromeIconProvider.Glyph? {
-        if (glyphs.containsKey(app.packageName)) return glyphs[app.packageName]
-        val resolved = resolveGlyph(app)
-        glyphs[app.packageName] = resolved
-        return resolved
+    /** Each app's name in lower case, keyed by package. Filled by [setApps]. */
+    private val lowered = mutableMapOf<String, String>()
+
+    /**
+     * Where an app's artwork is resolved.
+     *
+     * Resolving means asking the package manager for an icon and then rasterising it to
+     * find where its ink sits: tens of milliseconds for one app. This list rebinds every
+     * row on screen after every letter typed into its search field, and the rows a search
+     * brings up are from all over the alphabet, so they are exactly the ones nothing has
+     * resolved yet - a dozen icons' worth of decoding between one frame and the next,
+     * which is what the field stuttered on as it was typed into. Worse than it sounds,
+     * too: this shell's keyboard runs in this same process, so the stall froze the keys
+     * as well as the list. So no artwork is resolved on the main thread at all. A row
+     * draws what has been resolved and asks for what has not.
+     *
+     * One thread, because this is a queue and not a race, and a daemon, because a
+     * half-measured icon is not worth holding the process open for.
+     */
+    private val resolver = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "wp81-app-glyphs").apply { isDaemon = true }
+    }
+
+    private val main = Handler(Looper.getMainLooper())
+
+    /** Apps waiting to be resolved, rows on screen at the front. Main thread only. */
+    private val pending = ArrayDeque<AppInfo>()
+
+    /** What is in [pending], so a second ask for the same app is not a second resolve. */
+    private val queued = mutableSetOf<String>()
+
+    private var resolving = false
+
+    /** Whether the sweep through the rest of the list has been started. See [request]. */
+    private var swept = false
+
+    /** Which list the answers coming back belong to. See [setApps]. */
+    private var batch = 0
+
+    /** Every row ever made, so a glyph landing can find the one waiting for it. */
+    private val holders = mutableListOf<AppHolder>()
+
+    /**
+     * Asks for one app's artwork.
+     *
+     * [urgent] is a row asking for what it is about to draw, and goes to the front. The
+     * rest of the list is swept behind it so that a search which jumps to the far end of
+     * the alphabet finds its matches already measured - but the rows actually on screen
+     * cannot be made to wait behind a hundred apps nobody is looking at.
+     */
+    private fun request(app: AppInfo, urgent: Boolean) {
+        if (glyphs.containsKey(app.packageName)) return
+        if (!queued.add(app.packageName)) {
+            // Already waiting. Nothing to do unless it is now wanted sooner than where it
+            // is standing, in which case it is taken out of the queue and put at the head.
+            if (!urgent) return
+            pending.removeAll { it.packageName == app.packageName }
+        }
+        if (urgent) pending.addFirst(app) else pending.addLast(app)
+        pump()
+    }
+
+    /** Starts the next resolve, unless the worker is inside one already. */
+    private fun pump() {
+        if (resolving) return
+        val next = pending.removeFirstOrNull() ?: return
+        queued.remove(next.packageName)
+        resolving = true
+        val asked = batch
+        resolver.execute {
+            val glyph = try {
+                resolveGlyph(next)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not resolve artwork for ${next.packageName}", e)
+                null
+            }
+            // The ink box is measured here too, on the thread that can afford it: the row
+            // asks for it the moment it has a glyph to place, and measuring it means
+            // rasterising the artwork all over again. See [placeGlyph].
+            (glyph as? MonochromeIconProvider.Glyph.Monochrome)?.let {
+                iconProvider.inkFor("ink:${next.packageName}", it.drawable)
+            }
+            main.post {
+                resolving = false
+                if (asked == batch) {
+                    glyphs[next.packageName] = glyph
+                    holders.forEach { it.glyphArrived(next.packageName) }
+                }
+                pump()
+            }
+        }
     }
 
     private fun resolveGlyph(app: AppInfo): MonochromeIconProvider.Glyph? {
@@ -112,8 +216,19 @@ class AppListView(
             return MonochromeIconProvider.Glyph.Monochrome(
                 drawable, iconProvider.ratioFor("res:$res", drawable))
         }
-        return iconProvider.glyphFor(app.packageName, app.icon)
+        return iconProvider.glyphFor(app.packageName, ownCopyOf(app.icon))
     }
+
+    /**
+     * This list's own instance of an app's icon.
+     *
+     * The drawable on an [AppInfo] came from the icon store, and Start's tiles are holding
+     * that same instance. Measuring artwork sets its bounds and draws it, and that now
+     * happens on a worker thread, so the list takes a copy rather than reaching into a
+     * picture something else is drawing. The artwork is shared; only the bounds are not.
+     */
+    private fun ownCopyOf(icon: android.graphics.drawable.Drawable?) =
+        icon?.constantState?.newDrawable(context.resources) ?: icon
 
     /**
      * Puts one glyph on its accent square at [GLYPH_DP], wherever its ink happens to sit
@@ -167,9 +282,9 @@ class AppListView(
     override fun letterOf(item: AppInfo): Char = bucketOf(item.name)
 
     override fun matches(item: AppInfo, query: String): Boolean =
-        item.name.lowercase().contains(query)
+        (lowered[item.packageName] ?: item.name.lowercase()).contains(query)
 
-    override fun createHolder(): ItemHolder = AppHolder()
+    override fun createHolder(): ItemHolder = AppHolder().also { holders.add(it) }
 
     private inner class AppHolder : ItemHolder(LinearLayout(context)) {
 
@@ -242,37 +357,69 @@ class AppListView(
             bound = item
             name.text = item.name
             name.setTextColor(palette.foreground)
-            // Flat artwork - this shell's own glyph, an app's themed monochrome layer, or
-            // its notification silhouette - is drawn the way the phone drew the programs it
-            // came with: white on a square of the accent. An app with none of those keeps
-            // the icon it was installed with, unboxed, which is also what WP8.1 did with
-            // art a developer had not drawn for a tile.
-            when (val glyph = glyphOf(item)) {
+            drawGlyph(item)
+            // A row being drawn at all is the list arriving on screen, and that is the
+            // moment the rest of it is worth measuring: a search a keystroke later can ask
+            // for any app in it. Started from here rather than from setApps, so a launcher
+            // does not spend its first seconds on a page nobody has opened.
+            if (!swept) {
+                swept = true
+                items().forEach { request(it, urgent = false) }
+            }
+        }
+
+        /**
+         * Draws whatever artwork [item] has resolved to, and asks for it if it has none.
+         *
+         * Flat artwork - this shell's own glyph, an app's themed monochrome layer, or its
+         * notification silhouette - is drawn the way the phone drew the programs it came
+         * with: white on a square of the accent. An app with none of those keeps the icon
+         * it was installed with, unboxed, which is also what WP8.1 did with art a developer
+         * had not drawn for a tile.
+         */
+        private fun drawGlyph(item: AppInfo) {
+            if (!glyphs.containsKey(item.packageName)) {
+                // Nothing resolved yet. The slot is left empty for the frame or two the
+                // worker takes rather than filled with something that would be swapped out
+                // in front of the reader.
+                drawPlain(null)
+                request(item, urgent = true)
+                return
+            }
+            when (val glyph = glyphs[item.packageName]) {
                 is MonochromeIconProvider.Glyph.Monochrome -> {
                     icon.setImageDrawable(glyph.drawable)
                     icon.imageTintList = ColorStateList.valueOf(palette.onAccent())
                     icon.setBackgroundColor(palette.accent)
                     placeGlyph(icon, glyph.drawable, item.packageName)
                 }
-                // The app's own icon, filling the slot rather than sitting on a square: it
-                // is a picture, not a mark, and there is nothing for it to line up with.
-                is MonochromeIconProvider.Glyph.FullColor -> {
-                    icon.scaleType = ImageView.ScaleType.FIT_CENTER
-                    icon.setImageDrawable(glyph.drawable)
-                    icon.imageTintList = null
-                    icon.background = null
-                }
-                null -> {
-                    icon.scaleType = ImageView.ScaleType.FIT_CENTER
-                    icon.setImageDrawable(null)
-                    icon.imageTintList = null
-                    icon.background = null
-                }
+                is MonochromeIconProvider.Glyph.FullColor -> drawPlain(glyph.drawable)
+                null -> drawPlain(null)
             }
+        }
+
+        /**
+         * The app's own icon, filling the slot rather than sitting on a square: it is a
+         * picture, not a mark, and there is nothing for it to line up with. Null is a row
+         * with nothing to show yet, which is the same slot with nothing in it.
+         */
+        private fun drawPlain(drawable: android.graphics.drawable.Drawable?) {
+            icon.scaleType = ImageView.ScaleType.FIT_CENTER
+            icon.setImageDrawable(drawable)
+            icon.imageTintList = null
+            icon.background = null
+        }
+
+        /** A glyph has landed; take it if this row is still the one waiting for it. */
+        fun glyphArrived(packageName: String) {
+            val item = bound ?: return
+            if (item.packageName == packageName) drawGlyph(item)
         }
     }
 
     private companion object {
+        const val TAG = "WP81AppList"
+
         const val ROW_DP = 62
 
         /** The square a Metro app's glyph sits on, and the box every other icon fills. */

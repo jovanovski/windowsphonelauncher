@@ -111,7 +111,17 @@ abstract class MetroIndexList<T>(
      * is search before it has been asked for, and the field is search once it has.
      */
     private val header = FrameLayout(context)
-    private val searchRing = ImageView(context)
+
+    /**
+     * The app bar's own ring, drawn on a page rather than on a strip - see
+     * [MetroAppBar.ring], and [applyPalette] for why the ink is the page's foreground.
+     */
+    private val searchRing = MetroAppBar.ring(
+        context,
+        palette.foreground,
+        ResourcesCompat.getDrawable(context.resources, R.drawable.wp81_nav_search, null),
+        RING_INSET_DP
+    )
     private val column = LinearLayout(context)
 
     /**
@@ -337,16 +347,7 @@ abstract class MetroIndexList<T>(
 
     private fun buildHeader() {
         if (hasSearchRing) {
-            searchRing.setBackgroundResource(R.drawable.wp81_appbar_circle)
-            searchRing.setImageResource(R.drawable.wp81_nav_search)
-            searchRing.scaleType = ImageView.ScaleType.FIT_CENTER
-            searchRing.setPadding(
-                dp(RING_INSET_DP), dp(RING_INSET_DP), dp(RING_INSET_DP), dp(RING_INSET_DP))
-            searchRing.outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
-            searchRing.clipToOutline = true
-            searchRing.isClickable = true
             searchRing.setOnClickListener { beginSearch() }
-            TiltEffect.apply(searchRing)
             header.addView(searchRing, FrameLayout.LayoutParams(
                 dp(RING_DP), dp(RING_DP), Gravity.START or Gravity.CENTER_VERTICAL).apply {
                 marginStart = dp(RING_MARGIN_DP)

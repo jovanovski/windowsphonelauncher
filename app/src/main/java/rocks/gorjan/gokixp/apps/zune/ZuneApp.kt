@@ -24,7 +24,9 @@ import rocks.gorjan.gokixp.R
 import rocks.gorjan.gokixp.wp81.MetroPanorama
 import rocks.gorjan.gokixp.wp81.applyToField
 import rocks.gorjan.gokixp.wp81.TiltEffect
+import rocks.gorjan.gokixp.wp81.MetroAppBar
 import rocks.gorjan.gokixp.wp81.WP81Palette
+import rocks.gorjan.gokixp.wp81.WP81Program
 import java.util.Locale
 import rocks.gorjan.gokixp.wp81.metroLook
 
@@ -62,10 +64,10 @@ data class ZuneTrack(
  */
 class ZuneApp(
     private val context: Context,
-    private val palette: WP81Palette,
+    private var palette: WP81Palette,
     private val onRequestPermissions: () -> Unit,
     private val hasAudioPermission: () -> Boolean
-) {
+) : WP81Program {
 
     // --- Library and queue --------------------------------------------------------------
     private var library: List<ZuneTrack> = emptyList()
@@ -140,8 +142,7 @@ class ZuneApp(
     private lateinit var repeatButton: ImageView
 
     /** The strip along the foot of the hub, and the commands that rise out of it. */
-    private lateinit var appBar: LinearLayout
-    private lateinit var barMenu: LinearLayout
+    private lateinit var appBar: MetroAppBar
 
     /**
      * The two faces of the now playing page: the record, and the list it came from.
@@ -335,9 +336,58 @@ class ZuneApp(
         }
         root.addView(jumpList, FrameLayout.LayoutParams(MATCH, MATCH))
 
-        setupMediaSession()
+        // Once per app, not once per view: [applyPalette] runs this whole method again
+        // to rebuild in a new theme, and a second session would leave the first one
+        // registered, holding the player rule and publishing to the shade.
+        if (mediaSession == null) setupMediaSession()
         refreshLibrary()
         return root
+    }
+
+    /**
+     * Rebuilds the app in a new theme, and hands back the view to put in the window.
+     *
+     * Rebuilt rather than repainted. Nearly fifty things here take a colour out of the
+     * palette, most of them inside pages that are built when they are opened and thrown
+     * away when they are left, so there is no set of live views to walk - but there is
+     * already a method that builds all of it from the palette, and running it again is
+     * that method's own answer.
+     *
+     * What must *not* be rebuilt is the playing. The window is minimised rather than
+     * closed when the user leaves it, precisely so the music carries on, and a theme
+     * changed while a song is playing must not be the thing that stops it - so the
+     * player, the queue and the media session are left where they are and the new
+     * transport is bound to them afterwards.
+     *
+     * The app comes back on the page it was on, with the sheets and records that were
+     * stacked over it gone: those are a place the user went into, and a rebuild is the
+     * one thing that cannot follow them there.
+     */
+    override fun applyPalette(palette: WP81Palette): View {
+        // Emptied against the old view tree, so nothing is left pointing at views that
+        // are about to be orphaned - see pushOverlay, which tracks them by hand.
+        while (overlays.isNotEmpty()) dismissOverlay(overlays.last())
+        if (queueShowing) showQueue(false)
+        stopProgress()
+
+        val page = panorama.currentPage()
+        this.palette = palette
+        val rebuilt = createView()
+        panorama.goTo(page, animated = false)
+
+        // The transport is filled in by whatever starts a song, and nothing is starting
+        // one: it is already playing. So it is filled in by hand from what is in the
+        // player now, and the tick that follows the song along is started again.
+        currentTrack()?.let { track ->
+            bindNowPlaying(track)
+            loadArt(track)
+        }
+        repaintQueue()
+        repaintHeart()
+        repaintModes()
+        onPlaybackChanged()
+        if (isPlaying) startProgress()
+        return rebuilt
     }
 
     /**
@@ -438,128 +488,30 @@ class ZuneApp(
      * than as rows inside a shelf, which is where the phone put them and why a shelf on
      * this platform is nothing but its own contents.
      *
-     * Near-black and white whatever the theme, like Internet Explorer's next door: the
-     * bar is furniture, not part of the page.
+     * The shell's own strip, not one of this app's own making: ground, rings, dots and
+     * the list behind them are all [MetroAppBar]'s, and so is the theme they follow.
      */
-    private fun buildAppBar(): LinearLayout {
-        val bar = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(BAR_COLOUR)
-            // Its own taps stop here rather than reaching the page underneath.
-            isClickable = true
-        }
+    private fun buildAppBar(): MetroAppBar {
+        val bar = MetroAppBar(context, palette)
 
-        barMenu = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            visibility = View.GONE
-            setPadding(0, dp(6), 0, dp(6))
-        }
-        bar.addView(barMenu, LinearLayout.LayoutParams(MATCH, WRAP))
-
-        // The three sit together in the middle, at the size and the spacing the shell's own
+        // The two sit together in the middle, at the size and the spacing the shell's own
         // strip uses - see WP81SecondaryBar. Spread to the corners, with the dots pushed
         // out to the right by a gap, they read as unrelated buttons that happen to share a
         // strip; together they read as what this app can be told to do.
-        val row = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-        }
+        //
         // Only the two. Shuffling everything you own was on this strip and is a mark
         // beside the cover as well, where it belongs: it is a setting the player is in
         // rather than a command given to the library, and the same thing offered twice in
         // two senses is worse than either.
-        row.addView(circleButton(R.drawable.wp81_nav_search) { showSearch() },
-            LinearLayout.LayoutParams(dp(BUTTON_DP), dp(BUTTON_DP)))
-        // The dots wear the ring too, as they do on Start: the button that opens the rest
-        // of the commands is a command like the two beside it, and a bare mark next to two
-        // ringed ones read as something else - a label, or a thing that had lost its button.
-        row.addView(
-            circleButton(R.drawable.wp81_handle_menu, closesMenu = false) {
-                if (barMenu.visibility == View.VISIBLE) closeBarMenu() else openBarMenu()
-            },
-            LinearLayout.LayoutParams(dp(BUTTON_DP), dp(BUTTON_DP)).apply {
-                marginStart = dp(GAP_DP)
-            }
-        )
+        bar.addCommand(R.drawable.wp81_nav_search) { showSearch() }
 
-        bar.addView(row, LinearLayout.LayoutParams(MATCH, dp(BAR_DP)))
+        // What the dots reveal: the commands with nowhere else to be. Only those -
+        // repeating the ring standing an inch to their left, which is what the phone's bar
+        // did with its own, says nothing here: it is a magnifier, and nobody needs that
+        // named for them.
+        bar.menu = { listOf(MetroAppBar.Item("refresh library") { refreshLibrary() }) }
         return bar
     }
-
-    /**
-     * A white ring with a white mark in it, open in the middle.
-     *
-     * The shape the Start screen puts on a tile in edit mode, without its black fill: on
-     * the app bar there is nothing behind the button but the bar, so the ring alone is the
-     * button and the strip shows through it. See wp81_appbar_circle.
-     */
-    private fun circleButton(
-        icon: Int,
-        /**
-         * Whether pressing it puts the bar's own command list away first.
-         *
-         * True of every command: what is behind the dots was opened to get at one of them,
-         * and a list left standing over the page after its command has run is a list nobody
-         * asked to keep. False of the dots themselves, which are the one button whose job
-         * is that list - closing it before the press is handled would leave them unable to
-         * do anything but reopen it.
-         */
-        closesMenu: Boolean = true,
-        onTap: () -> Unit
-    ): ImageView =
-        ImageView(context).apply {
-            setBackgroundResource(R.drawable.wp81_appbar_circle)
-            setImageResource(icon)
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            setPadding(dp(GLYPH_INSET_DP), dp(GLYPH_INSET_DP), dp(GLYPH_INSET_DP), dp(GLYPH_INSET_DP))
-            imageTintList = android.content.res.ColorStateList.valueOf(Color.WHITE)
-            outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
-            clipToOutline = true
-            isClickable = true
-            setOnClickListener {
-                if (closesMenu) closeBarMenu()
-                onTap()
-            }
-            TiltEffect.apply(this)
-        }
-
-    /**
-     * What the dots reveal: the commands with nowhere else to be.
-     *
-     * Only those. Repeating the two buttons standing an inch to the left of the dots -
-     * which is what the phone's bar did with its own - says nothing here: the two rings
-     * are the shuffle mark and a magnifier, and neither is a glyph anybody needs named
-     * for them.
-     */
-    private fun openBarMenu() {
-        barMenu.removeAllViews()
-        barMenu.addView(barMenuRow("refresh library") { refreshLibrary() }, wide())
-        barMenu.visibility = View.VISIBLE
-        barMenu.alpha = 0f
-        barMenu.translationY = dp(12).toFloat()
-        barMenu.animate().alpha(1f).translationY(0f).setDuration(180).start()
-    }
-
-    private fun closeBarMenu() {
-        if (barMenu.visibility != View.VISIBLE) return
-        barMenu.visibility = View.GONE
-        barMenu.removeAllViews()
-    }
-
-    private fun barMenuRow(label: String, onTap: () -> Unit): View =
-        TextView(context).apply {
-            text = label
-            typeface = font(R.font.segoeui_regular)
-            textSize = 16f
-            setTextColor(Color.WHITE)
-            setPadding(dp(22), dp(12), dp(22), dp(12))
-            isClickable = true
-            setOnClickListener {
-                closeBarMenu()
-                onTap()
-            }
-            TiltEffect.apply(this)
-        }
 
     /** Everything you own, in no order, without having to pick a starting point. */
     private fun shuffleAll() {
@@ -1531,10 +1483,7 @@ class ZuneApp(
      * one layer per press, and only a press with nothing left to close leaves.
      */
     fun handleBack(): Boolean {
-        if (::barMenu.isInitialized && barMenu.visibility == View.VISIBLE) {
-            closeBarMenu()
-            return true
-        }
+        if (::appBar.isInitialized && appBar.closeMenu()) return true
         if (jumpList.visibility == View.VISIBLE) {
             hideJumpList()
             return true
@@ -2307,7 +2256,7 @@ class ZuneApp(
      * looking at the list they had just tapped out of.
      */
     private fun goToNowPlaying() {
-        closeBarMenu()
+        appBar.closeMenu()
         hideJumpList()
         while (overlays.isNotEmpty()) dismissOverlay(overlays.last())
         panorama.goTo(PAGE_NOW_PLAYING, animated = true)
@@ -2750,16 +2699,8 @@ class ZuneApp(
         const val RING_DP = 56
         const val RING_INSET_DP = 5
 
-        // The app bar, which is the shell's own strip - see MetroIEApp, which has the same
-        // one. Always this near-black with white on it, whatever the theme: that is what
-        // the bar was on the phone, and it is the one part of a page that is not the page.
-        const val BAR_COLOUR = 0xFF212021.toInt()
-        const val BAR_DP = 62
-        const val BUTTON_DP = 44
-        const val GLYPH_INSET_DP = 4
-
-        /** Between the rings, as on the shell's own strip. */
-        const val GAP_DP = 28
+        /** How much room the panorama leaves for the strip along the foot of the hub. */
+        const val BAR_DP = MetroAppBar.HEIGHT_DP
 
         /** Shortest drag across the cover that counts as a skip. */
 

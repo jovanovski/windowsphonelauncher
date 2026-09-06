@@ -58,14 +58,28 @@ class MonochromeIconProvider(private val context: Context) {
     private val inkCache = mutableMapOf<String, RectF?>()
 
     /**
+     * Guards the two caches, which are asked from more than one thread: the app list
+     * resolves its rows' artwork on a worker, so that typing in its search field is not
+     * stalled behind a package manager call, while the tiles ask for theirs on the main
+     * thread as they are laid out.
+     *
+     * Held around the maps and nothing else. Measuring is the expensive half, and doing it
+     * inside the lock would put the main thread to sleep behind a background raster - two
+     * threads measuring the same artwork at once is a wasted measure, not a wrong answer.
+     */
+    private val lock = Any()
+
+    /**
      * Forgets cached measurements for a package.
      *
      * Its artwork has changed, so the proportion of its canvas the content covers has to be
      * measured again - otherwise a new icon is drawn scaled for the old one.
      */
     fun invalidate(packageName: String) {
-        ratioCache.keys.removeAll { it.endsWith(":$packageName") }
-        inkCache.keys.removeAll { it.endsWith(":$packageName") }
+        synchronized(lock) {
+            ratioCache.keys.removeAll { it.endsWith(":$packageName") }
+            inkCache.keys.removeAll { it.endsWith(":$packageName") }
+        }
     }
 
     /**
@@ -76,22 +90,33 @@ class MonochromeIconProvider(private val context: Context) {
      * taken under the previous theme was of a different picture.
      */
     fun invalidateAll() {
-        ratioCache.clear()
-        inkCache.clear()
+        synchronized(lock) {
+            ratioCache.clear()
+            inkCache.clear()
+        }
     }
 
-    /** Cached [measureContentRatio]; measuring means rasterising, so do it once per app. */
-    fun ratioFor(key: String, drawable: Drawable): Float =
-        ratioCache.getOrPut(key) { measureContentRatio(drawable) }
+    /**
+     * Cached [measureContentRatio]; measuring means rasterising, so do it once per app.
+     *
+     * Answered out of the ink box under the same key, which is the only thing that
+     * rasterising is for - so artwork asked for both is drawn once rather than twice.
+     */
+    fun ratioFor(key: String, drawable: Drawable): Float {
+        synchronized(lock) { ratioCache[key] }?.let { return it }
+        val ratio = ratioOf(inkFor(key, drawable), drawable)
+        synchronized(lock) { ratioCache[key] = ratio }
+        return ratio
+    }
 
     /**
      * Cached [measureInk]. Null is a real answer - artwork that drew nothing - and is
      * cached as one, so a blank drawable is not rasterised again on every bind.
      */
     fun inkFor(key: String, drawable: Drawable): RectF? {
-        if (inkCache.containsKey(key)) return inkCache[key]
+        synchronized(lock) { if (inkCache.containsKey(key)) return inkCache[key] }
         val ink = measureInk(drawable)
-        inkCache[key] = ink
+        synchronized(lock) { inkCache[key] = ink }
         return ink
     }
 
@@ -149,8 +174,12 @@ class MonochromeIconProvider(private val context: Context) {
          * bounds. Drawn at a single fixed size, those land at visibly different optical
          * sizes on neighbouring tiles.
          */
-        fun measureContentRatio(drawable: Drawable): Float {
-            val ink = measureInk(drawable) ?: return 1f
+        fun measureContentRatio(drawable: Drawable): Float =
+            ratioOf(measureInk(drawable), drawable)
+
+        /** [measureContentRatio] once the ink box has already been measured. */
+        private fun ratioOf(ink: RectF?, drawable: Drawable): Float {
+            if (ink == null) return 1f
             val (w, h) = canvasOf(drawable)
             val ratio = maxOf(ink.width() * w, ink.height() * h) / maxOf(w, h)
             return ratio.coerceIn(MIN_RATIO, 1f)

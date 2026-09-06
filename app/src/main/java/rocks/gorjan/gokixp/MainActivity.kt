@@ -498,6 +498,15 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         private const val PICK_TARGET_WP81_BACKGROUND = "wp81_background"
         private const val PICK_TARGET_WP81_ICON_PREFIX = "wp81_icon:"
 
+        /**
+         * How large the flat swatch behind this launcher is. See [matchDeviceWallToTheme].
+         *
+         * Small, but not one pixel: a wallpaper is read back and sampled by the system for
+         * the colours it hands to other things, and a single pixel is the size at which
+         * some of that quietly declines to work.
+         */
+        private const val WALL_SWATCH_PX = 32
+
         /** How long an in-app notification stays on screen. */
         private const val NOTIFICATION_DURATION_MS = 7000L
 
@@ -2556,6 +2565,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             context = this,
             palette = rocks.gorjan.gokixp.wp81.WP81Palette.from(themeManager)
         )
+        calculatorAppInstance = calculator
 
         val view = calculator.createView()
         windowsDialog.setContentView(view)
@@ -2564,10 +2574,15 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         windowsDialog.setMaximizable(true)
         windowsDialog.setTaskbarIcon(R.drawable.wp81_glyph_calculator)
         windowsDialog.setTitle("Calculator")
+        // Kept only so a change of theme can reach it - see repaintOpenWP81Programs.
+        // Nothing else asks the calculator anything once it is up.
+        windowsDialog.setOnCloseListener { calculatorAppInstance = null }
         windowsDialog.setContextMenuView(contextMenu)
         floatingWindowManager.showWindow(windowsDialog)
         turnWP81PageIn(view)
     }
+
+    private var calculatorAppInstance: rocks.gorjan.gokixp.apps.calculator.CalculatorApp? = null
 
     private var peopleAppInstance: rocks.gorjan.gokixp.apps.people.PeopleApp? = null
 
@@ -6507,6 +6522,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         }
 
         shell.applyPalette(palette)
+        shell.navBar.setAccented(themeManager.getWP81AccentNavBar())
         applyWP81SystemBarAppearance(palette)
         applyWP81StartBackground()
         rebaseFloatingWindowsForWP81()
@@ -7727,38 +7743,13 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
 
     /**
-     * What the weather tile turns through: what it is doing now, what the sky does next -
-     * today's high until its peak has passed and tonight's low after it - and tomorrow's.
+     * Hands every weather tile what it shows.
      *
-     * Readings of the same kind, each labelled - a temperature with no label is a number,
-     * and several of them in turn without labels are numbers that appear to disagree. The
-     * 1x1 shortens the labels rather than dropping them: "max tomorrow" does not fit
-     * across it, and "tomorrow" says the necessary half.
-     *
-     * Falls back to the current reading alone when the forecast has not arrived, which
-     * leaves the tile still rather than turning between a number and two blanks.
-     */
-    private fun wp81WeatherFaces(
-        size: rocks.gorjan.gokixp.wp81.TileSize
-    ): List<rocks.gorjan.gokixp.wp81.TileView.LiveFace> = wp81TileHost.weatherFaces(size)
-
-    /**
-     * Hands the weather tiles what they show: a row of readings, or a run of faces.
-     *
-     * Which one depends on the footprint, and only on that. A tile two cells across and
-     * two deep has the room to put now, what is next and tomorrow side by side, and a tile
-     * that can show all three at once should not be making the user wait nine seconds for
-     * the one they wanted. Anything smaller turns them over as it always did.
-     *
-     * Both are set on every refresh, one of them to nothing: a tile resized from wide to
-     * small is the moment the panel has to come down and the faces have to start turning
-     * again, and the size is read here rather than remembered.
-     *
-     * Tile by tile, because Weather is a program in the app list and its tile can be
-     * pinned twice - a wide one on the wall and a small one further down are both showing
-     * the same forecast in two different ways. The columns go to all of them at once, the
-     * wall keeping back the ones with no room for them; the faces are shortened to the
-     * tile they are for, so those are handed over one at a time.
+     * One reading, to all of them at once, whatever size they are: where it is, what the
+     * sky is doing, the temperature and the day's range. What a given tile has the room
+     * for is the face's own decision - see WeatherFaceView - so a wide one on the wall and
+     * a small one further down show the same reading cut to fit rather than two different
+     * things.
      */
     private fun refreshWP81Weather() {
         // First, and outside everything below it. What follows gives up as soon as it
@@ -7766,26 +7757,8 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // tile off has said nothing about wanting no warning when it is about to rain.
         considerRainNotification()
         if (!wp81HasProgramTile(rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_WEATHER)) return
-        val panel = wp81TileHost.weatherPanel()
-
-        for (start in wp81TileSurfaces()) {
-            // The faces go before the panel does, so a tile is not left turning over a
-            // reading behind a row that has just taken the front. The same order the
-            // People tile clears its own words in.
-            start.setLiveWidgetRotation(
-                rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_WEATHER,
-                rocks.gorjan.gokixp.wp81.TileView.LiveStyle.READING
-            ) { tile ->
-                if (panel.isNotEmpty() && tile.size.canShowForecast) emptyList()
-                // Nothing cached yet: the tile keeps whatever it was turning rather than
-                // being emptied. See StartScreenView.setLiveWidgetRotation.
-                else wp81WeatherFaces(tile.size).ifEmpty { null }
-            }
-            // Then the columns, to every weather tile at once: the surface hands them only
-            // to the ones with the width for them, and takes the panel back down from any
-            // that have been resized out of it.
-            start.setForecast(panel)
-        }
+        val face = wp81TileHost.weatherFace()
+        for (start in wp81TileSurfaces()) start.setWeatherFace(face)
     }
 
     /**
@@ -8214,13 +8187,11 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         themeManager.setWP81StartBackgroundFocusX(0.5f)
         applyWP81StartBackground()
         refreshWP81BackgroundControls()
-        // Straight onto the same command list a bundled wallpaper answers a hold with.
-        // A photo the user went looking for is the one most likely to be wanted on the
-        // phone as well, and there is nothing to hold here - it was chosen in a picker
-        // that has already closed. Posted so the list is placed against a laid-out shell.
-        wp81Shell?.let { shell ->
-            shell.post { showWP81WallpaperMenu(stored, shell.height * 0.4f) }
-        }
+        // Nothing else is asked. Browsing for a picture is a request to dress Start, and
+        // the command list used to open over the answer offering to dress the phone's own
+        // walls as well - a second question nobody had asked, standing in the way of
+        // looking at the thing they had just chosen. It is still one hold away, on the
+        // square the picture now occupies, which is where every other wallpaper keeps it.
     }
 
     /** Applies an image picked as a tile icon for [packageName]. */
@@ -8406,6 +8377,14 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             themeManager.setWP81TileCounts(enabled)
             applyWP81TileCounts()
         }
+        // The keys' own colour. Applied to the bar rather than through the palette: the
+        // accent strip is the navigation bar's alone, and everything else on screen keeps
+        // the page's ground. See WP81NavBar.setAccented.
+        shell.settingsPage.setAccentNavBar(themeManager.getWP81AccentNavBar())
+        shell.settingsPage.onAccentNavBarChanged = { enabled ->
+            themeManager.setWP81AccentNavBar(enabled)
+            shell.navBar.setAccented(enabled)
+        }
         shell.settingsPage.onColumnsPicked = { columns ->
             themeManager.setWP81Columns(columns)
             shell.startScreen.columns = columns
@@ -8456,13 +8435,13 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         shell.contextMenu.show(
             "wallpaper",
             listOf(
-                rocks.gorjan.gokixp.wp81.WP81ContextMenu.Item("apply to lock screen") {
-                    applyWP81WallpaperToDevice(source, system = false, lock = true)
-                },
-                rocks.gorjan.gokixp.wp81.WP81ContextMenu.Item("apply to system wallpaper") {
+                rocks.gorjan.gokixp.wp81.WP81ContextMenu.Item("only launcher") {
                     applyWP81WallpaperToDevice(source, system = true, lock = false)
                 },
-                rocks.gorjan.gokixp.wp81.WP81ContextMenu.Item("apply to both") {
+                rocks.gorjan.gokixp.wp81.WP81ContextMenu.Item("only lock screen") {
+                    applyWP81WallpaperToDevice(source, system = false, lock = true)
+                },
+                rocks.gorjan.gokixp.wp81.WP81ContextMenu.Item("both") {
                     applyWP81WallpaperToDevice(source, system = true, lock = true)
                 },
                 // Nothing to undo - the list has done nothing yet - so this is the row that
@@ -8502,11 +8481,14 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 Log.e("MainActivity", "WP8.1: failed to set device wallpaper", e)
                 false
             }
+            // The launcher wall now holds a picture somebody chose, so the Light/Dark
+            // setting stops painting over it. See matchDeviceWallToTheme.
+            if (done && system) themeManager.setKeepsDeviceWallInStep(false)
             runOnUiThread {
                 val where = when {
-                    system && lock -> "Applied to lock screen and system wallpaper"
-                    system -> "Applied to system wallpaper"
-                    else -> "Applied to lock screen"
+                    system && lock -> "Applied to the launcher and the lock screen"
+                    system -> "Applied to the launcher"
+                    else -> "Applied to the lock screen"
                 }
                 showNotification(
                     "Wallpaper",
@@ -9222,9 +9204,55 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     private fun commitWP81Appearance(accent: Int, dark: Boolean) {
         val changed = accent != themeManager.getWP81Accent() || dark != themeManager.isWP81Dark()
         if (!changed) return
+        // Read before the setting is written over, because only a change of *background*
+        // is worth dressing the phone's wall for: an accent is twenty taps in a row on
+        // that page, and writing a wallpaper on each of them is twenty writes for a
+        // surface whose colour has not moved.
+        val backgroundChanged = dark != themeManager.isWP81Dark()
         themeManager.setWP81Accent(accent)
         themeManager.setWP81Dark(dark)
         refreshWP81Palette()
+        if (backgroundChanged) matchDeviceWallToTheme()
+    }
+
+    /**
+     * Paints the phone's own launcher wall the colour this shell's pages are.
+     *
+     * There is a wall under this launcher, and normally nobody sees it: Start is drawn
+     * over the whole of it. It shows for the moment between a program being asked for and
+     * that program having something on screen - which on the Dark theme is black over
+     * black and invisible, and on the Light theme is a black flash in front of a white
+     * page every single time a program is opened.
+     *
+     * A colour rather than a picture, and generated rather than shipped: the wall is
+     * stretched to fill the screen whatever size it arrives at, so one flat swatch a few
+     * dozen pixels across says everything a full-screen PNG of the same colour would and
+     * costs nothing to keep.
+     *
+     * Only while the user has not put a picture there themselves - see
+     * [WP81Settings.keepsDeviceWallInStep]. Off the main thread, because writing a
+     * wallpaper goes to the system's own store and back.
+     */
+    private fun matchDeviceWallToTheme() {
+        if (!themeManager.keepsDeviceWallInStep()) return
+        val colour = if (themeManager.isWP81Dark()) Color.BLACK else Color.WHITE
+        Thread {
+            val swatch = Bitmap.createBitmap(WALL_SWATCH_PX, WALL_SWATCH_PX, Bitmap.Config.ARGB_8888)
+            swatch.eraseColor(colour)
+            try {
+                android.app.WallpaperManager.getInstance(this).setBitmap(
+                    swatch,
+                    null,
+                    // Nothing to keep: it is one colour, and the setting that decides which
+                    // is backed up already.
+                    false,
+                    android.app.WallpaperManager.FLAG_SYSTEM
+                )
+            } catch (e: Exception) {
+                Log.w("MainActivity", "WP8.1: could not match the device wall to the theme", e)
+            }
+            swatch.recycle()
+        }.start()
     }
 
     /**
@@ -9307,7 +9335,59 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         applyWP81SystemBarAppearance(palette)
         findViewById<RelativeLayout>(R.id.main_background)?.setBackgroundColor(palette.background)
         findViewById<View>(R.id.root_container)?.setBackgroundColor(palette.background)
+        repaintOpenWP81Programs(palette)
     }
+
+    /**
+     * Hands the new theme to the programs that are still open behind the shell.
+     *
+     * Leaving a program minimises its window rather than closing it - see
+     * [minimiseWP81Windows] - so one the user has walked away from is still standing
+     * there, built out of the palette that was current when it opened, and comes back in
+     * that palette however many times the theme has changed since. Which is what a light
+     * music app on a dark phone is.
+     *
+     * Each one rebuilds itself and hands back a view - see [WP81Program] - and the window
+     * it lives in is handed the new one. Windows that are not open are not in the list to
+     * begin with: a program is only kept hold of while its window is.
+     */
+    private fun repaintOpenWP81Programs(palette: rocks.gorjan.gokixp.wp81.WP81Palette) {
+        for ((identifier, program) in openWP81Programs()) {
+            val window = floatingWindowManager.findWindowByIdentifier(identifier) ?: continue
+            try {
+                window.setContentView(program.applyPalette(palette))
+            } catch (e: Exception) {
+                // One program that cannot rebuild is one program in the wrong colours; it
+                // is not a reason for the other eleven to stay in them, nor to bring the
+                // shell down in the middle of a theme change.
+                Log.e("MainActivity", "WP8.1: $identifier could not be rebuilt", e)
+            }
+        }
+    }
+
+    /**
+     * Every program that is open, against the window it is open in.
+     *
+     * Written out rather than discovered: each program is held in a field of its own,
+     * cleared when its window closes, and there is no register to walk. Anything added
+     * here has to be added to this list or it is the one that comes back in last week's
+     * theme.
+     */
+    private fun openWP81Programs(): List<Pair<String, rocks.gorjan.gokixp.wp81.WP81Program>> =
+        listOfNotNull(
+            zuneAppInstance?.let { "system.zune" to it },
+            metroIEAppInstance?.let { "system.internet_explorer" to it },
+            metroFilesAppInstance?.let { "system.files" to it },
+            peopleAppInstance?.let { "system.people" to it },
+            newsAppInstance?.let { "system.news" to it },
+            alarmsAppInstance?.let { "system.alarms" to it },
+            weatherAppInstance?.let { "system.weather" to it },
+            metroNotepadAppInstance?.let { "system.notepad" to it },
+            calculatorAppInstance?.let { "system.calculator" to it },
+            metroMinesweeperInstance?.let { "system.minesweeper" to it },
+            metroSolitaireInstance?.let { "system.solitare" to it },
+            welcomeAppInstance?.let { "system.welcome" to it }
+        )
 
 
     override fun attachBaseContext(newBase: Context) {

@@ -34,9 +34,10 @@ import rocks.gorjan.gokixp.R
  * whoever was handed over - favourites first, so they are the faces the wall opens on, and
  * the few behind them are what a square has to turn over to; each turn draws
  * its square a fresh depth of black - see [shade]; and after a few of those the whole
- * mosaic turns over onto one person and back again. The names are not drawn here - the
- * tile's own label carries them, so a name on this tile is set in the same type as a name
- * on any other, and [onHero] is how it hears about it.
+ * mosaic turns over onto one person and back again. No names anywhere: the tile is named
+ * for the program it opens, whichever face of whichever contact it happens to be showing,
+ * and a wall of faces that renamed itself every few seconds was a tile nobody could find
+ * twice.
  *
  * Drawn rather than assembled out of child views, unlike the folder preview it otherwise
  * resembles. Everything on it is a rectangle of a picture: the squares, the flip that
@@ -97,9 +98,6 @@ class PeopleMosaicView(
 
     /** How many squares have turned over since the last takeover. */
     private var sinceHero = 0
-
-    /** Told whenever the takeover comes or goes, so the tile's label can carry the name. */
-    var onHero: ((ContactFeed.Person?) -> Unit)? = null
 
     // --- What is mid-flip ---------------------------------------------------------------
     // Two flips, never at once: one square turning over, or the whole mosaic turning onto
@@ -321,7 +319,7 @@ class PeopleMosaicView(
             }
             nextHero = (nextHero + offset + 1) % people.size
             sinceHero = 0
-            startTurn(WHOLE) { setHero(candidate) }
+            startTurn(WHOLE) { hero = candidate }
             return
         }
         sinceHero = 0
@@ -331,17 +329,11 @@ class PeopleMosaicView(
 
     /** Turns the whole mosaic back to the wall of squares. */
     private fun turnTo(person: ContactFeed.Person?) {
-        startTurn(WHOLE) { setHero(person) }
-    }
-
-    private fun setHero(person: ContactFeed.Person?) {
-        hero = person
-        onHero?.invoke(person)
+        startTurn(WHOLE) { hero = person }
     }
 
     private fun clearHero() {
-        if (hero == null) return
-        setHero(null)
+        hero = null
     }
 
     /**

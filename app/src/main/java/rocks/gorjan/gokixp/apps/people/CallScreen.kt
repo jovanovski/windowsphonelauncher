@@ -881,8 +881,14 @@ class CallScreen(
         const val SMALL_ACTION_DP = 46
         const val SMALL_ACTION_GLYPH_DP = 20
 
-        /** The strip the quick replies are listed on. The app bar's own near-black. */
-        val MENU_COLOUR = rocks.gorjan.gokixp.wp81.MetroAppBar.BAR_COLOUR
+        /**
+         * The strip the quick replies are listed on.
+         *
+         * The dark theme's app-bar near-black whatever the theme, unlike an app bar: a
+         * call arrives over a black screen with a photograph on it rather than over a
+         * page, and there is no light version of that screen for a light strip to sit on.
+         */
+        val MENU_COLOUR = rocks.gorjan.gokixp.wp81.WP81Palette.DARK_CHROME
 
         /** What the rest of the screen is dimmed to while they are up. */
         val SCRIM = Color.argb(170, 0, 0, 0)

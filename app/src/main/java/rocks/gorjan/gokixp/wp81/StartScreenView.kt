@@ -483,18 +483,16 @@ class StartScreenView(
     }
 
     /**
-     * Hands every weather tile the forecast it lays across itself, or nothing at all.
+     * Hands every weather tile the reading it lays across itself, or nothing at all.
      *
-     * Nothing is how a tile is told to go back to turning its readings over one at a time,
-     * which is what a tile too small for a row of columns does - and which of the two each
-     * tile gets is settled here rather than by the caller, because two weather tiles can
-     * be pinned at two different sizes and only the wall knows what size they are. See
-     * TileSize.canShowForecast and TileView.setForecast.
+     * Nothing puts a tile back to what it would otherwise show, which is what one gets
+     * while there is no forecast cached. What fits on the tile is the face's own decision:
+     * it is handed the whole reading whatever size the tile is, and drops the lines a
+     * short one has no room for. See WeatherFaceView and TileView.setWeatherFace.
      */
-    fun setForecast(columns: List<ForecastPanelView.Column>) {
+    fun setWeatherFace(reading: WeatherFaceView.Reading?) {
         forEachTileView {
-            if (it.tile.kind != Tile.Kind.LIVE_WEATHER) return@forEachTileView
-            it.setForecast(if (it.tile.size.canShowForecast) columns else emptyList())
+            if (it.tile.kind == Tile.Kind.LIVE_WEATHER) it.setWeatherFace(reading)
         }
     }
 

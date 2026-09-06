@@ -300,14 +300,9 @@ class CarStartScreen(carContext: CarContext) : Screen(carContext) {
                         .map { TileView.Line(it.title, it.text) }
                 }
 
-                // The weather turns over three readings rather than showing one, so it
-                // arrives separately from the rest - see WP81TileHost.weatherFaces.
-                tiles.firstOrNull { it.kind == Tile.Kind.LIVE_WEATHER }?.let { weather ->
-                    val faces = tileHost.weatherFaces(weather.size)
-                    if (faces.isNotEmpty()) {
-                        setLiveWidgetRotation(weather.id, faces, TileView.LiveStyle.READING)
-                    }
-                }
+                // The weather is a face of its own rather than a reading off the tile, so
+                // it arrives separately from the rest - see WP81TileHost.weatherFace.
+                setWeatherFace(tileHost.weatherFace())
             }
             show.setContentView(
                 view,

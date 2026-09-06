@@ -19,6 +19,7 @@ import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import android.view.inputmethod.InputMethodSubtype
 import androidx.core.content.FileProvider
+import androidx.core.view.WindowCompat
 import androidx.core.view.inputmethod.EditorInfoCompat
 import androidx.core.view.inputmethod.InputConnectionCompat
 import androidx.core.view.inputmethod.InputContentInfoCompat
@@ -656,6 +657,36 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         palette = WP81Palette.from(themeManager)
         host?.applyPalette(palette)
         emoji?.applyPalette(palette)
+        paintNavigationBar()
+    }
+
+    /**
+     * Says which way round the system should draw the strip it puts over the keyboard.
+     *
+     * The chevron and the globe down there are the system's, not this keyboard's - see
+     * [KeyboardView.bottomInset] - and it draws them white unless it is told the bar they
+     * sit in is a light one. What they sit on is the keyboard's own ground, which under
+     * the Light theme is very nearly white, so left untold the system draws a white globe
+     * and a white chevron on white and the two keys nobody can afford to lose are gone.
+     *
+     * Asked for on every show rather than once: the flag belongs to a window that is torn
+     * down and rebuilt with the keyboard, and the theme can change while it is down.
+     */
+    private fun paintNavigationBar() {
+        val host = window?.window ?: return
+        WindowCompat.getInsetsController(host, host.decorView)
+            .isAppearanceLightNavigationBars = !palette.isDark
+    }
+
+    /**
+     * The window is up: say again which way round its strip goes.
+     *
+     * [refreshPalette] has already asked once, from `onStartInputView`, which on some
+     * shows runs before the window is on screen and has its appearance settled.
+     */
+    override fun onWindowShown() {
+        super.onWindowShown()
+        paintNavigationBar()
     }
 
     // ---------------------------------------------------------------- keys
@@ -911,7 +942,13 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
             // the fourth letter arrived three searches late. Only the newest is worth doing.
             if (generation != searchGeneration) return@execute
             val suggestions = try {
-                engine.candidates(typed, previous)
+                // And again, from inside. Being overtaken *while* searching is the ordinary
+                // case during a fast run of keys, not the exceptional one - a search takes a
+                // few milliseconds and a thumb can beat that - and a search that runs to the
+                // end anyway is a few milliseconds of a core spent on a word the user has
+                // already finished. The keystroke that overtook it is waiting behind exactly
+                // that work.
+                engine.candidates(typed, previous) { generation != searchGeneration }
             } catch (e: Exception) {
                 emptyList()
             }

@@ -9,6 +9,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -49,6 +50,7 @@ import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.content.res.ResourcesCompat
+import androidx.core.graphics.ColorUtils
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import java.io.File
@@ -63,7 +65,9 @@ import rocks.gorjan.gokixp.wp81.MetroPageTransition
 import rocks.gorjan.gokixp.wp81.SvgIcon
 import rocks.gorjan.gokixp.wp81.TiltEffect
 import rocks.gorjan.gokixp.wp81.WP81ContextMenu
+import rocks.gorjan.gokixp.wp81.MetroAppBar
 import rocks.gorjan.gokixp.wp81.WP81Palette
+import rocks.gorjan.gokixp.wp81.WP81Program
 import rocks.gorjan.gokixp.wp81.applyToField
 
 /**
@@ -105,7 +109,7 @@ internal data class HistoryEntry(val url: String, var title: String, val visited
 @SuppressLint("SetJavaScriptEnabled", "ClickableViewAccessibility")
 class MetroIEApp(
     private val context: Context,
-    private val palette: WP81Palette,
+    private var palette: WP81Palette,
     private val onShowNotification: (String, String, (() -> Unit)?) -> Unit,
     private val onUpdateWindowTitle: (String) -> Unit,
     /**
@@ -116,7 +120,7 @@ class MetroIEApp(
      * The last page has been closed, and the browser goes with it. See [closeTab].
      */
     private val onRequestClose: () -> Unit = {}
-) {
+) : WP81Program {
 
     /**
      * One open page.
@@ -226,7 +230,7 @@ class MetroIEApp(
     private var current: Tab? = null
 
     /** The strip along the bottom: the menu, when it is open, sitting on top of the row. */
-    private lateinit var appBar: LinearLayout
+    private lateinit var appBar: MetroAppBar
     private lateinit var menuPanel: LinearLayout
 
     /** Holds [menuPanel], and stops a long favourites list running off the top edge. */
@@ -310,6 +314,30 @@ class MetroIEApp(
      * mode back off has to put back exactly what was there, not an approximation of it.
      */
     private var mobileAgent: String? = null
+
+    /**
+     * Rebuilds the program in a new theme. See [WP81Program].
+     */
+    override fun applyPalette(palette: WP81Palette): View {
+        // Written down first, then torn down: createView restores the tabs from what was
+        // saved, and a WebView left behind by a rebuild goes on loading and rendering with
+        // nothing on screen to show for it. The pages come back at the addresses they were
+        // at rather than in the state they were in, which is what a rebuild costs here.
+        //
+        // The downloads tick is posted against the root that is about to be replaced, so
+        // it comes off with it. Nothing reposts it until the downloads page is opened
+        // again, which is where it is read.
+        root.removeCallbacks(downloadsTick)
+        saveTabs()
+        for (tab in tabs) {
+            tab.webView.stopLoading()
+            tab.webView.destroy()
+        }
+        tabs.clear()
+        current = null
+        this.palette = palette
+        return createView()
+    }
 
     fun createView(initialUrl: String? = null, fromAnotherApp: Boolean = false): View {
         val prefs = context.getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE)
@@ -580,23 +608,18 @@ class MetroIEApp(
         }
         column.addView(tabsScroller, LinearLayout.LayoutParams(MATCH, 0, 1f))
 
-        // Its own app bar, in the same near-black as the browser's: this page has one
+        // Its own app bar, on the same ground as the browser's: this page has one
         // command, and it is the same kind of thing as the browser's own strip.
         //
         // Centred and unlabelled, because it is the only thing on the bar. A lone button
         // in the left corner reads as the first of a row that never arrives, and a plus
         // says "another one" without help.
-        val bar = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            setBackgroundColor(BAR_COLOUR)
-            isClickable = true
-        }
-        bar.addView(circleButton(NEW_ICON) {
+        val bar = MetroAppBar(context, palette)
+        bar.addCommand(NEW_ICON) {
             closeTabs()
             openTab(homepage)
-        }, LinearLayout.LayoutParams(dp(BUTTON_DP), dp(BUTTON_DP)))
-        column.addView(bar, LinearLayout.LayoutParams(MATCH, dp(BAR_DP)))
+        }
+        column.addView(bar, LinearLayout.LayoutParams(MATCH, WRAP))
 
         page.addView(column, FrameLayout.LayoutParams(MATCH, MATCH))
         return page
@@ -1324,7 +1347,6 @@ class MetroIEApp(
             // the query, which on a share link is the part that is the key to the file.
             val at = Uri.parse(url)
             Log.d(TAG, "Download $id is $fileName from ${at.host}${at.path}")
-            notify("Downloading", fileName)
         } catch (e: Exception) {
             Log.e(TAG, "Could not download $url", e)
             notify("Internet Explorer", "That file could not be downloaded")
@@ -1658,13 +1680,8 @@ class MetroIEApp(
 
     // ---------------------------------------------------------------- the app bar
 
-    private fun buildAppBar(): LinearLayout {
-        val bar = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(BAR_COLOUR)
-            // Its own taps stop here rather than reaching the page underneath it.
-            isClickable = true
-        }
+    private fun buildAppBar(): MetroAppBar {
+        val bar = MetroAppBar(context, palette)
 
         menuPanel = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -1684,32 +1701,23 @@ class MetroIEApp(
             isVerticalScrollBarEnabled = false
         }
         menuScroller.addView(menuPanel, FrameLayout.LayoutParams(MATCH, WRAP))
-        bar.addView(menuScroller, LinearLayout.LayoutParams(MATCH, WRAP))
-
-        bar.addView(buildSuggestions(), LinearLayout.LayoutParams(MATCH, WRAP))
-
-        val row = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(10), 0, dp(10), 0)
-        }
+        bar.addPanel(menuScroller)
+        bar.addPanel(buildSuggestions())
 
         // The left button is the tabs button, as it was on the phone once IE could hold
         // more than one page: it both says how many are open and is the way to them.
         // Reload went where the phone put it when that button was spent - in the menu
         // under the dots. See buildMenu.
-        tabsButton = circleButton(null) { openTabs() }
+        tabsButton = bar.addCommand(iconAsset = null) { openTabs() }
         paintTabsButton()
-        row.addView(tabsButton, LinearLayout.LayoutParams(dp(BUTTON_DP), dp(BUTTON_DP)))
 
-        row.addView(buildAddressColumn(), LinearLayout.LayoutParams(0, WRAP, 1f).apply {
-            marginStart = dp(10)
-            marginEnd = dp(10)
-        })
+        // The address stands between the two rings, which is the one thing this strip has
+        // that no other in the shell does - see MetroAppBar.setStretch.
+        bar.setStretch(buildAddressColumn())
 
-        row.addView(buildEllipsis(), LinearLayout.LayoutParams(dp(BUTTON_DP), dp(BUTTON_DP)))
-
-        bar.addView(row, LinearLayout.LayoutParams(MATCH, dp(BAR_DP)))
+        // The dots open the browser's own list rather than the strip's: what is behind
+        // them here has tick boxes and favourites in it, not just words. See buildMenu.
+        bar.setOverflow { if (menuScroller.visibility == View.VISIBLE) closeMenu() else openMenu() }
         return bar
     }
 
@@ -1836,67 +1844,9 @@ class MetroIEApp(
     }
 
     /**
-     * The three dots.
-     *
-     * Drawn rather than typed: an ellipsis character is a row of full stops sitting on the
-     * baseline, and what the phone had was three round dots centred in the button.
-     */
-    private fun buildEllipsis(): View {
-        val holder = FrameLayout(context).apply {
-            isClickable = true
-            setOnClickListener {
-                Haptics.tap(it)
-                if (menuScroller.visibility == View.VISIBLE) closeMenu() else openMenu()
-            }
-        }
-        val dots = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-        }
-        repeat(3) { i ->
-            dots.addView(View(context).apply {
-                background = GradientDrawable().apply {
-                    shape = GradientDrawable.OVAL
-                    setColor(Color.WHITE)
-                }
-            }, LinearLayout.LayoutParams(dp(DOT_DP), dp(DOT_DP)).apply {
-                if (i > 0) marginStart = dp(4)
-            })
-        }
-        holder.addView(dots, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.CENTER))
-        TiltEffect.apply(holder)
-        return holder
-    }
-
-    /**
-     * A white ring with a white mark in it, open in the middle.
-     *
-     * The shape the Start screen puts on a tile in edit mode, without its black fill: on
-     * the app bar there is nothing behind the button but the bar, so the ring alone is
-     * the button and the strip shows through it. See wp81_appbar_circle.
-     */
-    private fun circleButton(icon: String?, onTap: () -> Unit): ImageView =
-        ImageView(context).apply {
-            setBackgroundResource(R.drawable.wp81_appbar_circle)
-            if (icon != null) setImageDrawable(SvgIcon.fromAsset(context, icon))
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            setPadding(dp(GLYPH_INSET_DP), dp(GLYPH_INSET_DP), dp(GLYPH_INSET_DP), dp(GLYPH_INSET_DP))
-            outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
-            clipToOutline = true
-            isClickable = true
-            setOnClickListener {
-                Haptics.tap(it)
-                onTap()
-            }
-            TiltEffect.apply(this)
-        }
-
-    // ---------------------------------------------------------------- suggestions
-
-    /**
      * The list that grows over the bar while an address is being typed.
      *
-     * Same strip and same near-black as the menu, and capped the same way: it grows
+     * Same strip and same ground as the menu, and capped the same way: it grows
      * upward from the field, and with the keyboard up there is not much screen left for
      * it to grow into. See MAX_SUGGESTIONS for why the list is short as well as the box.
      */
@@ -1990,7 +1940,7 @@ class MetroIEApp(
             text = entry.title.ifBlank { hostOf(entry.url) }
             typeface = ResourcesCompat.getFont(context, R.font.segoeui_regular)
             textSize = 15f
-            setTextColor(Color.WHITE)
+            setTextColor(palette.onChrome)
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
         }, LinearLayout.LayoutParams(MATCH, WRAP))
@@ -1998,7 +1948,7 @@ class MetroIEApp(
             text = entry.url
             typeface = ResourcesCompat.getFont(context, R.font.segoeui_regular)
             textSize = 12f
-            setTextColor(SUGGESTION_URL_COLOUR)
+            setTextColor(onChromeAlpha(SUGGESTION_URL_ALPHA))
             maxLines = 1
             // Cut at the end, where an address matters least: the host is at the front,
             // and that is what says which site the row is offering.
@@ -2238,7 +2188,7 @@ class MetroIEApp(
             // Greyed rather than gone, the way the phone greyed a command it was keeping
             // in place. It does not tilt and it does not answer, so there is nothing to
             // learn from pressing it beyond what the colour already said.
-            setTextColor(if (enabled) Color.WHITE else DISABLED_TEXT)
+            setTextColor(if (enabled) palette.onChrome else onChromeAlpha(DISABLED_ALPHA))
             setPadding(dp(22), dp(12), dp(22), dp(12))
             isClickable = enabled
             if (enabled) {
@@ -2259,23 +2209,23 @@ class MetroIEApp(
     /**
      * The box beside a setting on the menu.
      *
-     * Drawn here rather than taken from the shell's own MetroMarker, which colours
-     * itself out of the palette. This strip is the one surface in the phone that does not
-     * follow the palette - see the note on the class - and a light theme's marker on it
-     * would be a dark grey outline on near-black. White on the black strip, filled white
-     * with the tick knocked out of it, is the same box in the same two states.
+     * Drawn here rather than taken from the shell's own MetroMarker, which colours itself
+     * for the page rather than for the strip: on the bar a marker in the page's ink would
+     * be a black outline on near-black under a dark theme. In the strip's own ink, filled
+     * with it and the tick knocked back out to the strip's ground, it is the same box in
+     * the same two states under either setting.
      */
     private fun tickBox(on: Boolean): Drawable {
         val size = dp(TICK_SIZE_DP)
         val frame = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            setColor(if (on) Color.WHITE else Color.TRANSPARENT)
-            setStroke(dp(2), Color.WHITE)
+            setColor(if (on) palette.onChrome else Color.TRANSPARENT)
+            setStroke(dp(2), palette.onChrome)
         }
         val box = if (!on) frame else {
             val tick = ResourcesCompat
                 .getDrawable(context.resources, R.drawable.ic_check_windows, null)
-                ?.mutate()?.apply { setTint(Color.BLACK) }
+                ?.mutate()?.apply { setTint(palette.chrome) }
             if (tick == null) frame else LayerDrawable(arrayOf(frame, tick)).apply {
                 setLayerInset(1, dp(3), dp(3), dp(3), dp(3))
             }
@@ -2297,7 +2247,7 @@ class MetroIEApp(
             text = favourite.name
             typeface = ResourcesCompat.getFont(context, R.font.segoeui_regular)
             textSize = 16f
-            setTextColor(Color.WHITE)
+            setTextColor(palette.onChrome)
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
             setPadding(dp(22), dp(12), dp(8), dp(12))
@@ -2315,10 +2265,11 @@ class MetroIEApp(
         //
         // A bare mark rather than a ringed disc like the app bar's. Those two sit over an
         // arbitrary web page and need the ring to be seen at all; this one is on the bar's
-        // own near-black, and a row of discs down the side of a list is noise.
+        // own ground, and a row of discs down the side of a list is noise.
         if (!favourite.isDefault) {
             row.addView(ImageView(context).apply {
                 setImageDrawable(SvgIcon.fromAsset(context, REMOVE_ICON))
+                imageTintList = ColorStateList.valueOf(palette.onChrome)
                 scaleType = ImageView.ScaleType.FIT_CENTER
                 isClickable = true
                 setOnClickListener {
@@ -2337,23 +2288,7 @@ class MetroIEApp(
     }
 
     /** Each row swings down about its own top edge, on a stagger. Same as the shell's. */
-    private fun playMenuEntrance() {
-        for (i in 0 until menuPanel.childCount) {
-            val row = menuPanel.getChildAt(i)
-            row.cameraDistance = 8000f * context.resources.displayMetrics.density
-            row.pivotX = 0f
-            row.pivotY = 0f
-            row.rotationX = -90f
-            row.alpha = 0f
-            row.animate()
-                .rotationX(0f)
-                .alpha(1f)
-                .setStartDelay(i * STAGGER_MS)
-                .setDuration(180)
-                .setInterpolator(DecelerateInterpolator())
-                .start()
-        }
-    }
+    private fun playMenuEntrance() = MetroAppBar.playListEntrance(menuPanel)
 
     // ---------------------------------------------------------------- commands
 
@@ -2788,6 +2723,15 @@ class MetroIEApp(
         current = null
     }
 
+    /**
+     * The strip's ink, faded - a quieter line on the bar, or a command it cannot run yet.
+     *
+     * Held back rather than named as a grey, because the ink is white over a dark page and
+     * black over a light one and a fixed grey can only be the quieter of one of them.
+     */
+    private fun onChromeAlpha(alpha: Int): Int =
+        ColorUtils.setAlphaComponent(palette.onChrome, alpha)
+
     private fun dp(v: Int) = (v * context.resources.displayMetrics.density).toInt()
 
     companion object {
@@ -2797,7 +2741,7 @@ class MetroIEApp(
         private const val WRAP = FrameLayout.LayoutParams.WRAP_CONTENT
 
         /** A command the menu is holding open but cannot run yet. */
-        private const val DISABLED_TEXT = 0x66FFFFFF.toInt()
+        private const val DISABLED_ALPHA = 0x66
 
         /** The tick box on a menu row, and the space between it and the words. */
         private const val TICK_SIZE_DP = 18
@@ -2839,11 +2783,8 @@ class MetroIEApp(
          */
         private const val MAX_SUGGESTIONS = 6
 
-        /** The address under a suggestion. The bar's own grey, against its near-black. */
-        private const val SUGGESTION_URL_COLOUR = 0xFF9A9A9A.toInt()
-
-        /** The app bar's own near-black, which is not the palette's and never was. */
-        private const val BAR_COLOUR = 0xFF212021.toInt()
+        /** The address under a suggestion, quieter than the title over it. */
+        private const val SUGGESTION_URL_ALPHA = 0x9A
 
         /** The loading line. IE's blue, from the phone. */
         private const val PROGRESS_COLOUR = 0xFF61ADDA.toInt()
@@ -2859,8 +2800,8 @@ class MetroIEApp(
         private const val PRIVATE_DP = 54
         private const val PRIVATE_HEIGHT_DP = 20
 
-        private const val BAR_DP = 62
-        private const val BUTTON_DP = 44
+        /** How much room the pages leave for the strip. Every strip in the shell is this tall. */
+        private const val BAR_DP = MetroAppBar.HEIGHT_DP
         private const val ADDRESS_DP = 40
 
         /**
@@ -2876,7 +2817,6 @@ class MetroIEApp(
         /** How far the mark sits inside the button. Enough to clear the field, no more. */
         private const val RELOAD_INSET_DP = 1
         private const val PROGRESS_DP = 3
-        private const val DOT_DP = 5
         private const val REMOVE_DP = 32
 
         /**
@@ -2923,17 +2863,6 @@ class MetroIEApp(
          * something you finished with and never closed.
          */
         private const val TAB_LIFETIME_MS = 48L * 60L * 60L * 1000L
-
-        /**
-         * How far the mark sits inside the ring.
-         *
-         * These are drawn as app-bar icons, on a 76-unit square with the mark already
-         * inset - but not by as much as a ringed disc needs, and without this the reload
-         * arrows touch the ring at the corners.
-         */
-        private const val GLYPH_INSET_DP = 6
-
-        private const val STAGGER_MS = 30L
 
         /** Where a picture waits between being fetched and being handed on. */
         private const val SHARE_DIR = "shared_pictures"

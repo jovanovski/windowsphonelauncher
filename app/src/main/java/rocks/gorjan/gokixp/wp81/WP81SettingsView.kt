@@ -69,6 +69,9 @@ class WP81SettingsView(
     /** Fired when the switch for following links in Internet Explorer is toggled. */
     var onOpenLinksInIeChanged: ((Boolean) -> Unit)? = null
 
+    /** Fired when the navigation bar is set to wear the accent, or the page's ground. */
+    var onAccentNavBarChanged: ((Boolean) -> Unit)? = null
+
     /** Tapping the row that asks the phone to send its links to the launcher. */
     var onDefaultBrowser: (() -> Unit)? = null
 
@@ -131,7 +134,18 @@ class WP81SettingsView(
      * is a page the user has no way of reaching.
      */
     private val openLinksRow =
-        CheckRow("open links in internet explorer") { on -> onOpenLinksInIeChanged?.invoke(on) }
+        SwitchRow("open links in Internet Explorer") { on -> onOpenLinksInIeChanged?.invoke(on) }
+
+    /**
+     * Whether the three keys along the bottom are painted in the accent.
+     *
+     * Filed under the accent rather than under the background, because it is a question
+     * about where the colour goes rather than about what the page is: the strip is the
+     * one piece of chrome that is on screen whatever the user is doing, and it is either
+     * showing their colour or it is not. See [WP81NavBar.setAccented].
+     */
+    private val accentNavBarRow =
+        SwitchRow("color the navigation bar") { on -> onAccentNavBarChanged?.invoke(on) }
 
     /**
      * Where the rest of the phone's links go.
@@ -172,6 +186,7 @@ class WP81SettingsView(
         column.addView(sectionLabel("accent color"), wide())
         buildAccentGrid()
         column.addView(accentGrid, wide())
+        column.addView(accentNavBarRow.view, wide())
 
         // The word the three answers share is said once, in the heading: at a third of the
         // width each there is no room to repeat "columns" beside every marker, and three
@@ -218,7 +233,6 @@ class WP81SettingsView(
         // Its own section: it is the only thing on this page that is not about what Start
         // looks like, and filing it under the wallpaper's switches would bury it.
         column.addView(sectionLabel("links"), wide())
-        openLinksRow.setVisible(true)
         column.addView(openLinksRow.view, wide())
         column.addView(defaultBrowserRow.view, wide())
 
@@ -574,6 +588,11 @@ class WP81SettingsView(
         openLinksRow.set(on)
     }
 
+    /** Seeds the navigation bar switch. */
+    fun setAccentNavBar(on: Boolean) {
+        accentNavBarRow.set(on)
+    }
+
     /** Says whether the phone is sending its links here, in the row's second line. */
     fun setDefaultBrowser(held: Boolean) {
         defaultBrowserRow.setDetail(
@@ -643,6 +662,66 @@ class WP81SettingsView(
         fun repaint() {
             label.setTextColor(palette.foreground)
             detail.setTextColor(palette.foregroundSubtle)
+        }
+    }
+
+    /**
+     * A setting that is simply on or off, with the phone's own switch beside it.
+     *
+     * [MetroToggle] rather than the ticked square [CheckRow] draws, and the difference is
+     * the one WP8.1 itself made: a square is one of a set being chosen, a switch is a
+     * thing that is running or is not. Both shapes are on this page because both cases
+     * are - the wallpaper's drift is a modifier of the picture above it, where the
+     * navigation bar's colour and where links open are settings in their own right.
+     *
+     * The whole row answers a tap, not just the switch: the control is a 46dp rectangle
+     * at the far edge of the screen, and a row whose label does nothing makes the user
+     * aim for it.
+     */
+    private inner class SwitchRow(text: String, private val onChanged: (Boolean) -> Unit) {
+
+        val view = LinearLayout(context)
+        private val label = TextView(context)
+        private val toggle = MetroToggle(context, palette)
+
+        init {
+            view.orientation = LinearLayout.HORIZONTAL
+            view.gravity = Gravity.CENTER_VERTICAL
+            view.setPadding(dp(24), dp(6), dp(24), dp(18))
+            view.isClickable = true
+            view.setOnClickListener {
+                // Through the switch rather than around it, so the bar slides for a tap on
+                // the label exactly as it does for one on the switch itself - the tick
+                // included, which the switch fires for itself and the row has to ask for.
+                Haptics.tap(it)
+                toggle.set(!toggle.isOn(), animated = true)
+                onChanged(toggle.isOn())
+            }
+            TiltEffect.apply(view)
+
+            label.text = text
+            label.textSize = 17f
+            label.typeface = ResourcesCompat.getFont(context, R.font.segoeui_regular)
+            view.addView(label, LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+
+            toggle.onChanged = { on -> onChanged(on) }
+            view.addView(toggle, LinearLayout.LayoutParams(
+                dp(MetroToggle.TRACK_W_DP), dp(MetroToggle.TRACK_H_DP)).apply {
+                marginStart = dp(14)
+            })
+
+            repaint()
+        }
+
+        /** Shows where the setting stands, without reporting it back as a change. */
+        fun set(value: Boolean) {
+            toggle.set(value, animated = false)
+        }
+
+        fun repaint() {
+            label.setTextColor(palette.foreground)
+            toggle.applyPalette(palette)
         }
     }
 
@@ -777,6 +856,7 @@ class WP81SettingsView(
         driftRow.repaint()
         hideColorsRow.repaint()
         openLinksRow.repaint()
+        accentNavBarRow.repaint()
         defaultBrowserRow.repaint()
         repaintCountRows()
         repaintColumnRows()

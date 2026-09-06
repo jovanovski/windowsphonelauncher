@@ -23,6 +23,7 @@ import rocks.gorjan.gokixp.R
 import rocks.gorjan.gokixp.wp81.Haptics
 import rocks.gorjan.gokixp.wp81.MetroAppBar
 import rocks.gorjan.gokixp.wp81.WP81Palette
+import rocks.gorjan.gokixp.wp81.WP81Program
 
 /**
  * Solitaire, as the phone would have had it.
@@ -42,8 +43,8 @@ import rocks.gorjan.gokixp.wp81.WP81Palette
  */
 class MetroSolitaireApp(
     private val context: Context,
-    private val palette: WP81Palette
-) {
+    private var palette: WP81Palette
+) : WP81Program {
 
     private enum class Suit(val asset: String, val red: Boolean) {
         CLUB("club", false),
@@ -139,6 +140,14 @@ class MetroSolitaireApp(
         hintIndex = -1
         if (!won) status.text = ""
         board.invalidate()
+    }
+
+    /**
+     * Rebuilds the program in a new theme. See [WP81Program].
+     */
+    override fun applyPalette(palette: WP81Palette): View {
+        this.palette = palette
+        return createView()
     }
 
     fun createView(): View {

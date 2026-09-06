@@ -21,8 +21,13 @@ class NotificationListenerService : NotificationListenerService() {
          * Cached rather than read live because a tile has to paint whether or not the
          * app currently has a notification up. Icons are small and bounded by the number
          * of installed apps, so this is not worth evicting.
+         *
+         * Concurrent because it is not only read where it is written: the app list resolves
+         * its rows' artwork on a worker thread, and a notification can be posted onto the
+         * main thread while it is doing so. See AppListView.
          */
-        private val smallIcons = mutableMapOf<String, android.graphics.drawable.Icon>()
+        private val smallIcons =
+            java.util.concurrent.ConcurrentHashMap<String, android.graphics.drawable.Icon>()
 
         /**
          * Live notification text per package, for the Windows Phone 8.1 tiles.

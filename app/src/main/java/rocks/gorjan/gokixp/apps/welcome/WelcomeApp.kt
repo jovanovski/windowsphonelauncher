@@ -14,6 +14,7 @@ import rocks.gorjan.gokixp.R
 import rocks.gorjan.gokixp.wp81.MetroPanorama
 import rocks.gorjan.gokixp.wp81.MetroToggle
 import rocks.gorjan.gokixp.wp81.WP81Palette
+import rocks.gorjan.gokixp.wp81.WP81Program
 
 /**
  * Welcome, as Windows Phone would have said it.
@@ -31,12 +32,12 @@ import rocks.gorjan.gokixp.wp81.WP81Palette
  */
 class WelcomeApp(
     private val context: Context,
-    private val palette: WP81Palette,
+    private var palette: WP81Palette,
     private val versionName: String,
     private val onOpenLink: (String) -> Unit,
     private val loadReleaseNotes: ((String) -> Unit) -> Unit,
     private val permissions: List<Permission> = emptyList()
-) {
+) : WP81Program {
 
     /**
      * One thing the launcher needs permission to do.
@@ -64,6 +65,14 @@ class WelcomeApp(
 
     /** The switches, kept so [refresh] can put them back where the system actually is. */
     private val switches = mutableListOf<Pair<MetroToggle, Permission>>()
+
+    /**
+     * Rebuilds the program in a new theme. See [WP81Program].
+     */
+    override fun applyPalette(palette: WP81Palette): View {
+        this.palette = palette
+        return createView()
+    }
 
     fun createView(): View {
         root = FrameLayout(context).apply { setBackgroundColor(palette.background) }

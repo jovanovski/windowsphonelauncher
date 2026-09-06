@@ -12,9 +12,9 @@
   it. The outer shape is the inner one grown by 2 on every side.
 
   White around near-black, and not the accent, because this hangs over an arbitrary web
-  page - the same reason the browser's app bar is the one accent-free surface in the shell
-  (see MetroIEApp.BAR_COLOUR). A single colour cannot be seen against both a white page
-  and a black one; a pair can be seen against either, and against everything in between.
+  page - which is also why it is fixed here rather than taken from the theme the way the
+  browser's app bar is. A single colour cannot be seen against both a white page and a
+  black one; a pair can be seen against either, and against everything in between.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="44dp"

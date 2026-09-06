@@ -24,6 +24,7 @@ import androidx.core.graphics.ColorUtils
 import rocks.gorjan.gokixp.R
 import rocks.gorjan.gokixp.wp81.Haptics
 import rocks.gorjan.gokixp.wp81.MessageStore
+import rocks.gorjan.gokixp.wp81.MetroAppBar
 import rocks.gorjan.gokixp.wp81.MetroPageHeader
 import rocks.gorjan.gokixp.wp81.PeopleStore
 import rocks.gorjan.gokixp.wp81.SvgIcon
@@ -240,22 +241,15 @@ class MessageThread(
     /**
      * The send button: the app bar's own ring, drawn on the page.
      *
-     * The strip is always near-black so its rings are always white; this one sits on the
-     * page, which is white under the light setting, so it takes the page's own ink instead.
+     * The strip's rings take the strip's ink; this one sits on the page, so it takes the
+     * page's foreground instead - which is what [MetroAppBar.ring]'s ink is for.
      */
-    private fun sendRing(): ImageView = ImageView(context).apply {
-        setBackgroundResource(R.drawable.wp81_appbar_circle)
-        setImageDrawable(SvgIcon.fromAsset(context, SEND_ICON))
-        scaleType = ImageView.ScaleType.FIT_CENTER
-        setPadding(dp(SEND_INSET_DP), dp(SEND_INSET_DP), dp(SEND_INSET_DP), dp(SEND_INSET_DP))
-        backgroundTintList = ColorStateList.valueOf(palette.foreground)
-        imageTintList = ColorStateList.valueOf(palette.foreground)
-        outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
-        clipToOutline = true
-        isClickable = true
-        setOnClickListener { trySend() }
-        TiltEffect.apply(this)
-    }
+    private fun sendRing(): ImageView = MetroAppBar.ring(
+        context,
+        palette.foreground,
+        SvgIcon.fromAsset(context, SEND_ICON),
+        SEND_INSET_DP
+    ).apply { setOnClickListener { trySend() } }
 
     /** Dims the ring when there is nothing to send, and stops it answering. */
     private fun setSendEnabled(on: Boolean) {

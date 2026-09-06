@@ -111,25 +111,15 @@ class TileView(
     private var hasPeopleMosaic = false
 
     /**
-     * The weather tile's forecast, read across the tile rather than turned through it.
-     * See [setForecast].
+     * The weather, laid across the tile rather than turned through it. See
+     * [setWeatherFace].
      *
-     * Built on first use, as the other two are: one tile on a wall of forty ever wants
-     * one, and only then at the sizes with room for it.
+     * Built on first use, as the other two are: one tile on a wall of forty ever wants one.
      */
-    private var forecastPanel: ForecastPanelView? = null
+    private var weatherFace: WeatherFaceView? = null
 
-    /** Whether [forecastPanel] is the front face right now. */
-    private var hasForecast = false
-
-    /**
-     * Whose name the label is carrying, while the mosaic has given the tile to one person.
-     *
-     * The mosaic draws no words of its own: a name on this tile is set in the same type,
-     * in the same corner, as the name of any other tile - see [applyFolderLabel], which is
-     * where the two meet.
-     */
-    private var peopleName: String? = null
+    /** Whether [weatherFace] is the front face right now. */
+    private var hasWeatherFace = false
 
     /**
      * Who the mosaic fills itself from: the people the user starred, and the rest of the
@@ -406,18 +396,39 @@ class TileView(
      * face they did not ask for.
      */
     private fun canTurnOver(): Boolean {
-        if (!isShown || isEditMode || media != null) return false
+        if (!isShown || isEditMode) return false
         // A folder previewing its contents is already doing something live and never
-        // turns itself face-down - but it does turn back up on its own, or a tile flipped
-        // by hand would stay on its notification for good. See setFolderPreview.
-        if (hasFolderPreview && !showingBack) return false
-        // The People tile is the same case: its faces are already turning over, one square
-        // at a time, and a tile that spent half its time face-down would be showing them
-        // to nobody.
+        // turns itself face-down - but it does turn back up on its own, or a tile left on
+        // a notification would stay on it for good. See setFolderPreview.
+        if (hasFolderPreview) return showingBack
+        return canFlip()
+    }
+
+    /**
+     * Whether turning this tile over would land on anything but the face it is already on.
+     *
+     * The tiles that turn are the ones with something held back: a widget's other reading,
+     * a run of stories, a notification waiting behind an icon. The rest are whole on the
+     * front - a folder is a shelf of programs, the weather is the forecast laid out across
+     * the tile, the People wall is already turning over a square at a time - and asking one
+     * of those to turn used to spin it half a turn and drop it back, which is an animation
+     * saying "nothing here" in place of the thing the tap was actually for. They open
+     * instead: the corner stands down (see [applyFlipCornerSize]) so a tap there is a tap
+     * on the tile like any other.
+     */
+    fun canFlip(): Boolean {
+        // Media takes the tile outright while it lasts, and the transport is what a corner
+        // would be taking taps from.
+        if (media != null) return false
+        // A folder does not turn over at all. What is on it is the folder - and a quarter
+        // of every folder tile was spending its taps saying so.
+        if (tile.kind == Tile.Kind.FOLDER || hasFolderPreview) return false
+        // The People tile's faces are already turning over, one square at a time, and a
+        // tile that spent half its time face-down would be showing them to nobody.
         if (hasPeopleMosaic) return false
-        // And a tile showing the whole forecast at once has nothing to turn over *to*:
-        // the readings it would have turned through are all already on the front.
-        if (hasForecast) return false
+        // And a tile showing the whole of the weather at once has nothing to turn over
+        // *to*: everything it would have turned through is already on the front.
+        if (hasWeatherFace) return false
         if (!hasFlipContent()) return false
         // A 1x1 app tile has no room for a title and a body; it carries the dot instead.
         // A widget's reverse is a bare reading, which fits anywhere.
@@ -1506,6 +1517,9 @@ class TileView(
         }
         applyPeopleGrid()
         applyLabelVisibility()
+        // The wall is one of the faces that leaves a tile with nowhere to turn, so whether
+        // the corner is there at all is this call's to settle. See [canFlip].
+        applyFlipCornerSize()
     }
 
     /**
@@ -1570,49 +1584,37 @@ class TileView(
         peopleMosaic ?: PeopleMosaicView(context, palette).also { mosaic ->
             peopleMosaic = mosaic
             mosaic.visibility = GONE
-            // The tile's own label carries whoever the mosaic has turned over onto, and
-            // goes back to naming the tile when it turns back to the wall of faces.
-            mosaic.onHero = { person ->
-                peopleName = person?.name
-                applyFolderLabel()
-                // The mosaic turns over underneath it; the name it lands on arrives with
-                // the turn rather than snapping in over a tile still mid-flip.
-                label.alpha = 0f
-                label.animate().alpha(1f).setDuration(HERO_LABEL_MS).start()
-            }
             frontFace.addView(mosaic, LayoutParams(
                 LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         }
 
     /**
-     * The whole forecast, laid across the tile in place of the faces it would turn over.
+     * The whole of the weather, laid across the tile in place of a face it would turn to.
      *
-     * Handed the columns when the tile is wide enough to read them side by side, and an
-     * empty list when it is not - which puts the tile back to whatever it would otherwise
-     * show, exactly as an empty mosaic hands the People tile back. Which of the two it is
-     * is settled by the wall, which knows what size each of its tiles was left at; see
-     * TileSize.canShowForecast and StartScreenView.setForecast.
+     * Null puts the tile back to whatever it would otherwise show, exactly as an empty
+     * mosaic hands the People tile back - which is what a tile gets while there is no
+     * reading cached to lay on it.
      *
-     * Like the mosaic, a tile showing this does not turn itself over any more: there is
-     * nothing left to turn over to. See [canTurnOver].
+     * Like the mosaic, a tile showing this does not turn itself over: everything it could
+     * turn to is already on the front. See [canTurnOver].
      */
-    fun setForecast(columns: List<ForecastPanelView.Column>) {
-        val show = columns.isNotEmpty()
+    fun setWeatherFace(reading: WeatherFaceView.Reading?) {
         // Nothing to show and nothing built to show it in, which is every tile but one.
         // Asked on every weather refresh, so it answers before it builds anything.
-        if (!show && forecastPanel == null) return
-        val panel = requireForecastPanel()
-        hasForecast = show
-        panel.setColumns(columns)
-        panel.visibility = if (show && !isEmptied) VISIBLE else GONE
-        if (show) {
-            // The panel *is* the tile: neither the icon nor the face it was turning
-            // through has anywhere left to sit.
+        if (reading == null && weatherFace == null) return
+        val face = requireWeatherFace()
+        hasWeatherFace = reading != null
+        face.setReading(reading)
+        face.cell = cellSize()
+        face.visibility = if (reading != null && !isEmptied) VISIBLE else GONE
+        if (reading != null) {
+            // The face *is* the tile: neither the icon nor anything it was turning through
+            // has anywhere left to sit.
             iconRow.visibility = GONE
             liveBox.visibility = GONE
-            // The readings can arrive at a tile that is face-down or halfway through a
-            // turn - the rotation it was showing runs on its own clock - and the panel is
-            // on the front. It is brought back rather than left showing a blank reverse.
+            // A reading can arrive at a tile that is face-down or halfway through a turn -
+            // whatever it was showing runs on its own clock - and this is on the front. It
+            // is brought back rather than left showing a blank reverse.
             flipAnimator?.cancel()
             rotationX = 0f
             if (showingBack) {
@@ -1620,26 +1622,28 @@ class TileView(
                 applyNotificationState()
             }
         } else {
-            // The tile has been made too small to read a row of columns on. What hid the
-            // icon when the panel went up has to be undone, or the tile is left as a blank
-            // square of accent until the run of faces binds its first one.
+            // What hid the icon when the face went up has to be undone, or the tile is
+            // left as a blank square of accent.
             iconRow.visibility = if (isEmptied) GONE else VISIBLE
             applyNotificationState()
         }
         applyLabelVisibility()
+        // Everything the tile could have turned to is on the front while the forecast is
+        // laid across it, so the corner goes with it. See [canFlip].
+        applyFlipCornerSize()
     }
 
     /**
-     * The forecast panel, made on first use.
+     * The weather face, made on first use.
      *
      * Fills the tile rather than sitting in the middle of it, as the mosaic and the folder
-     * preview do: the columns are the tile, divided up.
+     * preview do: the reading is the tile, laid out.
      */
-    private fun requireForecastPanel(): ForecastPanelView =
-        forecastPanel ?: ForecastPanelView(context, palette).also { panel ->
-            forecastPanel = panel
-            panel.visibility = GONE
-            frontFace.addView(panel, LayoutParams(
+    private fun requireWeatherFace(): WeatherFaceView =
+        weatherFace ?: WeatherFaceView(context, palette).also { face ->
+            weatherFace = face
+            face.visibility = GONE
+            frontFace.addView(face, LayoutParams(
                 LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         }
 
@@ -1718,21 +1722,20 @@ class TileView(
     }
 
     /**
-     * Sizes the turn-over hot zone against the tile, and takes it away from the 1x1.
+     * Puts the turn-over hot zone on the tiles that turn over, and sizes it against them.
      *
      * A fixed 44dp corner is a quarter of a 2x2 tile and better than half of a 1x1 - so on
      * the small tile it was not a corner at all, it was the tile, and tapping the icon
-     * turned it over instead of launching the app. The 1x1 loses it outright: it cannot
-     * show a notification face anyway, and a widget small enough to be one still turns
-     * over on a swipe and on its own cycle.
+     * turned it over instead of launching the app. The 1x1 is measured against itself
+     * instead, in onMeasure; an app tile that size has no corner at all, because it cannot
+     * show a notification face to turn to.
      */
     private fun applyFlipCornerSize() {
-        // On a 1x1 the corner is a quarter of the tile, so it only exists where it does
-        // something: a widget with another face to turn to. An app tile that size cannot
-        // turn over at all - there is no room for a title and a body - so a corner there
-        // would be a quarter of the tile spent on swallowing taps meant for the app.
-        val earnsCorner =
-            tile.size != TileSize.SMALL || (tile.kind.isLiveWidget && hasFlipContent())
+        // The corner exists where it does something: a tile with a face to turn to. On
+        // every other tile - a folder, the weather laid out whole, an app with nothing
+        // waiting - it was a quarter of the tile spent on swallowing taps meant for the
+        // program, and answering them with half a turn that went nowhere. See [canFlip].
+        val earnsCorner = canFlip()
         flipCorner.visibility = if (isEditMode || !earnsCorner) GONE else VISIBLE
         // Going back means going back through something: a run of faces. A reverse is one
         // face behind one other, where forward and back are the same turn.
@@ -1882,9 +1885,8 @@ class TileView(
     /**
      * Turns the tile over, or back.
      *
-     * A tile with nothing on its reverse still turns: the gesture should always do
-     * something, and a full rotation back to the same face reads as "there is no more here"
-     * far better than nothing happening at all.
+     * Only a tile that has somewhere to turn. The rest are whole on their front, and what
+     * a tap on one of those is for is the program behind it - see [canFlip].
      */
     fun toggleFlip() {
         // The cycle starts again from here. Turning a tile over by hand and having it turn
@@ -1895,18 +1897,11 @@ class TileView(
             advanceRotation()
             return
         }
-        // The text rule is there to protect the 1x1 tile from a title and a body it has no
-        // room for. A widget's reverse is neither - it is a temperature or an index, which
-        // fits anywhere the front's own reading does.
-        val roomToTurn = tile.size.canShowText || tile.kind.isLiveWidget
-        if (!roomToTurn || media != null) {
-            spinInPlace()
-            return
-        }
-        if (!hasFlipContent()) {
-            spinInPlace()
-            return
-        }
+        // A tile with nothing held back does not turn: a folder opens, the weather opens,
+        // and an app with nothing waiting launches. It has no corner to be tapped on
+        // either, so this is the swipe, and the tiles this gesture is for are the ones
+        // that have somewhere to go. See [canFlip].
+        if (!canFlip()) return
 
         // A tile with several notifications is turned *through* them rather than merely
         // over: asking a tile to turn over is asking to read what is waiting on it, and
@@ -1930,10 +1925,12 @@ class TileView(
     }
 
     /**
-     * A half turn that falls back, for a tile with nothing on its reverse.
+     * A half turn that falls back, for a run of faces that has come down to one.
      *
      * Deliberately not a full rotation: 360 degrees looks like the tile flipped twice,
-     * which reads as a stutter rather than as "there is nothing more here".
+     * which reads as a stutter rather than as "there is nothing more here". Only ever
+     * reached by a tile that was turning through stories and has been left with a single
+     * one; a tile that never turns has no corner to ask this of - see [canFlip].
      */
     private fun spinInPlace() {
         flipAnimator?.cancel()
@@ -2798,7 +2795,7 @@ class TileView(
      */
     private fun standingIn(): Boolean =
         tile.kind.isLiveWidget && notifications.isNotEmpty() &&
-            !hasLiveContent() && !hasPeopleMosaic && !hasForecast
+            !hasLiveContent() && !hasPeopleMosaic && !hasWeatherFace
 
     private fun applyLabelVisibility() {
         val contentShowing = showingBack || mediaFace.visibility == VISIBLE
@@ -2856,12 +2853,12 @@ class TileView(
      *
      * The name is drawn over the faces rather than beside them, so content that fills the
      * tile has to stop short of it or be printed through. Only what would be: a reading,
-     * and the forecast's columns. A picture and a wall of faces are meant to run under it
+     * and the weather face. A picture and a wall of faces are meant to run under it
      * - the name sits on them over a scrim, exactly as a story's source does.
      */
     private fun applyContentFooter() {
         val band = if (label.visibility == VISIBLE) dp(8) + dp(NOTIFICATION_LABEL_GAP_DP) else 0
-        forecastPanel?.let {
+        weatherFace?.let {
             if (it.paddingBottom != band) it.setPadding(0, 0, 0, band)
         }
         if (!tile.kind.isLiveWidget) return
@@ -2944,9 +2941,7 @@ class TileView(
      * count in front of it where counts are turned on - "(3) Socials".
      */
     private fun applyFolderLabel() {
-        // Whoever the People tile has turned over onto outranks the tile's own name; the
-        // mosaic hands it over and takes it back. See [setPeopleMosaic].
-        val name = peopleName ?: tile.label
+        val name = tile.label
         val marked = hasFolderPreview && notifications.isNotEmpty() && !isEditMode
         val counted = marked && countsEnabled
         label.text = if (counted) "(${formatCount(notifications.size)}) $name" else name
@@ -3067,7 +3062,7 @@ class TileView(
         }
         folderPreview?.applyPalette(p)
         peopleMosaic?.applyPalette(p)
-        forecastPanel?.applyPalette(p)
+        weatherFace?.applyPalette(p)
     }
 
     /**
@@ -3110,14 +3105,14 @@ class TileView(
      * The label is not one of them: it is the app's name, set along the foot of the tile
      * where every tile carries one, and it reads over a photograph the way the glyph
      * does. What needs the ground under it darkened is content - a notification turned
-     * face up, what is playing, a reading, a headline, a row of forecast columns. A
+     * face up, what is playing, a reading, a headline, the weather. A
      * mosaic of faces and a folder's squares are pictures, and cover the tile themselves.
      */
     private val showingOwnWords: Boolean
         get() = backFace.visibility == VISIBLE ||
             mediaFace.visibility == VISIBLE ||
             (frontFace.visibility == VISIBLE &&
-                (liveBox.visibility == VISIBLE || hasForecast))
+                (liveBox.visibility == VISIBLE || hasWeatherFace))
 
     /**
      * Repaints the face after what the tile is showing has changed.
@@ -3817,9 +3812,6 @@ class TileView(
 
         /** How long a tile rests on each face before turning over. */
         private const val LIVE_FLIP_MS = 9_000L
-
-        /** How long the People tile's label takes to fade in on a name. */
-        private const val HERO_LABEL_MS = 260L
 
         /**
          * How many people beyond the squares the People tile keeps in hand.

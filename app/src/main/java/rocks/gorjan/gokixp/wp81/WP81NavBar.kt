@@ -61,6 +61,9 @@ class WP81NavBar(
 
     private val allButtons = listOf(backButton, startButton, searchButton)
 
+    /** Whether the strip is wearing the accent. See [setAccented]. */
+    private var accented = false
+
     init {
         orientation = HORIZONTAL
         gravity = Gravity.CENTER
@@ -186,8 +189,28 @@ class WP81NavBar(
 
     fun applyPalette(p: WP81Palette) {
         palette = p
-        setBackgroundColor(p.background)
-        val tint = ColorStateList.valueOf(p.foreground)
+        repaint()
+    }
+
+    /**
+     * Paints the strip in the accent rather than in the page's own ground.
+     *
+     * The keys go white on it, the way everything drawn on an accent fill does - see
+     * [WP81Palette.onAccent]. Kept as a switch here rather than as a second palette,
+     * because the bar is the only thing in the shell that wears it: a palette whose
+     * background is the accent would recolour every page that took it.
+     */
+    fun setAccented(on: Boolean) {
+        if (accented == on) return
+        accented = on
+        repaint()
+    }
+
+    private fun repaint() {
+        setBackgroundColor(if (accented) palette.accent else palette.background)
+        val tint = ColorStateList.valueOf(
+            if (accented) palette.onAccent() else palette.foreground
+        )
         for (b in allButtons) b.imageTintList = tint
     }
 

@@ -33,6 +33,7 @@ import rocks.gorjan.gokixp.wp81.TiltEffect
 import rocks.gorjan.gokixp.wp81.WP81ContextMenu
 import rocks.gorjan.gokixp.wp81.WP81InputDialog
 import rocks.gorjan.gokixp.wp81.WP81Palette
+import rocks.gorjan.gokixp.wp81.WP81Program
 import rocks.gorjan.gokixp.wp81.applyToField
 import java.util.Calendar
 
@@ -58,10 +59,10 @@ import java.util.Calendar
  */
 class AlarmsApp(
     private val context: Context,
-    private val palette: WP81Palette,
+    private var palette: WP81Palette,
     /** The shell's own toast: what it says after an alarm is set, and when one cannot be. */
     private val onNotify: (String, String) -> Unit
-) {
+) : WP81Program {
 
     private lateinit var root: FrameLayout
     private lateinit var panorama: MetroPanorama
@@ -111,6 +112,14 @@ class AlarmsApp(
     private var ticking = false
 
     // ---------------------------------------------------------------- construction
+
+    /**
+     * Rebuilds the program in a new theme. See [WP81Program].
+     */
+    override fun applyPalette(palette: WP81Palette): View {
+        this.palette = palette
+        return createView()
+    }
 
     fun createView(): View {
         root = FrameLayout(context).apply { setBackgroundColor(palette.background) }

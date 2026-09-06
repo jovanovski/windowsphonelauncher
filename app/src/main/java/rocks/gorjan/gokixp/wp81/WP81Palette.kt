@@ -24,6 +24,18 @@ data class WP81Palette(
     @get:ColorInt val foregroundSubtle: Int,
     /** Chrome that sits behind the accent, e.g. the app-list jump-list's empty letters. */
     @get:ColorInt val inactive: Int,
+    /**
+     * The app bar's own ground - the phone's PhoneChromeBrush.
+     *
+     * A strip of commands is not the page it sits under, and saying so takes a surface of
+     * its own: near-black under a dark theme, near-white under a light one. Both are a
+     * step off the page rather than the opposite of it, which is why this is not simply
+     * [foreground] and [background] the other way round - a black strip under a white
+     * page is a hole cut in the screen, and the phone never drew one.
+     */
+    @get:ColorInt val chrome: Int,
+    /** What is drawn on [chrome]: rings, glyphs, dots and the words of a command list. */
+    @get:ColorInt val onChrome: Int,
     val isDark: Boolean
 ) {
     /** Foreground to draw *on top of* an accent fill. Accent tiles are always white-on-accent. */
@@ -45,6 +57,20 @@ data class WP81Palette(
     fun accentOpposite(): Int = opposite(accent)
 
     companion object {
+
+        /** The app bar over a dark page. See [chrome]. */
+        @ColorInt
+        const val DARK_CHROME = 0xFF1F1F1F.toInt()
+
+        /**
+         * The app bar over a light page.
+         *
+         * Grey rather than the page's white, for the same reason the dark one is not the
+         * page's black: the strip has to be visible as a strip. The phone's own value,
+         * near enough to white that the page still reads as the brighter of the two.
+         */
+        @ColorInt
+        const val LIGHT_CHROME = 0xFFDDDDDD.toInt()
 
         /** Half a turn round the colour wheel from [color]. See [accentOpposite]. */
         @ColorInt
@@ -68,6 +94,8 @@ data class WP81Palette(
                     foreground = Color.WHITE,
                     foregroundSubtle = Color.argb(153, 255, 255, 255),
                     inactive = Color.argb(51, 255, 255, 255),
+                    chrome = DARK_CHROME,
+                    onChrome = Color.WHITE,
                     isDark = true
                 )
             } else {
@@ -77,6 +105,8 @@ data class WP81Palette(
                     foreground = Color.BLACK,
                     foregroundSubtle = Color.argb(153, 0, 0, 0),
                     inactive = Color.argb(38, 0, 0, 0),
+                    chrome = LIGHT_CHROME,
+                    onChrome = Color.BLACK,
                     isDark = false
                 )
             }

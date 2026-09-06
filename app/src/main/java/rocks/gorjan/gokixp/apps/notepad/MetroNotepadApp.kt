@@ -36,6 +36,7 @@ import rocks.gorjan.gokixp.wp81.TiltEffect
 import rocks.gorjan.gokixp.wp81.WP81ContextMenu
 import rocks.gorjan.gokixp.wp81.WP81InputDialog
 import rocks.gorjan.gokixp.wp81.WP81Palette
+import rocks.gorjan.gokixp.wp81.WP81Program
 import rocks.gorjan.gokixp.wp81.applyToPageText
 import java.util.UUID
 import java.util.concurrent.Executors
@@ -66,13 +67,13 @@ import java.util.concurrent.Executors
  */
 class MetroNotepadApp(
     private val context: Context,
-    private val palette: WP81Palette,
+    private var palette: WP81Palette,
     private val onShowNotification: (String, String) -> Unit,
     private val onUpdateWindowTitle: (String) -> Unit,
     private val galleryPickerLauncher: ActivityResultLauncher<String>,
     private val onCameraCapture: (Uri) -> Unit,
     private val onShowFullscreenImage: (Uri) -> Unit
-) {
+) : WP81Program {
 
     private val prefs =
         context.getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE)
@@ -119,6 +120,18 @@ class MetroNotepadApp(
     private val saveSoon = Runnable { saveNotes() }
 
     private val decoder = Executors.newSingleThreadExecutor()
+
+    /**
+     * Rebuilds the program in a new theme. See [WP81Program].
+     */
+    override fun applyPalette(palette: WP81Palette): View {
+        // The note being written is put down on disk before the page holding it goes,
+        // because createView reads the notes back off disk to build the list again.
+        commit()
+        saveNotes()
+        this.palette = palette
+        return createView()
+    }
 
     fun createView(): View {
         notes.clear()
