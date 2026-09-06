@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The launcher icon.
+
+  White tiles on the phone's default accent, which is the mark the Welcome tile carries
+  and the one this shell is known by. The background is the accent as it ships rather than
+  the one the user has since chosen: an app icon is baked into the APK and cannot follow a
+  setting, so it stays the colour the launcher introduces itself in.
+
+  The monochrome layer is the same path again, for phones that theme their icons: the mark
+  is a silhouette already, so it needs no separate drawing.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_wp8_background" />
+    <foreground android:drawable="@drawable/ic_launcher_wp8_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_wp8_foreground" />
+</adaptive-icon>

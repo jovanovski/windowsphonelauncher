@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The launcher icon's foreground: the Windows 8 logo, white.
+
+  The same mark and the same path data as wp81_glyph_welcome, which is what the Welcome
+  tile wears - so the icon in the drawer and the tile on Start are recognisably one thing.
+
+  Drawn on the source set's own 76x76 viewport rather than the 108x108 an adaptive
+  foreground is nominally laid out on. The logo spans roughly 17 to 59 of those 76 units,
+  which is the middle 55% - inside the 61% an adaptive icon guarantees will not be cropped
+  by whatever mask the launcher applies, and without having to move the path to get there.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="76.00"
+    android:viewportHeight="76.00">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M 17,23L 34,20.7738L 34,37L 17,37L 17,23 Z M 34,55.2262L 17,53L 17,39L 34,39L 34,55.2262 Z M 59,17.5L 59,37L 36,37L 36,20.5119L 59,17.5 Z M 59,58.5L 36,55.4881L 36,39L 59,39L 59,58.5 Z " />
+</vector>
