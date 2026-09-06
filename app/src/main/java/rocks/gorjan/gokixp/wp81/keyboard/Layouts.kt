@@ -226,9 +226,10 @@ object Layouts {
      * how anybody scanning the list will look for their own.
      *
      * Adding one is adding a line. What it does *not* bring with it is a dictionary: those are
-     * two to three megabytes each and are fetched per language rather than shipped, so a
-     * language turned on before its dictionary has arrived types perfectly well and simply
-     * makes no suggestions.
+     * two to three megabytes each and only English's is in the app, so every other language
+     * types perfectly well and simply makes no suggestions. `tools/dictbuild/build_all.sh`
+     * can build a list for any of them; what is missing is a way to deliver one to a phone
+     * without carrying all twenty-two in the APK.
      */
     val EN_QWERTY = alphabet(
         // The id is stored in settings, so it must not be renamed once it has shipped.

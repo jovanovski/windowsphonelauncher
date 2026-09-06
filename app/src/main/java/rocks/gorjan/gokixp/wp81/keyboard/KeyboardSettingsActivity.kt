@@ -231,12 +231,15 @@ class KeyboardSettingsActivity : Activity() {
     /**
      * What turning a language on actually gets you, said plainly.
      *
-     * Twenty-two languages ship a layout and only two of them ship a word list, because a
-     * word list is two megabytes and putting twenty-two in the app would cost more than
+     * Twenty-two languages ship a layout and one of them ships a word list, because a word
+     * list is two to three megabytes and putting twenty-two in the app would cost more than
      * everything else in it put together. A language without one types perfectly well and
      * simply makes no suggestions - which is a real difference and one somebody is entitled
      * to know about before they turn it on rather than after they have typed a paragraph
      * waiting for a correction that was never coming.
+     *
+     * `tools/dictbuild/build_all.sh` can build a list for any of the twenty-two; what is
+     * missing is a way to get one onto a phone without carrying them all in the APK.
      *
      * Dictation is the same shape of answer and a different list: Vosk publishes offline
      * models for about half of these and, as ever, not for Macedonian.
