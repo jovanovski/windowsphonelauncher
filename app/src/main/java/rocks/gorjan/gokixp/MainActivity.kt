@@ -507,6 +507,15 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
          */
         private const val WALL_SWATCH_PX = 32
 
+        /**
+         * Where a colour stops being something to draw white on. See [paintWP81NavBar].
+         *
+         * Relative luminance, which is what the eye does with a colour rather than what
+         * the numbers in it are: Yellow and Cobalt are the same distance from black by
+         * one measure and nowhere near it by the other.
+         */
+        private const val LIGHT_GROUND = 0.5
+
         /** How long an in-app notification stays on screen. */
         private const val NOTIFICATION_DURATION_MS = 7000L
 
@@ -3904,10 +3913,28 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             val padBottom = maxOf(0, navBars.bottom - reservedBottomPx)
             val padTop = if (isPhoneShell) statusBars.top else 0
 
+            // The bottom is a margin on the shell's ground rather than padding on this
+            // view, so that the band it frees up is inside this layout and can be given a
+            // colour of its own. Padding would leave that band showing root_container's
+            // background, which is the page's colour and belongs behind the status bar at
+            // the top - not under the navigation strip at the bottom. See gestureBarStrip.
             if (view.paddingLeft != padLeft || view.paddingRight != padRight ||
-                view.paddingBottom != padBottom || view.paddingTop != padTop) {
-                view.setPadding(padLeft, padTop, padRight, padBottom)
+                view.paddingBottom != 0 || view.paddingTop != padTop) {
+                view.setPadding(padLeft, padTop, padRight, 0)
             }
+            findViewById<View>(R.id.main_background)?.let { ground ->
+                val params = ground.layoutParams as? RelativeLayout.LayoutParams
+                if (params != null && params.bottomMargin != padBottom) {
+                    params.bottomMargin = padBottom
+                    ground.layoutParams = params
+                }
+            }
+            findViewById<View>(R.id.gesture_bar_strip)?.let { strip ->
+                if (strip.layoutParams.height != padBottom) {
+                    strip.layoutParams = strip.layoutParams.apply { height = padBottom }
+                }
+            }
+            paintWP81NavBar()
 
             insets
         }
@@ -6522,7 +6549,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         }
 
         shell.applyPalette(palette)
-        shell.navBar.setAccented(themeManager.getWP81AccentNavBar())
+        paintWP81NavBar()
         applyWP81SystemBarAppearance(palette)
         applyWP81StartBackground()
         rebaseFloatingWindowsForWP81()
@@ -6551,7 +6578,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         val controller = androidx.core.view.WindowCompat
             .getInsetsController(window, window.decorView)
         controller.isAppearanceLightStatusBars = !palette.isDark
-        controller.isAppearanceLightNavigationBars = !palette.isDark
+        // The navigation bar is not asked about here: what is behind it is the strip's
+        // ground rather than the page's, and on an accent those two disagree. See
+        // paintWP81NavBar.
     }
 
     private fun wireWP81Shell(shell: rocks.gorjan.gokixp.wp81.WP81Shell) {
@@ -8383,7 +8412,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         shell.settingsPage.setAccentNavBar(themeManager.getWP81AccentNavBar())
         shell.settingsPage.onAccentNavBarChanged = { enabled ->
             themeManager.setWP81AccentNavBar(enabled)
-            shell.navBar.setAccented(enabled)
+            paintWP81NavBar()
         }
         shell.settingsPage.onColumnsPicked = { columns ->
             themeManager.setWP81Columns(columns)
@@ -9327,6 +9356,32 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         return onScreen.isNotEmpty()
     }
 
+    /**
+     * Paints the navigation strip, and the band under it, the same colour.
+     *
+     * Two views because the shell stops above the system's gesture bar and the band that
+     * leaves is outside it - see [setupNavigationBarInsets]. One colour, because the phone
+     * has one bar along the bottom: the keys stop where the gesture bar begins, but a
+     * strip in the accent with the page's own colour beneath it reads as two.
+     *
+     * The strip is the one that decides - see [WP81NavBar.groundColour] - so the switch
+     * that turns the accent on has one place to say so.
+     */
+    private fun paintWP81NavBar() {
+        val shell = wp81Shell ?: return
+        shell.navBar.setAccented(themeManager.getWP81AccentNavBar())
+        val ground = shell.navBar.groundColour()
+        findViewById<View>(R.id.gesture_bar_strip)?.setBackgroundColor(ground)
+        // The system draws its gesture pill over that band and picks the colour of it from
+        // what it has been told the bar is standing on. That used to be the page, which
+        // was true while the band was the page's colour; on an accent it is not, and a
+        // white pill on Yellow or a black one on Cobalt is the same mistake either way.
+        androidx.core.view.WindowCompat
+            .getInsetsController(window, window.decorView)
+            .isAppearanceLightNavigationBars =
+            androidx.core.graphics.ColorUtils.calculateLuminance(ground) > LIGHT_GROUND
+    }
+
     /** Repaints the shell after an accent or Light/Dark change, without a recreate. */
     fun refreshWP81Palette() {
         val shell = wp81Shell ?: return
@@ -9335,6 +9390,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         applyWP81SystemBarAppearance(palette)
         findViewById<RelativeLayout>(R.id.main_background)?.setBackgroundColor(palette.background)
         findViewById<View>(R.id.root_container)?.setBackgroundColor(palette.background)
+        paintWP81NavBar()
         repaintOpenWP81Programs(palette)
     }
 

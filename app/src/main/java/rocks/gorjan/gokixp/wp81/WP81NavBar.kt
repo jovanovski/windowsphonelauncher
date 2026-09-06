@@ -8,6 +8,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.ImageView
 import android.widget.LinearLayout
+import androidx.annotation.ColorInt
 import rocks.gorjan.gokixp.R
 
 /**
@@ -114,11 +115,17 @@ class WP81NavBar(
             // Sized explicitly rather than by padding, so the glyph does not shrink when
             // the bar height or the system inset changes.
             scaleType = ImageView.ScaleType.FIT_CENTER
-            // No padding under the glyph: the strip sits on the bottom edge of the screen,
-            // and a key floating with a gap beneath it reads as a row of buttons on a bar
-            // rather than as the bottom of the phone. What was under them is now above.
+            // Even on all four sides, so the glyph sits in the middle of the strip.
+            //
+            // It used to have none underneath, on the reasoning that the strip was the
+            // bottom edge of the screen and a key with a gap below it would read as a
+            // button on a bar rather than as the bottom of the phone. Two things undid
+            // that: the strip is no longer the bottom edge - the band the system's gesture
+            // bar sits in is below it and is painted to match - and a strip wearing the
+            // accent shows exactly where its ground begins and ends, which is what turned
+            // nine device-pixels of difference from a subtlety into a mistake.
             val inset = ((HEIGHT_DP - GLYPH_DP) / 2f * resources.displayMetrics.density).toInt()
-            setPadding(inset, inset, inset, 0)
+            setPadding(inset, inset, inset, inset)
             isClickable = true
             setOnClickListener {
                 // The capacitive keys these stand in for buzzed under the finger, and a
@@ -206,8 +213,18 @@ class WP81NavBar(
         repaint()
     }
 
+    /**
+     * What the strip is wearing, for the band below it to match.
+     *
+     * The keys stop at the top of the system's gesture bar, but the colour must not: a
+     * strip in the accent with a page-coloured band under it is two bars where the phone
+     * has one. See `MainActivity.paintWP81NavBar`.
+     */
+    @ColorInt
+    fun groundColour(): Int = if (accented) palette.accent else palette.background
+
     private fun repaint() {
-        setBackgroundColor(if (accented) palette.accent else palette.background)
+        setBackgroundColor(groundColour())
         val tint = ColorStateList.valueOf(
             if (accented) palette.onAccent() else palette.foreground
         )

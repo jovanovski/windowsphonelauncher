@@ -37,6 +37,21 @@
 
     </RelativeLayout>
 
+    <!--
+      The band the system's gesture bar sits in.
+
+      The shell stops above it - see MainActivity.setupNavigationBarInsets, which lifts
+      main_background clear of the inset - so what shows down there is the ground behind
+      everything, and that ground is the page's colour. It has to be the navigation bar's
+      instead: with the strip wearing the accent, a page-coloured band beneath it made two
+      bars out of the one the phone has. Sized and painted at runtime.
+    -->
+    <View
+        android:id="@+id/gesture_bar_strip"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_alignParentBottom="true" />
+
     <rocks.gorjan.gokixp.ContextMenuView
         android:id="@+id/context_menu"
         android:layout_width="180dp"
