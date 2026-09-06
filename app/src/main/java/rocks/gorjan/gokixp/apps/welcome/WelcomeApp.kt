@@ -12,6 +12,7 @@ import android.widget.TextView
 import androidx.core.content.res.ResourcesCompat
 import rocks.gorjan.gokixp.R
 import rocks.gorjan.gokixp.wp81.MetroPanorama
+import rocks.gorjan.gokixp.wp81.MetroToggle
 import rocks.gorjan.gokixp.wp81.WP81Palette
 
 /**
@@ -34,11 +35,36 @@ class WelcomeApp(
     private val palette: WP81Palette,
     private val versionName: String,
     private val onOpenLink: (String) -> Unit,
-    private val loadReleaseNotes: ((String) -> Unit) -> Unit
+    private val loadReleaseNotes: ((String) -> Unit) -> Unit,
+    private val permissions: List<Permission> = emptyList()
 ) {
+
+    /**
+     * One thing the launcher needs permission to do.
+     *
+     * The check and the asking both live with the host - which Android permission, which
+     * settings screen, which role - because those are the activity's business. This page
+     * only draws the answer and passes the tap back.
+     */
+    class Permission(
+        val name: String,
+        /** What stops working without it, in the user's terms rather than the platform's. */
+        val why: String,
+        val isOn: () -> Boolean,
+        /**
+         * Asks for it, or opens the screen that owns it.
+         *
+         * There is no "turn off" counterpart: an app cannot revoke its own permissions, so
+         * a switch that is already on sends the user to the settings page where they can.
+         */
+        val onTap: () -> Unit
+    )
 
     private lateinit var root: FrameLayout
     private lateinit var notes: TextView
+
+    /** The switches, kept so [refresh] can put them back where the system actually is. */
+    private val switches = mutableListOf<Pair<MetroToggle, Permission>>()
 
     fun createView(): View {
         root = FrameLayout(context).apply { setBackgroundColor(palette.background) }
@@ -59,6 +85,7 @@ class WelcomeApp(
             clipChildren = false
         }
         panorama.addPage("about", page(buildWelcome()))
+        if (permissions.isNotEmpty()) panorama.addPage("permissions", page(buildPermissions()))
         panorama.addPage("release notes", page(buildNotes()))
         column.addView(panorama, LinearLayout.LayoutParams(MATCH, 0, 1f))
 
@@ -94,6 +121,76 @@ class WelcomeApp(
         column.addView(link("the source, on GitHub", GITHUB_URL), wide())
         column.addView(link("donate to project", COFFEE_URL), wide())
         return column
+    }
+
+    /**
+     * Everything the launcher needs permission to do, and whether it has it.
+     *
+     * On one page because that is the question people actually have - "why is the weather
+     * tile empty" - and answering it a permission at a time, each behind whichever screen
+     * Android files it under, is how a launcher ends up half working with no way to tell.
+     *
+     * A switch that is already on opens the system's own page rather than pretending it
+     * can be turned off here: an app cannot revoke its own permissions.
+     */
+    private fun buildPermissions(): View {
+        val column = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(4), dp(MARGIN_DP), dp(28))
+        }
+
+        column.addView(body(PERMISSIONS_TEXT), wide())
+        switches.clear()
+
+        for (permission in permissions) {
+            val row = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = android.view.Gravity.CENTER_VERTICAL
+                setPadding(0, dp(10), 0, dp(10))
+            }
+
+            val labels = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+            labels.addView(TextView(context).apply {
+                text = permission.name
+                typeface = font(R.font.segoeui_regular)
+                textSize = 17f
+                setTextColor(palette.foreground)
+                includeFontPadding = false
+            }, wide())
+            labels.addView(TextView(context).apply {
+                text = permission.why
+                typeface = font(R.font.segoeui_regular)
+                textSize = 12f
+                setTextColor(palette.foregroundSubtle)
+                setPadding(0, dp(2), 0, 0)
+            }, wide())
+            row.addView(labels, LinearLayout.LayoutParams(0, WRAP, 1f))
+
+            val toggle = MetroToggle(context, palette).apply {
+                set(permission.isOn(), animated = false)
+                onChanged = {
+                    // The switch is a request, not a fact. It is put back to whatever the
+                    // system says the moment the page is looked at again - see refresh -
+                    // so a permission that was refused does not stay showing as granted.
+                    permission.onTap()
+                }
+            }
+            row.addView(toggle, LinearLayout.LayoutParams(dp(52), dp(26)))
+            switches.add(toggle to permission)
+
+            column.addView(row, wide())
+        }
+        return column
+    }
+
+    /**
+     * Puts every switch back where the system is.
+     *
+     * Called when the launcher comes back to the front, which is the moment after the user
+     * has been off answering one of Android's own prompts.
+     */
+    fun refresh() {
+        switches.forEach { (toggle, permission) -> toggle.set(permission.isOn(), animated = true) }
     }
 
     private fun buildNotes(): View {
@@ -179,6 +276,13 @@ class WelcomeApp(
          * here - and less the tips that were about a desktop: there is no wallpaper to
          * long-press and no window to swipe closed on a Start screen.
          */
+        const val PERMISSIONS_TEXT =
+            "This launcher replaces your home screen, so most of what it shows comes from " +
+                "somewhere Android guards. Nothing here is required - every switch you " +
+                "leave off simply means that one tile or app stays empty.\n\n" +
+                "Turning one on takes you to Android's own prompt or settings page. " +
+                "Coming back here, the switches show what you actually granted.\n"
+
         const val WELCOME_TEXT =
             "This is a passion project from Gorjan Jovanovski, a developer who grew up " +
                 "with these aesthetics and prefers them over new design any day.\n\n" +
@@ -192,6 +296,10 @@ class WelcomeApp(
                 "4) Tap the corner of a tile to turn it over.\n" +
                 "5) The settings key on the left of the navigation bar is where the " +
                 "accent, the background and the Start photo live.\n\n" +
+                "Swipe across to the permissions page to switch on the parts that need " +
+                "them - the keyboard, the People and Calendar tiles, the weather, and " +
+                "your photos and music. Everything works without them; what you leave " +
+                "off just stays empty.\n\n" +
                 "All the copyrighted information belongs to their respective authors; the " +
                 "aim here is to recreate nostalgia for fun.\n\n" +
                 "For any feature requests, drop me an email at hey@gorjan.rocks\n\n" +

@@ -1,9 +1,11 @@
 package rocks.gorjan.gokixp.wp81.keyboard
 
+import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Rect
 import android.graphics.drawable.Drawable
 import android.text.TextPaint
@@ -128,6 +130,57 @@ class CandidateBar(
             field = value
             invalidate()
         }
+
+    /**
+     * Whether dictation is starting up.
+     *
+     * The engine takes a moment to open the microphone and, the first time, to load a
+     * model. Turning the button straight to the accent claims it is listening before it
+     * is, so the first word said into it is lost and the button is what said it would be
+     * caught. A ring turning over the mark says "wait" instead, and the accent follows
+     * when the engine is actually up.
+     */
+    var preparing = false
+        set(value) {
+            if (field == value) return
+            field = value
+            if (value) startSpinner() else stopSpinner()
+            invalidate()
+        }
+
+    private var spinnerSweepStart = 0f
+    private var spinner: ValueAnimator? = null
+
+    private val spinnerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+    }
+    private val spinnerBounds = RectF()
+
+    private fun startSpinner() {
+        spinner?.cancel()
+        spinner = ValueAnimator.ofFloat(0f, 360f).apply {
+            duration = SPINNER_TURN_MS
+            repeatCount = ValueAnimator.INFINITE
+            interpolator = android.view.animation.LinearInterpolator()
+            addUpdateListener {
+                spinnerSweepStart = it.animatedValue as Float
+                invalidate()
+            }
+            start()
+        }
+    }
+
+    private fun stopSpinner() {
+        spinner?.cancel()
+        spinner = null
+    }
+
+    override fun onDetachedFromWindow() {
+        // A repeating animator outlives the view it was invalidating otherwise.
+        stopSpinner()
+        super.onDetachedFromWindow()
+    }
 
     private val face = Paint()
     private val ink = TextPaint(Paint.ANTI_ALIAS_FLAG)
@@ -357,7 +410,9 @@ class CandidateBar(
             return
         }
 
-        drawGlyph(canvas, voiceGlyph, width - side / 2f, pressed == VOICE || listening)
+        val voiceCentre = width - side / 2f
+        drawGlyph(canvas, voiceGlyph, voiceCentre, pressed == VOICE || listening)
+        if (preparing) drawSpinner(canvas, voiceCentre, side)
         // The clipboard at the other end. Always drawn, whatever is on the clipboard and
         // whatever the middle of the bar is up to: it is a way in to something, like the
         // microphone, and a control that comes and goes is one nobody learns the place of.
@@ -461,6 +516,21 @@ class CandidateBar(
     /** Which entry of [words] column [slot] is showing, for the tap to report. */
     private fun indexFor(slot: Int): Int = if (words.size == 1) 0 else slot
 
+    /**
+     * A ring turning over the microphone while dictation starts up.
+     *
+     * Drawn around the mark rather than replacing it: the button is still the microphone,
+     * and swapping the glyph out for a spinner would read as a different control.
+     */
+    private fun drawSpinner(canvas: Canvas, centre: Float, side: Float) {
+        val radius = side * SPINNER_RADIUS_SHARE
+        val middle = height / 2f
+        spinnerPaint.color = palette.accent
+        spinnerPaint.strokeWidth = side * SPINNER_STROKE_SHARE
+        spinnerBounds.set(centre - radius, middle - radius, centre + radius, middle + radius)
+        canvas.drawArc(spinnerBounds, spinnerSweepStart, SPINNER_SWEEP, false, spinnerPaint)
+    }
+
     private fun drawGlyph(canvas: Canvas, glyph: Drawable?, centreX: Float, lit: Boolean) {
         val drawable = glyph ?: return
         if (lit) {
@@ -479,6 +549,16 @@ class CandidateBar(
     // Not private: the keyboard has to know how tall the bar is to work out whether the two
     // of them fit on the screen together. See `KeyboardView.TOTAL_UNITS`.
     internal companion object {
+        /** One turn of the ring shown while dictation starts up. */
+        private const val SPINNER_TURN_MS = 900L
+
+        /** How much of the ring is drawn, so it reads as turning rather than as a circle. */
+        private const val SPINNER_SWEEP = 100f
+
+        // Sized off the button rather than the screen, so it stays a ring around the mark
+        // on a short keyboard as well as a tall one.
+        private const val SPINNER_RADIUS_SHARE = 0.34f
+        private const val SPINNER_STROKE_SHARE = 0.055f
 
         /**
          * The microphone's slot, as a negative index so that words can use 0 upwards.

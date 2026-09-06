@@ -717,6 +717,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         private const val LOCATION_PERMISSION_REQUEST_CODE = 1001
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1002
 
+        /** Anything asked for from the welcome app's permissions page. */
+        private const val WELCOME_PERMISSION_REQUEST_CODE = 1010
+
         /** Asked for by the Photos tile, the first time it is tapped. */
         private const val PHOTOS_PERMISSION_REQUEST_CODE = 1005
 
@@ -2963,6 +2966,12 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
     private var newsAppInstance: rocks.gorjan.gokixp.apps.news.NewsApp? = null
 
+    /**
+     * The welcome app while its window is up, so its permission switches can be put back
+     * where the system is when the user returns from one of Android's own prompts.
+     */
+    private var welcomeAppInstance: rocks.gorjan.gokixp.apps.welcome.WelcomeApp? = null
+
     private var alarmsAppInstance: rocks.gorjan.gokixp.apps.alarms.AlarmsApp? = null
 
     private var weatherAppInstance: rocks.gorjan.gokixp.apps.weather.WeatherApp? = null
@@ -3083,8 +3092,10 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                     openUrlShortcut(url)
                 }
             },
-            loadReleaseNotes = { onReady -> fetchWP81ReleaseNotes(onReady) }
+            loadReleaseNotes = { onReady -> fetchWP81ReleaseNotes(onReady) },
+            permissions = launcherPermissions()
         )
+        welcomeAppInstance = welcomeApp
 
         val view = welcomeApp.createView()
         windowsDialog.setContentView(view)
@@ -3093,6 +3104,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         windowsDialog.setMaximizable(true)
         windowsDialog.setTaskbarIcon(R.drawable.wp81_glyph_welcome)
         windowsDialog.setTitle("Welcome")
+        windowsDialog.setOnCloseListener { welcomeAppInstance = null }
         windowsDialog.setContextMenuView(contextMenu)
         floatingWindowManager.showWindow(windowsDialog)
         turnWP81PageIn(view)
@@ -3104,6 +3116,177 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      * One list of what changed, fetched rather than bundled, so it is never a build behind
      * what is actually out.
      */
+    /**
+     * Everything the launcher needs permission to do, for the welcome app's own page.
+     *
+     * Gathered here rather than in that app because every one of these is the activity's
+     * business - which Android permission, which special-access screen, which role - and
+     * the page only draws the answer.
+     *
+     * Ordered by how visibly the launcher suffers without it: the keyboard first, because
+     * a keyboard that is installed and not enabled looks like a keyboard that is missing.
+     */
+    private fun launcherPermissions(): List<rocks.gorjan.gokixp.apps.welcome.WelcomeApp.Permission> {
+        fun runtime(name: String, why: String, vararg perms: String) =
+            rocks.gorjan.gokixp.apps.welcome.WelcomeApp.Permission(
+                name = name,
+                why = why,
+                isOn = {
+                    perms.all {
+                        androidx.core.content.ContextCompat.checkSelfPermission(this, it) ==
+                            PackageManager.PERMISSION_GRANTED
+                    }
+                },
+                onTap = {
+                    // Already granted: Android will not ask again, so the only way to
+                    // change it is its own page for this app.
+                    if (perms.all {
+                            androidx.core.content.ContextCompat.checkSelfPermission(this, it) ==
+                                PackageManager.PERMISSION_GRANTED
+                        }
+                    ) openAppSettings()
+                    else androidx.core.app.ActivityCompat.requestPermissions(
+                        this, arrayOf(*perms), WELCOME_PERMISSION_REQUEST_CODE)
+                }
+            )
+
+        fun screen(name: String, why: String, isOn: () -> Boolean, intent: () -> Intent) =
+            rocks.gorjan.gokixp.apps.welcome.WelcomeApp.Permission(
+                name = name, why = why, isOn = isOn,
+                onTap = {
+                    try {
+                        startActivity(intent().addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    } catch (e: Exception) {
+                        Log.w("MainActivity", "No settings screen for $name", e)
+                        showNotification("Windows Phone", "This phone has no screen for $name")
+                    }
+                }
+            )
+
+        val list = mutableListOf<rocks.gorjan.gokixp.apps.welcome.WelcomeApp.Permission>()
+
+        list += screen(
+            "Windows Phone keyboard",
+            "Type in the phone's own keyboard. It has to be switched on in Android's " +
+                "keyboard list before it can be picked.",
+            { isOwnKeyboardEnabled() },
+            { Intent(Settings.ACTION_INPUT_METHOD_SETTINGS) }
+        )
+        list += runtime("Contacts", "Faces on the People tile, and the address book in People.",
+            android.Manifest.permission.READ_CONTACTS, android.Manifest.permission.WRITE_CONTACTS)
+        list += runtime("Phone", "Making and taking calls, and the call history.",
+            android.Manifest.permission.CALL_PHONE, android.Manifest.permission.READ_PHONE_STATE,
+            android.Manifest.permission.READ_CALL_LOG)
+        list += runtime("Messages", "Reading and sending texts.",
+            android.Manifest.permission.READ_SMS, android.Manifest.permission.SEND_SMS,
+            android.Manifest.permission.RECEIVE_SMS)
+        list += runtime("Calendar", "What the Calendar tile shows.",
+            android.Manifest.permission.READ_CALENDAR)
+        list += runtime("Location", "The weather tile and the Weather app.",
+            android.Manifest.permission.ACCESS_COARSE_LOCATION)
+        list += runtime("Photos and music", "The Photos tile, Zune's library and the file browser.",
+            android.Manifest.permission.READ_MEDIA_IMAGES,
+            android.Manifest.permission.READ_MEDIA_VIDEO,
+            android.Manifest.permission.READ_MEDIA_AUDIO)
+        list += runtime("Microphone", "Speaking instead of typing, on the keyboard.",
+            android.Manifest.permission.RECORD_AUDIO)
+        list += runtime("Notifications", "Alarms, timers and messages announcing themselves.",
+            android.Manifest.permission.POST_NOTIFICATIONS)
+
+        list += screen(
+            "Notification access",
+            "The counts on tiles - unread messages, missed calls - and the text a live " +
+                "tile shows.",
+            { isNotificationListenerEnabled() },
+            { Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS) }
+        )
+        list += screen(
+            "Usage access",
+            "Pressing back twice on Start to go to the app you were just in.",
+            { hasUsageAccess() },
+            {
+                Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
+                    .setData(Uri.fromParts("package", packageName, null))
+            }
+        )
+        list += screen(
+            "Alarms and reminders",
+            "Alarms and timers going off at the time they were set for.",
+            {
+                getSystemService(android.app.AlarmManager::class.java)
+                    ?.canScheduleExactAlarms() != false
+            },
+            {
+                Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
+                    .setData(Uri.fromParts("package", packageName, null))
+            }
+        )
+        list += screen(
+            "All files",
+            "Browsing the whole of storage in the file browser, rather than only media.",
+            { android.os.Environment.isExternalStorageManager() },
+            {
+                Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                    .setData(Uri.fromParts("package", packageName, null))
+            }
+        )
+        // The roles ask through Android's own prompt rather than the settings list, which
+        // is both fewer taps and the only way that says which app is being chosen.
+        list += rocks.gorjan.gokixp.apps.welcome.WelcomeApp.Permission(
+            name = "Default phone app",
+            why = "Calls opening in the phone's own dialler rather than another app.",
+            isOn = { holdsRole(android.app.role.RoleManager.ROLE_DIALER) },
+            onTap = { requestDialerRole() }
+        )
+        list += rocks.gorjan.gokixp.apps.welcome.WelcomeApp.Permission(
+            name = "Default messaging app",
+            why = "Texts arriving in Messages rather than another app.",
+            isOn = { holdsRole(android.app.role.RoleManager.ROLE_SMS) },
+            onTap = { requestSmsRole() }
+        )
+        return list
+    }
+
+    /** Whether this launcher currently holds one of Android's app roles. */
+    private fun holdsRole(role: String): Boolean = try {
+        getSystemService(android.app.role.RoleManager::class.java)?.isRoleHeld(role) == true
+    } catch (e: Exception) {
+        false
+    }
+
+    /**
+     * Whether this app's keyboard is switched on in Android's list of input methods.
+     *
+     * Asked of InputMethodManager rather than read out of `Settings.Secure`. The setting
+     * holds the same list, but a normal app is not guaranteed to be allowed to read it -
+     * which is silent, because the read simply returns null and the keyboard then reports
+     * itself as off while working perfectly well.
+     */
+    private fun isOwnKeyboardEnabled(): Boolean = try {
+        val enabled = getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+            ?.enabledInputMethodList
+            .orEmpty()
+        val mine = enabled.any { it.packageName == packageName }
+        Log.d("MainActivity", "Keyboard enabled=$mine among ${enabled.map { it.packageName }}")
+        mine
+    } catch (e: Exception) {
+        Log.w("MainActivity", "Could not read the enabled keyboards", e)
+        false
+    }
+
+    /** This app's own page in Android settings, for a permission already granted. */
+    private fun openAppSettings() {
+        try {
+            startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(Uri.fromParts("package", packageName, null))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        } catch (e: Exception) {
+            Log.w("MainActivity", "Could not open this app's settings page", e)
+        }
+    }
+
     private fun fetchWP81ReleaseNotes(onReady: (String) -> Unit) {
         Thread {
             val text = try {
@@ -5067,6 +5250,11 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // wp81AwayBehindAnotherApp, and onNewIntent, which is guaranteed to run first.
         wp81AwayBehindAnotherApp = false
         refreshWeatherIfNeeded()
+
+        // Most likely straight back from one of Android's permission prompts. The switches
+        // on the welcome app's permissions page show what was actually granted, which is
+        // not always what was asked for.
+        welcomeAppInstance?.refresh()
 
         // Back-back sent them somewhere on a guess last time. Now that they are looking at
         // the launcher again, offer the access that would make it a fact.
@@ -7953,14 +8141,10 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         val locale = java.util.Locale.getDefault()
         val now = java.util.Date()
         return when (tile.kind) {
-            // Front says the time; the back says which day it is. The full date is a
-            // caption a 1x1 cannot hold, so there the weekday stands alone.
-            rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_CLOCK -> rocks.gorjan.gokixp.wp81.TileView.Reading(
-                number = java.text.SimpleDateFormat("EEEE", locale).format(now).lowercase(locale),
-                caption = java.text.SimpleDateFormat("d MMMM yyyy", locale).format(now)
-                    .lowercase(locale)
-                    .takeUnless { tile.size == rocks.gorjan.gokixp.wp81.TileSize.SMALL }
-            )
+            // One-sided. The date sits over the time on the front, so there is nothing
+            // held back to turn over to - and a clock that has to be waited on to say the
+            // time again is a clock that is harder to read than a watch.
+            rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_CLOCK -> null
 
             // The weather turns through three faces of its own; it has no reverse.
             rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_WEATHER -> null
@@ -8089,12 +8273,23 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      * set or goes off, and a cache would only be somewhere for a stale mark to sit.
      */
     private fun wp81AlarmMarkFor(tile: rocks.gorjan.gokixp.wp81.Tile): Int? = when (tile.kind) {
-        rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_CLOCK,
-        rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_CALENDAR ->
+        rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_CLOCK ->
             R.drawable.wp81_glyph_clock.takeIf { wp81AlarmDueWithinDay() }
+
+        // The calendar carries the mark only when there is no clock to carry it. Both
+        // tiles are about the day ahead, so both are fair places to say an alarm is set -
+        // but saying it twice on one wall reads as two alarms rather than one.
+        rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_CALENDAR ->
+            R.drawable.wp81_glyph_clock.takeIf { !wp81HasClockTile() && wp81AlarmDueWithinDay() }
 
         else -> null
     }
+
+    /** Whether a clock tile is on the wall, and so is the one to wear the alarm mark. */
+    private fun wp81HasClockTile(): Boolean =
+        wp81Shell?.startScreen?.tiles()?.any {
+            it.kind == rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_CLOCK
+        } == true
 
     /** Whether any of the shell's alarms next goes off inside the coming day. */
     private fun wp81AlarmDueWithinDay(): Boolean {

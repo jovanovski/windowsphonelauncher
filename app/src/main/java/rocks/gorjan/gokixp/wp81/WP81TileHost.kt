@@ -257,13 +257,17 @@ class WP81TileHost(
                 val small = tile.size == TileSize.SMALL
                 val weekday = java.text.SimpleDateFormat("EEE", locale).format(now)
                     .lowercase(locale)
-                // On the 1x1 there is no room beside a time for anything, so the day goes
-                // over it instead of next to it.
+                // The date over the time, both on the front: a clock is the one tile whose
+                // reading is worth having at a glance, and turning it over to find out
+                // which day it is means waiting for it to come back round to the time.
+                // The 1x1 has room for the weekday alone; anything bigger takes the date.
+                val date =
+                    if (small) weekday
+                    else weekday + " " + java.text.SimpleDateFormat("d MMM", locale)
+                        .format(now).lowercase(locale)
                 TileView.Reading(
                     number = java.text.SimpleDateFormat(timePattern, locale).format(now),
-                    caption = weekday.takeIf { small },
-                    aside = if (small) null else weekday + "\n" +
-                        java.text.SimpleDateFormat("d MMM", locale).format(now).lowercase(locale)
+                    caption = date
                 )
             }
 

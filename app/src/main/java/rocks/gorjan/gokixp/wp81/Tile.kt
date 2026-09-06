@@ -58,13 +58,16 @@ enum class TileSize(val cols: Int, val rows: Int) {
     /**
      * Whether a run of readings can be read side by side rather than turned through.
      *
-     * Two cells across for the columns and two deep for what goes in one - a label, the
-     * sky, and the figure, stacked. The strips have the width for three columns and the
-     * height for none of it, so they keep turning their readings over; the 1x1 was never
-     * in the question. See ForecastPanelView.
+     * Two cells across is the whole requirement: enough width for three columns.
+     *
+     * A two-deep tile has room to stack a label, the sky and the figure in each column. A
+     * strip has not, so it shows the same three readings the short way round - the sky
+     * beside the figure, no label - which is what a 2x1 weather tile is for. Only the 1x1
+     * is left turning its readings over, having room for one at a time. See
+     * ForecastPanelView, which picks between the two on the height it is given.
      */
     val canShowForecast: Boolean
-        get() = cols >= 2 && rows >= 2
+        get() = cols >= 2
 
     /**
      * A one-row tile.

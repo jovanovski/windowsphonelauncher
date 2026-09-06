@@ -88,6 +88,14 @@ class ForecastPanelView(
 
         val pad = dp(EDGE_DP)
         val columnWidth = (width - 2 * pad) / columns.size.toFloat()
+
+        // A strip has the width for three readings and not the height for three bands, so
+        // the column turns on its side: the sky beside the figure instead of over it, and
+        // no label - "now" above a sun is what a two-deep tile has the room to say.
+        if (height - 2 * pad < dp(STACKED_MIN_DP)) {
+            drawCompact(canvas, pad, columnWidth)
+            return
+        }
         // One size for the whole panel rather than one per column: three readings side by
         // side are one row of type, and a "9°" set larger than the "35°C" beside it would
         // read as the more important of the two rather than the shorter.
@@ -127,6 +135,49 @@ class ForecastPanelView(
                 top + block - readingPaint.descent(),
                 readingPaint
             )
+        }
+    }
+
+    /**
+     * The same three readings, laid the short way round for a one-row tile.
+     *
+     * Sky then figure, side by side, centred in the column. The label goes: at this height
+     * it would be the size of the gap between the two lines, and a mark of the sun says
+     * "the weather" without being told.
+     */
+    private fun drawCompact(canvas: Canvas, pad: Float, columnWidth: Float) {
+        val side = minOf(
+            (height - 2 * pad) * COMPACT_GLYPH_HEIGHT_SHARE,
+            columnWidth * COMPACT_GLYPH_WIDTH_SHARE
+        ).coerceAtLeast(0f)
+
+        // What is left of the column once the mark and the gap have taken theirs.
+        val room = columnWidth - side - dp(COMPACT_GAP_DP) - dp(COLUMN_GAP_DP) / 2f
+        readingPaint.textSize = fit(readingPaint, columns.map { it.reading }, room, COMPACT_READING_SP)
+
+        val middle = height / 2f
+        val baseline = middle - (readingPaint.descent() + readingPaint.ascent()) / 2f
+
+        for ((index, column) in columns.withIndex()) {
+            val centre = pad + columnWidth * (index + 0.5f)
+            val block = side + dp(COMPACT_GAP_DP) + readingPaint.measureText(column.reading)
+            var x = centre - block / 2f
+
+            icon(column.glyph)?.let { mark ->
+                mark.setBounds(
+                    x.toInt(), (middle - side / 2f).toInt(),
+                    (x + side).toInt(), (middle + side / 2f).toInt()
+                )
+                mark.draw(canvas)
+            }
+            x += side + dp(COMPACT_GAP_DP)
+
+            // Left-aligned here rather than centred: the figure sits against the mark it
+            // belongs to, and the pair is what was centred in the column.
+            val was = readingPaint.textAlign
+            readingPaint.textAlign = Paint.Align.LEFT
+            canvas.drawText(column.reading, x, baseline, readingPaint)
+            readingPaint.textAlign = was
         }
     }
 
@@ -189,5 +240,19 @@ class ForecastPanelView(
 
         /** How much of its column the condition mark may take. */
         private const val GLYPH_WIDTH_SHARE = 0.62f
+
+        /**
+         * The height below which the three bands stop fitting and the column turns on its
+         * side. A one-row tile is about half a two-row one, and the stacked form needs a
+         * label, a mark and a figure with a gap either side of the mark.
+         */
+        private const val STACKED_MIN_DP = 74
+
+        // The compact form: the mark takes most of the height and rather less of the
+        // width, since the figure beside it needs the rest.
+        private const val COMPACT_GLYPH_HEIGHT_SHARE = 0.86f
+        private const val COMPACT_GLYPH_WIDTH_SHARE = 0.46f
+        private const val COMPACT_GAP_DP = 4
+        private const val COMPACT_READING_SP = 17f
     }
 }

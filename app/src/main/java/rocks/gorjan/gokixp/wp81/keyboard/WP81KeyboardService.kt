@@ -797,6 +797,11 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
             }
             if (target == selStart && target == selEnd) return
             ic.setSelection(target, target)
+            // One tick per character the caret actually passes, which is what makes the
+            // slide feel like it is moving over something. Deliberately after the clamp
+            // above: running off the end of the text stops the caret, and a keyboard still
+            // ticking there would say it was moving when it was not.
+            KeyboardHaptics.key(view)
             // Locally, because the field's own report of this move arrives after the next
             // step has already been asked for, and a slide that waited for it would crawl.
             selStart = target
@@ -1599,7 +1604,9 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
             }
 
             override fun onStopped(error: String?) {
-                host?.bar?.listening = false
+                host?.bar?.preparing = false
+                host?.bar?.preparing = false
+        host?.bar?.listening = false
                 dictated = ""
                 if (error != null) {
                     // Said on the bar rather than swallowed. A microphone that does nothing
@@ -1623,6 +1630,31 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
      * offer for this language - which for Macedonian is always, because Vosk publishes no
      * model for it.
      */
+    /**
+     * Turns the microphone the accent once the engine is actually up.
+     *
+     * The engine is started first and this waits on it, rather than the other way round:
+     * the point of the pause is to give the model somewhere to load, so the wait runs
+     * alongside the work instead of before it.
+     *
+     * The ring shows for at least [VOICE_SETTLE_MS] whatever the engine says, because an
+     * engine that is ready instantly still leaves a button that flickered - and if it
+     * stopped during the wait, nothing is turned on at the end of it.
+     */
+    private fun settleVoiceButton(engine: VoiceInput) {
+        val bar = host?.bar ?: return
+        if (!engine.isListening) {
+            bar.preparing = false
+            bar.listening = false
+            return
+        }
+        bar.preparing = true
+        bar.postDelayed({
+            bar.preparing = false
+            bar.listening = engine.isListening
+        }, VOICE_SETTLE_MS)
+    }
+
     private fun startListening(listener: VoiceInput.Listener) {
         val code = language.language
 
@@ -1630,7 +1662,7 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
             if (voskModels.isDownloaded(code)) {
                 val engine = engineFor(code, offline = true)
                 engine.start(listener)
-                host?.bar?.listening = engine.isListening
+                settleVoiceButton(engine)
                 return
             }
             fetchModelThenListen(code, listener)
@@ -1640,7 +1672,7 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         // Either the platform was asked for, or Vosk cannot help with this language.
         val engine = engineFor(code, offline = false)
         engine.start(listener)
-        host?.bar?.listening = engine.isListening
+        settleVoiceButton(engine)
     }
 
     /**
@@ -1665,13 +1697,13 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
                     // other engine, not a reason to have no dictation.
                     val engine = engineFor(code, offline = false)
                     engine.start(listener)
-                    host?.bar?.listening = engine.isListening
+                    settleVoiceButton(engine)
                     if (error != null) host?.bar?.setMessage(error)
                     return@fetch
                 }
                 val engine = engineFor(code, offline = true)
                 engine.start(listener)
-                host?.bar?.listening = engine.isListening
+                settleVoiceButton(engine)
             }
         )
     }
@@ -1727,6 +1759,7 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
 
     private fun stopVoice() {
         voice?.let { if (it.isListening) it.stop() }
+        host?.bar?.preparing = false
         host?.bar?.listening = false
     }
 
@@ -2007,6 +2040,14 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
      * device-local file this names, and one name shared beats two spellings of it.
      */
     internal companion object {
+        /**
+         * How long the microphone shows a turning ring before it goes the accent.
+         *
+         * A second: long enough for the engine to open the microphone and, the first time,
+         * to bring a model up, and short enough that it reads as the button responding
+         * rather than as the keyboard having stalled.
+         */
+        private const val VOICE_SETTLE_MS = 1000L
 
         /** What the bar says when the clipboard mark is tapped and there is nothing on it. */
         const val NOTHING_COPIED = "Nothing on the clipboard"
