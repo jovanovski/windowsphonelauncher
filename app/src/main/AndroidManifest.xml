@@ -2,6 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Lets this app read the Start screen the desktop launcher is holding for it.
+         Signature level on that side, so it only works between builds signed alike. -->
+    <uses-permission android:name="rocks.gorjan.gokixp.permission.READ_WP8_MIGRATION" />
+
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
     <!-- Lets the app hand the car a NavigationTemplate, which is what carries the Surface. -->
@@ -29,6 +33,10 @@
         <intent>
             <action android:name="android.speech.RecognitionService" />
         </intent>
+        <!-- The desktop launcher, so its migration provider can be reached. Named
+             explicitly because package visibility hides it otherwise. -->
+        <package android:name="rocks.gorjan.gokixp" />
+        <provider android:authorities="rocks.gorjan.gokixp.migration" />
     </queries>
 
     <uses-permission android:name="android.permission.VIBRATE" />

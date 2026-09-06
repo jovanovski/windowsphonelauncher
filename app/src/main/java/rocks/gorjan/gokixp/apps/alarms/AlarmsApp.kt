@@ -122,7 +122,7 @@ class AlarmsApp(
             clipToPadding = false
             clipChildren = false
         }
-        panorama.setTitle("alarms")
+        panorama.setTitle("alarms & tasks")
 
         panorama.addPage("alarms", alarmsPage())
         panorama.addPage("tasks", tasksPage())

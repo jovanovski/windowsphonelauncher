@@ -1415,7 +1415,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             androidx.core.graphics.drawable.DrawableCompat.setTint(
                 tinted, themeManager.getWP81Accent())
             systemApps.add(AppInfo(
-                name = "Alarms",
+                name = "Alarms & Tasks",
                 exeName = "alarms.exe",
                 packageName = "system.alarms",
                 icon = iconStore.square(tinted)
@@ -3309,7 +3309,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         windowsDialog.setSaveState(false)
         windowsDialog.setMaximizable(true)
         windowsDialog.setTaskbarIcon(R.drawable.wp81_glyph_clock)
-        windowsDialog.setTitle("Alarms")
+        windowsDialog.setTitle("Alarms & Tasks")
         windowsDialog.setOnCloseListener {
             // The redraw and any sound preview stop with the window. The alarms themselves
             // deliberately do not: they are the point of the app, and they are not this
@@ -3507,6 +3507,54 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             // Save that we've shown it for this version
             prefs.edit { putString(KEY_SHOWN_WELCOME_FOR_VERSION, currentVersion) }
         }
+
+        offerDesktopImportIfAvailable()
+    }
+
+    /**
+     * Offers to bring the Start screen across from the desktop launcher.
+     *
+     * Windows Phone was a theme inside that launcher until it became this app, and it sets
+     * a copy of the arrangement aside when the theme is removed. See [DesktopImport].
+     *
+     * Asked rather than done, and asked once. Importing replaces what is here - the
+     * preferences are restored wholesale, because a half-merged Start screen is worse than
+     * either of the two it came from - so it is only ever the right answer on a launcher
+     * the user has not arranged yet. The offer is marked as made whichever way they
+     * answer, so declining is not re-asked on the next launch.
+     */
+    private fun offerDesktopImportIfAvailable() {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        if (prefs.getBoolean(DesktopImport.KEY_IMPORT_OFFERED, false)) return
+
+        val paths = DesktopImport.available(this) ?: return
+        val shell = wp81Shell ?: return
+
+        shell.inputDialog.confirm(
+            "windows phone",
+            "Your Start screen from Windows Launcher can be brought over - tiles, colours, " +
+                "icons and background. This replaces what is here now.",
+            "import"
+        ) {
+            prefs.edit { putBoolean(DesktopImport.KEY_IMPORT_OFFERED, true) }
+            if (DesktopImport.importFrom(this, paths)) {
+                // Everything on screen was built from the preferences that have just been
+                // replaced, so it is all read again rather than patched.
+                iconStore.load()
+                loadDesktopIcons()
+                applyWP81StartBackground()
+                refreshWP81Tiles()
+                refreshWP81AppList()
+                showNotification("Windows Phone", "Your Start screen was brought over")
+            } else {
+                showNotification("Windows Phone", "Could not bring your Start screen over")
+            }
+        }
+
+        // Marked as offered even if they never answer: the dialog has been put in front of
+        // them, and a launcher that asks again on every start is worse than one that does
+        // not ask twice.
+        prefs.edit { putBoolean(DesktopImport.KEY_IMPORT_OFFERED, true) }
     }
 
 
@@ -4407,11 +4455,17 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
             serializedIcons.forEach { iconData ->
                 val packageName = iconData["packageName"] as String
-                // The player is called Music, as the phone called it, and was called Zune
-                // for a while. Only the untouched ones: a name the user typed themselves
-                // is theirs to keep.
-                val name = (iconData["name"] as String)
-                    .let { if (packageName == "system.zune" && it == "Zune") "Music" else it }
+                // A tile keeps the name it was pinned under, so a program that has since
+                // been renamed needs saying so here or its tile carries the old label for
+                // ever. Only the untouched ones: a name the user typed themselves is
+                // theirs to keep.
+                val name = (iconData["name"] as String).let {
+                    when {
+                        packageName == "system.zune" && it == "Zune" -> "Music"
+                        packageName == "system.alarms" && it == "Alarms" -> "Alarms & Tasks"
+                        else -> it
+                    }
+                }
                 val x = (iconData["x"] as Double).toFloat()
                 val y = (iconData["y"] as Double).toFloat()
                 val id = iconData["id"] as String
