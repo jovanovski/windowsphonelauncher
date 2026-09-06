@@ -152,8 +152,6 @@
         launcher falls back to the last app it opened itself, which misses the ones opened
         from a notification or from inside another app.
     -->
-    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
-        tools:ignore="ProtectedPermissions" />
 
     <!-- Attribution tag declarations -->
     <attribution android:tag="weather"

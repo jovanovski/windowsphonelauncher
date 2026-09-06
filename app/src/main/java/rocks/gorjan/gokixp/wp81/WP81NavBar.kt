@@ -43,18 +43,9 @@ class WP81NavBar(
     var onStartLongPress: (() -> Unit)? = null
     var onSearch: (() -> Unit)? = null
 
-    /**
-     * Holding the back key: the task switcher.
-     *
-     * The gesture the phone itself used, on the key it used. Back is where it belongs
-     * because the switcher is what back means taken further - one press goes back a step,
-     * a hold goes back to a whole app - and because it is the only one of the three keys
-     * whose hold was not already spoken for. See [WP81RecentsView].
-     */
-    var onRecents: (() -> Unit)? = null
 
     private val backButton =
-        button(R.drawable.wp81_nav_back, onHold = { onRecents?.invoke() }) { onBack?.invoke() }
+        button(R.drawable.wp81_nav_back) { onBack?.invoke() }
     private val startButton = button(R.drawable.wp81_nav_windows) { onStart?.invoke() }
         .apply {
             isLongClickable = true

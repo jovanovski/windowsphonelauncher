@@ -230,17 +230,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         refreshDefaultBrowserUi()
     }
 
-    /**
-     * The phone's Usage access screen, and what it was left at.
-     *
-     * It reports no result of its own - it is a list of switches, not a prompt - so the
-     * answer is read back off the phone when the user returns. See [hasUsageAccess].
-     */
-    private val usageAccessLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) {
-        wp81Shell?.settingsPage?.setLastAppAccess(hasUsageAccess())
-    }
 
     /** Set by whichever settings surface is open, so it can be told the answer. */
     private var refreshDefaultBrowser: (() -> Unit)? = null
@@ -690,7 +679,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
          * between visits more often than any other app on the phone, and the app you
          * were in five minutes ago is exactly the one you want when you come back.
          */
-        private const val KEY_LAST_LAUNCHED_APP = "last_launched_app"
 
         /**
          * How long the second press of a back-back on Start may lag the first.
@@ -1528,13 +1516,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // already standing behind something else - going back into a program is being in
         // it, which is the whole of what the switcher is recording.
         //
-        // Here rather than at each of the two dozen tiles, rows and menu items that open
-        // one of these, for the same reason the last launched app is noted on startActivity
-        // rather than at every launch site: this is the one door they all go through. These
-        // programs are windows inside this activity, so the phone's own history never sees
-        // them - see RecentAppsStore.
-        wp81Recents.noteSystemApp(packageName)
-
         // Check if this app is already open and bring it to front if so
         if (floatingWindowManager.findAndFocusWindow(packageName)) {
             Log.d("MainActivity", "Brought existing window to front: $packageName")
@@ -1800,13 +1781,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 // Reset the gesture flag when back is completed
 
                 when {
-                    // The task switcher, which is the one part of the shell that is drawn
-                    // over the windows rather than under them - so unlike everything below
-                    // it, an open window does not own back ahead of it. See
-                    // liftWP81Overlays.
-                    wp81Shell?.closeRecents() == true -> {
-                        Log.d("MainActivity", "Back pressed (modern): closing the task switcher")
-                    }
                     // WP8.1 shell, but only when nothing is open on top of it: dismiss the
                     // jump list, leave tile edit mode, or page back from the app list to
                     // Start. A window on screen owns back before the shell does.
@@ -1907,11 +1881,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                                 if (leaving) returnToLinkCaller()
                             }
                         }
-                    }
-                    // Back on Start has nowhere to go, so a second quick press is
-                    // free to mean something: back to the app you just left.
-                    wp81BackAgain() -> {
-                        Log.d("MainActivity", "Back pressed (modern): switched to last app")
                     }
                     else -> {
                         // If start menu is closed, do nothing
@@ -3276,15 +3245,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 "tile shows.",
             { isNotificationListenerEnabled() },
             { Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS) }
-        )
-        list += screen(
-            "Usage access",
-            "Pressing back twice on Start to go to the app you were just in.",
-            { hasUsageAccess() },
-            {
-                Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
-                    .setData(Uri.fromParts("package", packageName, null))
-            }
         )
         list += screen(
             "Alarms and reminders",
@@ -5221,11 +5181,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     override fun onBackPressed() {
         // Custom back button behavior for home screen launcher
         when {
-            // The switcher first, as above: it is drawn over the windows, so an open
-            // window does not own back ahead of it.
-            wp81Shell?.closeRecents() == true -> {
-                Log.d("MainActivity", "Back pressed (legacy): closing the task switcher")
-            }
             // WP8.1 shell, but only when nothing is open on top of it. A window on screen
             // owns back before the shell does.
             floatingWindowManager.getFrontVisibleWindow() == null &&
@@ -5299,11 +5254,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                     }
                 }
             }
-            // As above: the second of two quick presses on Start is the way back to
-            // the last app.
-            wp81BackAgain() -> {
-                Log.d("MainActivity", "Back pressed (legacy): switched to last app")
-            }
             else -> {
                 // If start menu is closed, do nothing (don't call super.onBackPressed())
                 // This prevents the home screen from closing/restarting
@@ -5332,13 +5282,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // on the welcome app's permissions page show what was actually granted, which is
         // not always what was asked for.
         welcomeAppInstance?.refresh()
-
-        // Back-back sent them somewhere on a guess last time. Now that they are looking at
-        // the launcher again, offer the access that would make it a fact.
-        if (wp81OfferUsageAccessOnReturn) {
-            wp81OfferUsageAccessOnReturn = false
-            if (!hasUsageAccess() && !hasAskedUsageAccess()) offerUsageAccess()
-        }
 
         // Check for new apps when resuming and start periodic checking
         checkForNewApps()
@@ -5372,7 +5315,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         val shell = wp81Shell ?: return
         if (!shell.isSettingsOpen()) return
         shell.settingsPage.setDefaultBrowser(isDefaultBrowser())
-        shell.settingsPage.setLastAppAccess(hasUsageAccess())
     }
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
@@ -6792,17 +6734,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
     private var wp81Shell: rocks.gorjan.gokixp.wp81.WP81Shell? = null
 
-    /**
-     * When back was last pressed on Start with nothing to answer it, for [wp81BackAgain].
-     * Zero once a press has been spent, so a third press starts a fresh pair.
-     */
-    private var wp81LastIdleBackAt = 0L
 
-    /**
-     * Set when back-back sent the user away without the phone's app history to go on, so
-     * the one offer of that access is made when they come back rather than to their heels.
-     */
-    private var wp81OfferUsageAccessOnReturn = false
 
     /**
      * Whether the launcher has been away behind another app since it was last on screen.
@@ -6819,17 +6751,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         rocks.gorjan.gokixp.wp81.MonochromeIconProvider(this)
     }
 
-    /**
-     * Where the user has been, from the phone's history and from this launcher's own.
-     *
-     * Not only the phone shell's: it is also what back-back on Start reads to find the last
-     * app, and [launchSystemApp] writes to it under every theme, because when a program was
-     * last opened is a fact about the launcher rather than about whichever shell is drawing
-     * at the time. See [rocks.gorjan.gokixp.wp81.RecentAppsStore].
-     */
-    private val wp81Recents by lazy {
-        rocks.gorjan.gokixp.wp81.RecentAppsStore(this) { hasUsageAccess() }
-    }
     private var wp81LiveTileRunnable: Runnable? = null
     private val wp81Handler = Handler(Looper.getMainLooper())
 
@@ -6939,10 +6860,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     private fun liftWP81Overlays(shell: rocks.gorjan.gokixp.wp81.WP81Shell) {
         val density = resources.displayMetrics.density
         val root = findViewById<RelativeLayout>(R.id.main_background) ?: return
-        // The switcher first, so the toast still lands on top of it - a program announcing
-        // something while the switcher is up is still worth reading.
         for ((view, elevationDp) in listOf(
-            shell.recents to RECENTS_ELEVATION_DP,
             shell.toast to TOAST_ELEVATION_DP
         )) {
             (view.parent as? ViewGroup)?.removeView(view)
@@ -7131,8 +7049,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         shell.navBar.onBack = { onBackPressedDispatcher.onBackPressed() }
         // Holding it: the task switcher. See WP81NavBar.applyHold for why the hold is timed
         // by hand rather than left to the framework's long press.
-        shell.onRecents = { openWP81Recents() }
-        wireWP81Recents(shell)
         // Folders are made by holding one tile over another, as on the phone, so there is
         // no "new folder" command any more. "Remove from folder" is on the tile's own
         // command list, where the rest of the once-a-tile things live.
@@ -7242,9 +7158,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         }
         shell.navBar.onStart = {
             when {
-                // The switcher stands over whatever the user was in, program windows
-                // included, so it is the innermost thing on screen and goes first.
-                shell.closeRecents() -> Unit
                 minimiseWP81Windows() -> Unit
                 // To the list, not into a search of it - the same thing the arrow under
                 // the wall does. A key pressed to see what is installed should not answer
@@ -8460,286 +8373,24 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
     // ---------------------------------------------------------------- task switcher
 
-    /**
-     * Hooks up the switcher's three answers, once, when the shell is built.
-     *
-     * Separate from [openWP81Recents], which is called every time the key is held: the
-     * callbacks belong to the view and outlive any one showing of it.
-     */
-    private fun wireWP81Recents(shell: rocks.gorjan.gokixp.wp81.WP81Shell) {
-        shell.recents.onOpen = { card ->
-            // Down before the app comes up. The switcher is over everything, program
-            // windows included, so left standing it would be covering whatever the tap
-            // had just opened.
-            shell.closeRecents()
-            if (isSystemApp(card.id)) {
-                // The same door every other way into these programs uses, so a card
-                // resumes a window that is already open rather than building a second one.
-                launchSystemApp(card.id)
-            } else {
-                packageManager.getLaunchIntentForPackage(card.id)?.let {
-                    it.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    startActivity(it)
-                } ?: run {
-                    // Uninstalled since the history was read. Taken off the list rather
-                    // than left there to fail again next time.
-                    Log.d("MainActivity", "WP8.1 switcher: ${card.id} is gone; dropping it")
-                    wp81Recents.dismiss(card.id)
-                    showNotification("Recent apps", "${card.label} is no longer installed")
-                }
-            }
-        }
-        shell.recents.onDismiss = { card -> wp81Recents.dismiss(card.id) }
-        shell.recents.onGrantAccess = {
-            // The switcher goes with the user to Android's own settings screen: they are
-            // leaving to answer a question this screen asked, and coming back to a stale
-            // list held over from before the answer would be the wrong thing to return to.
-            shell.closeRecents()
-            requestUsageAccess()
-        }
-    }
 
-    /**
-     * Opens the switcher on whatever the two histories say between them.
-     *
-     * The cards are painted here rather than in the view for a reason the app list already
-     * had: which glyph an app wears, what a tile of it is painted and what the user has
-     * renamed it to are questions this class answers for the Start screen, and a second
-     * answer worked out in the view is how a program comes to look like one thing on a
-     * tile and another on a card. Each entry is turned back into a [rocks.gorjan.gokixp.wp81.Tile]
-     * so [wp81GlyphFor] and [wp81ColorFor] - which is what paints the wall - answer for it
-     * too, including a tile that inherits its colour from the folder it is filed in.
-     */
-    private fun openWP81Recents() {
-        val shell = wp81Shell ?: return
-        val startedAt = android.os.SystemClock.uptimeMillis()
-        // The list this shell offers, which is where the phone-only and desktop-only rules
-        // have already been applied - so a Phone Dialer opened yesterday on the desktop is
-        // not offered here. See getSystemAppsList.
-        val systemApps = getSystemAppsList().associateBy { it.packageName }
-        val listedAt = android.os.SystemClock.uptimeMillis()
-        val hidden = getHiddenApps()
-        val visits = wp81Recents.recents(systemApps.keys)
-        val scannedAt = android.os.SystemClock.uptimeMillis()
-        val cards = visits.mapNotNull { visit ->
-            val system = systemApps[visit.id]
-            // Hidden from the app list means hidden here too: the switcher is another way
-            // of naming what is on the phone, and one that quietly ignored the setting
-            // would be a hole in it.
-            if (system == null && visit.id in hidden) return@mapNotNull null
-            val label = when {
-                system != null -> getCustomOrOriginalName(visit.id, system.name)
-                else -> androidAppLabel(visit.id) ?: return@mapNotNull null
-            }
-            val tile = rocks.gorjan.gokixp.wp81.Tile(
-                // A pinned app's tile is filed under its package, but an app migrated from
-                // the desktop is filed under the icon it came from - and that identifier is
-                // what a tile colour is stored against. Falling back to the package covers
-                // everything that is not on Start at all, which simply has no colour.
-                id = desktopIcons.firstOrNull { it.packageName == visit.id }?.id ?: visit.id,
-                label = label,
-                packageName = visit.id,
-                size = rocks.gorjan.gokixp.wp81.TileSize.MEDIUM,
-                index = 0,
-                kind = if (system != null) rocks.gorjan.gokixp.wp81.Tile.Kind.SYSTEM_APP
-                else rocks.gorjan.gokixp.wp81.Tile.Kind.APP
-            )
-            rocks.gorjan.gokixp.wp81.WP81RecentsView.Card(
-                id = visit.id,
-                label = label,
-                glyph = wp81GlyphFor(tile),
-                color = wp81ColorFor(tile)
-            )
-        }
-        shell.recents.show(cards, hasUsageAccess())
-        // The switcher is the one surface reached by holding a key, so every millisecond
-        // between the buzz and the cards is a millisecond the user spends wondering whether
-        // the hold registered. Logged rather than guessed at: the work here is a usage-stats
-        // scan and a rebuild of the system app list, and which of them is the expensive one
-        // is not something to have an opinion about.
-        Log.d("MainActivity", "Recents: apps=${listedAt - startedAt}ms " +
-            "scan=${scannedAt - listedAt}ms cards=${android.os.SystemClock.uptimeMillis() - scannedAt}ms " +
-            "(${cards.size} cards)")
-    }
 
-    /**
-     * What an installed app calls itself, or null if it is not installed any more.
-     *
-     * Asked of the package manager one at a time rather than taken from the cached app
-     * list, because the switcher shows at most ten apps and the cached list is loaded off
-     * the main thread when the shell arrives - which is far too late for a key that has
-     * just been held.
-     */
-    private fun androidAppLabel(packageName: String): String? = try {
-        val info = packageManager.getApplicationInfo(packageName, 0)
-        getCustomOrOriginalName(packageName, info.loadLabel(packageManager).toString())
-    } catch (e: Exception) {
-        Log.d("MainActivity", "WP8.1 switcher: no such package $packageName")
-        null
-    }
 
-    /**
-     * Back pressed on Start, where a single press has nowhere to go.
-     *
-     * The second of two quick presses switches to whatever app the user was in last -
-     * the phone's held-back task switcher boiled down to the one entry anybody reaches
-     * for. The first press still does nothing at all, so a lone press is unchanged.
-     *
-     * Returns true when the press was spent on the switch.
-     */
-    private fun wp81BackAgain(): Boolean {
-        if (wp81Shell == null) return false
-        val now = android.os.SystemClock.elapsedRealtime()
-        val isSecond = now - wp81LastIdleBackAt <= WP81_BACK_AGAIN_MS
-        // Spent either way: a second press that found no app to open must not also count
-        // as the first of the next pair, or the key becomes doubly-armed after any miss.
-        wp81LastIdleBackAt = if (isSecond) 0L else now
-        if (!isSecond) return false
 
-        val switched = openLastLaunchedApp()
-        if (!hasUsageAccess() && !hasAskedUsageAccess()) {
-            // Offered once, and offered where it can be read: if the switch worked the
-            // user is already looking at the other app, so the offer waits until they
-            // come back rather than being shown to an empty screen.
-            if (switched) wp81OfferUsageAccessOnReturn = true else offerUsageAccess()
-        }
-        return switched
-    }
 
-    /**
-     * Whether the phone will tell us which app was last in front.
-     *
-     * A special access rather than a runtime permission: it cannot be prompted for, only
-     * granted by hand on the phone's own screen, so everything here treats it as
-     * something that may never arrive.
-     */
-    private fun hasUsageAccess(): Boolean = try {
-        val ops = getSystemService(android.app.AppOpsManager::class.java)
-        ops != null && ops.unsafeCheckOpNoThrow(
-            android.app.AppOpsManager.OPSTR_GET_USAGE_STATS,
-            android.os.Process.myUid(),
-            packageName
-        ) == android.app.AppOpsManager.MODE_ALLOWED
-    } catch (e: Exception) {
-        Log.w("MainActivity", "Could not read usage access state: ${e.message}")
-        false
-    }
 
-    private fun hasAskedUsageAccess(): Boolean =
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-            .getBoolean(KEY_ASKED_USAGE_ACCESS, false)
 
-    /**
-     * The last app the phone itself had in front, whoever opened it.
-     *
-     * This is what back-back is really after: an app reached from a notification, or from
-     * a link inside another app, is somewhere the user was just as much as a tile they
-     * tapped. Null when the access has not been granted, or when nothing in the window
-     * qualifies - the caller falls back on what the launcher opened itself.
-     *
-     * The scan itself lives in [rocks.gorjan.gokixp.wp81.RecentAppsStore], which reads the
-     * same history into an ordered list for the task switcher. One app or ten is the same
-     * walk over the same events, and two copies of it would drift.
-     */
-    private fun lastForegroundApp(): String? = wp81Recents.lastForegroundApp()
 
-    /**
-     * Offers the access, once, from wherever the user just felt the lack of it.
-     *
-     * Marked as offered before the notification is even tapped: the point is not to ask
-     * twice, whatever the answer was.
-     */
-    private fun offerUsageAccess() {
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-            .putBoolean(KEY_ASKED_USAGE_ACCESS, true).apply()
-        showNotification(
-            "Back twice for the last app",
-            "Tap to let Start see which app you used last"
-        ) { requestUsageAccess() }
-    }
 
-    /** Opens the phone's Usage access screen, at this app's own row where it can. */
-    private fun requestUsageAccess() {
-        val screen = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
-        try {
-            // The per-app deep link, so the user lands on the one switch they came for
-            // rather than on a list of every app that has ever asked.
-            usageAccessLauncher.launch(
-                Intent(screen).setData(Uri.fromParts("package", packageName, null))
-            )
-        } catch (e: Exception) {
-            try {
-                usageAccessLauncher.launch(screen)
-            } catch (e2: Exception) {
-                Log.e("MainActivity", "No usage access screen on this phone", e2)
-                showNotification("App history", "This phone has no usage access screen")
-            }
-        }
-    }
 
-    /**
-     * Brings the last app the launcher opened back to the front, as tapping its tile
-     * would: the task is resumed where it was left rather than restarted.
-     *
-     * Returns false when there is nothing to go back to - nothing launched yet this
-     * install, or the app has since been uninstalled or disabled.
-     */
-    private fun openLastLaunchedApp(): Boolean {
-        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        // The phone's own answer first - it knows about every app, not only the ones this
-        // launcher opened - and what we noted ourselves when it has not been granted.
-        val fromHistory = lastForegroundApp()
-        val target = fromHistory ?: prefs.getString(KEY_LAST_LAUNCHED_APP, null) ?: return false
-        val intent = packageManager.getLaunchIntentForPackage(target)
-        if (intent == null) {
-            // Gone since it was noted. Forget it rather than keep failing on it.
-            Log.d("MainActivity", "Last app $target is no longer launchable; forgetting")
-            if (fromHistory == null) prefs.edit().remove(KEY_LAST_LAUNCHED_APP).apply()
-            return false
-        }
-        return try {
-            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            startActivity(intent)
-            Log.d("MainActivity", "Back-back on Start: returning to $target")
-            true
-        } catch (e: Exception) {
-            Log.w("MainActivity", "Failed to return to $target: ${e.message}")
-            false
-        }
-    }
-
-    /**
-     * Notes an app the launcher is about to open, for [openLastLaunchedApp].
-     *
-     * Hooked on [startActivity] rather than at each of the two dozen places that launch
-     * something, so a tile, an app-list row, a folder, the swipe-right app and the search
-     * key all count without any of them having to remember to say so. Only an app's own
-     * front door counts: a share sheet, a web link or a settings screen is not somewhere
-     * the user thinks of themselves as having been.
-     */
-    private fun rememberLaunchedApp(intent: Intent) {
-        if (intent.action != Intent.ACTION_MAIN) return
-        // CATEGORY_INFO is what getLaunchIntentForPackage prefers when an app declares
-        // one; HOME is us handing the screen to another launcher, which is not a visit.
-        if (intent.hasCategory(Intent.CATEGORY_HOME)) return
-        if (!intent.hasCategory(Intent.CATEGORY_LAUNCHER) &&
-            !intent.hasCategory(Intent.CATEGORY_INFO)
-        ) return
-        val target = intent.component?.packageName ?: intent.`package` ?: return
-        if (target == packageName) return
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-            .putString(KEY_LAST_LAUNCHED_APP, target).apply()
-    }
 
     // Both overloads: the one-argument form delegates to the other on current Android,
     // but noting the same package twice costs nothing and this does not depend on it.
     override fun startActivity(intent: Intent) {
-        rememberLaunchedApp(intent)
         super.startActivity(intent)
     }
 
     override fun startActivity(intent: Intent, options: Bundle?) {
-        rememberLaunchedApp(intent)
         super.startActivity(intent, options)
     }
 
@@ -9132,7 +8783,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         val shell = wp81Shell ?: return
         shell.openSettings()
         shell.settingsPage.setDefaultBrowser(isDefaultBrowser())
-        shell.settingsPage.setLastAppAccess(hasUsageAccess())
         refreshDefaultBrowser = { shell.settingsPage.setDefaultBrowser(isDefaultBrowser()) }
         Thread {
             val items = try {
@@ -9204,8 +8854,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         shell.settingsPage.onDefaultBrowser = { requestDefaultBrowser() }
         // Read from the phone in the same way, and for the same reason: it is granted and
         // revoked on Android's own screen, so the row can only report what it finds.
-        shell.settingsPage.setLastAppAccess(hasUsageAccess())
-        shell.settingsPage.onLastAppAccess = { requestUsageAccess() }
         // No launcher-theme row: this app is the Windows Phone shell and nothing else.
         // The desktop themes it used to offer live in the other launcher now, and a row
         // that switched to one of them would be switching to a shell that is not here.

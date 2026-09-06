@@ -88,9 +88,6 @@ class KeyboardSettingsActivity : Activity() {
         column.addView(giphyRow())
         column.addView(section("dictation"))
         column.addView(offlineVoiceRow())
-        column.addView(section("try it"))
-        column.addView(tryItNote())
-        for (field in TEST_FIELDS) column.addView(testField(field.first, field.second))
         column.addView(section("about"))
         column.addView(about())
 
@@ -502,48 +499,6 @@ class KeyboardSettingsActivity : Activity() {
         }
     }
 
-    private fun tryItNote(): View = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(pad(), pad() / 2, pad(), 0)
-        addView(
-            detail(
-                "a field tells the keyboard what it is for, and the keyboard answers: the key " +
-                    "beside the space bar becomes @ or + or /, the enter key changes what it " +
-                    "says, and a number field gets a keypad instead of letters."
-            ),
-            wide()
-        )
-    }
-
-    /**
-     * One field of a given kind, to type into.
-     *
-     * Here rather than in a test app because this is the only place all of them can be tried
-     * side by side, and because what they demonstrate - the keyboard reshaping itself around
-     * the field - is invisible until you see two of them next to each other.
-     */
-    private fun testField(label: String, inputType: Int): View = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(pad(), pad() / 2, pad(), pad() / 2)
-        addView(detail(label), wide())
-        addView(
-            EditText(this@KeyboardSettingsActivity).apply {
-                this.inputType = inputType
-                textSize = LABEL_SP
-                typeface = ResourcesCompat.getFont(
-                    this@KeyboardSettingsActivity, R.font.segoeui_regular
-                )
-                includeFontPadding = false
-                setPadding(pad() / 2, pad() / 2, pad() / 2, pad() / 2)
-                // The shell's own text box: white with black in it, under both themes. Every
-                // other field in the launcher is styled by this, and a keyboard's own settings
-                // page is the last place that should look like something else.
-                palette.applyToField(this)
-            },
-            wide()
-        )
-    }
-
     private fun about(): View = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         setPadding(pad(), pad() / 2, pad(), pad())
@@ -634,27 +589,6 @@ class KeyboardSettingsActivity : Activity() {
     }
 
     private companion object {
-
-        /**
-         * The kinds of field worth having to hand, and what each one is for.
-         *
-         * Chosen because each makes the keyboard do something different: an address moves `@`
-         * next to the space bar, a telephone number brings up a keypad with `+` and `#`, a
-         * password turns suggestions and learning off entirely, and a note takes the return
-         * arrow rather than an action.
-         */
-        val TEST_FIELDS = listOf(
-            "plain text" to (InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES),
-            "email address" to
-                (InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS),
-            "web address" to (InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI),
-            "telephone number" to InputType.TYPE_CLASS_PHONE,
-            "number" to (InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL),
-            "password" to
-                (InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD),
-            "several lines" to
-                (InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE)
-        )
 
         /** Where a GIPHY key comes from. See [giphyRow]. */
         const val GIPHY_DEVELOPERS = "https://developers.giphy.com/dashboard/"
