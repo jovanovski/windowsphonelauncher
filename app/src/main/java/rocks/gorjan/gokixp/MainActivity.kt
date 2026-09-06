@@ -5949,8 +5949,17 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      * The desktop drew a dot on an icon; the phone puts the count on the tile, which is
      * what the shell already does from the same data - so this only asks for a redraw.
      */
+    /**
+     * Notifications arrived or cleared, so the tiles carrying counts are brought up to date.
+     *
+     * Deliberately [refreshWP81Notifications] and not [refreshWP81Tiles]. This runs every
+     * two seconds, and refreshWP81Tiles goes through StartScreenView.setTiles, which
+     * rebuilds the wall from scratch and drops the tile being edited - so a rebuild on this
+     * pass took the user out of edit mode within two seconds of entering it, every time.
+     * setNotifications updates the counts on the tiles that are already there.
+     */
     fun updateNotificationDots() {
-        refreshWP81Tiles()
+        refreshWP81Notifications()
     }
     
     /**

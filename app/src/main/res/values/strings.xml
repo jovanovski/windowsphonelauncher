@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Windows Launcher</string>
+    <string name="app_name">Windows Phone</string>
 
     <!-- The keyboard, as the system's input-method list and language switcher name it. -->
     <string name="keyboard_name">Windows Phone Keyboard</string>
