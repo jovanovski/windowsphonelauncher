@@ -1,204 +1,46 @@
 <?xml version="1.0" encoding="utf-8"?>
 
+<!--
+  The activity's whole content.
+
+  Almost nothing, on purpose. This was the desktop launcher's window - a wallpaper, a
+  taskbar, a start menu, a grid of desktop icons and a mouse cursor - and the phone shell
+  hid every one of them on the way up. What is left is the frame the shell needs: a ground
+  to sit on, a layer above it for windowed programs, and the context menu those programs
+  raise. WP81Shell is added to main_background at runtime and draws the rest.
+-->
 <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/root_container"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@android:color/black"
-    >
+    android:background="@android:color/black">
 
-<RelativeLayout
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:id="@+id/main_background"
-    android:background="@drawable/wallpaper1"
-    android:fitsSystemWindows="false"
-    tools:context=".MainActivity">
-
+    <!-- The shell's ground. Painted the palette's background as the shell comes up. -->
     <RelativeLayout
-        android:id="@+id/christmas_wrapper"
+        android:id="@+id/main_background"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:visibility="gone">
-        <LinearLayout
-            android:id="@+id/christmas_lights"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal">
-        </LinearLayout>
-        <RelativeLayout
-            android:id="@+id/christmas_snow_wrapper"
-            android:layout_width="match_parent"
-            android:focusable="false"
-            android:clickable="false"
-            android:layout_height="match_parent"/>
+        android:fitsSystemWindows="false"
+        tools:context=".MainActivity">
 
-        <ImageView
-            android:id="@+id/snowplow"
-            android:layout_width="50dp"
-            android:layout_height="26dp"
-            android:src="@drawable/snowplow"
-            android:visibility="gone"
-            android:elevation="20dp"/>
+        <!-- Windowed programs, above the shell but below its toast and switcher. -->
+        <FrameLayout
+            android:id="@+id/floating_windows_container"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:layout_marginTop="60dp"
+            android:layout_marginBottom="70dp"
+            android:elevation="50dp" />
+
     </RelativeLayout>
 
-    <View
-        android:id="@+id/gesture_bar_background"
-        android:layout_width="match_parent"
-        android:layout_height="30dp"
-        android:background="#000000"
-        android:layout_alignParentBottom="true"
-        android:visibility="visible"
-        />
-
-    <!-- Desktop Icons Container -->
-    <RelativeLayout
-        android:id="@+id/desktop_icons_container"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:layout_alignParentEnd="true"
-        android:layout_marginBottom="20dp"
-        android:clipChildren="false"
-        android:clipToPadding="false" />
-
-    <!-- Floating Windows Container -->
-    <FrameLayout
-        android:id="@+id/floating_windows_container"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:clipChildren="false"
-        android:clipToPadding="false"
-        android:layout_marginTop="60dp"
-        android:layout_marginBottom="70dp"
-        android:elevation="50dp" />
-
-    <!-- Taskbar at bottom -->
-    <include
-        android:id="@+id/taskbar_container"
-        layout="@layout/taskbar_xp"
-        android:layout_width="match_parent"
-        android:layout_height="40dp"
-        android:layout_marginBottom="30dp"
-        android:layout_alignParentBottom="true"
-        android:elevation="15dp" />
-
-</RelativeLayout>
-
-    <!-- Start Menu Container (content will be dynamically loaded based on theme) -->
-    <androidx.constraintlayout.widget.ConstraintLayout
-        android:id="@+id/start_menu_container"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_alignParentBottom="true"
-        android:layout_marginBottom="70dp">
-
-        <RelativeLayout
-            android:id="@+id/start_menu"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="5dp"
-            android:layout_marginEnd="12dp"
-            android:orientation="vertical"
-            android:visibility="gone"
-            android:gravity="bottom"
-            android:elevation="150dp"
-            app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintBottom_toBottomOf="parent"
-            app:layout_constraintWidth_max="400dp"
-            />
-    </androidx.constraintlayout.widget.ConstraintLayout>
-
-    <!-- Context Menu -->
     <rocks.gorjan.gokixp.ContextMenuView
         android:id="@+id/context_menu"
         android:layout_width="180dp"
         android:layout_height="wrap_content"
         android:elevation="160dp" />
 
-    <ImageView
-        android:id="@+id/please_wait"
-        android:layout_width="200dp"
-        android:layout_height="200dp"
-        android:src="@drawable/please_wait"
-        android:clickable="false"
-        android:focusable="false"
-        android:visibility="gone"
-        android:layout_centerInParent="true"
-        android:elevation="180dp"/>
-
-    <RelativeLayout
-        android:id="@+id/notification_bubble"
-        android:layout_width="250dp"
-        android:layout_height="75dp"
-        android:background="?notificationBubble"
-        android:layout_alignParentBottom="true"
-        android:layout_alignParentEnd="true"
-        android:layout_marginBottom="60dp"
-        android:layout_marginEnd="55dp"
-        android:visibility="gone"
-        android:orientation="vertical">
-
-        <View
-            android:id="@+id/close_notification_button"
-            android:layout_width="25dp"
-            android:layout_height="25dp"
-            android:layout_alignParentEnd="true"
-            />
-        <TextView
-            android:id="@+id/notification_title"
-            android:layout_width="match_parent"
-            android:layout_height="17dp"
-            android:lines="1"
-            android:maxLines="1"
-            android:text="Notification title"
-            android:fontFamily="?primaryFontFamily"
-            android:textSize="14sp"
-            android:layout_marginTop="5dp"
-            android:layout_marginStart="6dp"
-            android:layout_marginEnd="25dp"
-            android:textColor="?notificationBubbleTitleColor"
-            android:ellipsize="end"/>
-
-        <TextView
-            android:id="@+id/notification_text"
-            android:text="Notification text"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="6dp"
-            android:layout_marginEnd="6dp"
-            android:layout_marginTop="23dp"
-            android:fontFamily="?primaryFontFamily"
-            android:textSize="11sp"
-            android:lines="2"
-            android:maxLines="2"
-            android:lineHeight="14dp"
-            android:textColor="@color/black"
-            android:ellipsize="end"/>
-
-    </RelativeLayout>
-    <!-- Cursor effect -->
-    <ImageView
-        android:id="@+id/cursor_effect"
-        android:layout_width="12.64dp"
-        android:layout_height="20dp"
-        android:src="@drawable/cursor"
-        android:clickable="false"
-        android:focusable="false"
-        android:visibility="gone"
-        android:elevation="200dp"
-        android:scaleType="fitXY"/>
-    <ImageView
-        android:id="@+id/safe_to_turn_off_splash"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:background="@color/black"
-        android:src="@drawable/safe_to_turn_off"
-        android:paddingStart="20dp"
-        android:paddingEnd="20dp"
-        android:scaleType="fitCenter"
-        android:visibility="gone"
-        android:elevation="1000dp"
-        />
 </RelativeLayout>

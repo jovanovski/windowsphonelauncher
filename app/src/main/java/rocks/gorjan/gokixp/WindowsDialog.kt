@@ -45,7 +45,6 @@ class WindowsDialog @JvmOverloads constructor(
     private lateinit var titleText: TextView
     private lateinit var closeButton: ImageView
     private lateinit var minimizeButton: ImageView
-    private var maximizeButton: ImageView? = null
     private lateinit var contentArea: LinearLayout
     private var windowIcon: ImageView? = null
     private var windowBorder: FrameLayout? = null
@@ -93,12 +92,6 @@ class WindowsDialog @JvmOverloads constructor(
 
     // Window identifier (for tracking unique instances like app package or folder path)
     var windowIdentifier: String? = null
-
-    // Reference to InternetExplorerApp instance (if this window is IE)
-    var internetExplorerApp: Any? = null
-
-    // Reference to MyComputerApp instance (if this window is My Computer)
-    var myComputerApp: Any? = null
 
     // Dragging on the title bar
     private var initialX = 0f
@@ -161,7 +154,7 @@ class WindowsDialog @JvmOverloads constructor(
         // only chrome that ships here - the 98 and XP frames went with their shells.
         val dialogLayoutResId = R.layout.windows_dialog_content_vista
 
-        val dialogLayout = LayoutInflater.from(context).inflate(dialogLayoutResId, this, true)
+        LayoutInflater.from(context).inflate(dialogLayoutResId, this, true)
 
         // Bind overlay and inner window frame
         overlayRoot = findViewById(R.id.dialog_overlay)
@@ -186,7 +179,6 @@ class WindowsDialog @JvmOverloads constructor(
         titleText = findViewById(R.id.dialog_title_text)
         closeButton = findViewById(R.id.dialog_close_button)
         minimizeButton = findViewById(R.id.dialog_minimize_button)
-        maximizeButton = findViewById(R.id.dialog_maximize_button)
         contentArea = findViewById(R.id.dialog_content_area)
         windowIcon = findViewById(R.id.dialog_window_icon)
 
@@ -233,20 +225,6 @@ class WindowsDialog @JvmOverloads constructor(
             if (!canMinimize) return@setOnClickListener
             minimizeWindow()
         }
-
-        maximizeButton?.setOnClickListener {
-            // Only allow maximize/restore if enabled
-            if (!canMaximize) return@setOnClickListener
-
-            if (isMaximized) {
-                restoreWindow()
-            } else {
-                maximizeWindow()
-            }
-        }
-
-        // Hide maximize button by default (shown when setMaximizable(true) is called)
-        maximizeButton?.visibility = View.GONE
 
         // DON'T set overlay as clickable - we'll handle this through onInterceptTouchEvent
         overlayRoot.isClickable = false
@@ -811,8 +789,6 @@ class WindowsDialog @JvmOverloads constructor(
      */
     fun setMaximizable(enabled: Boolean) {
         canMaximize = enabled
-        // Show or hide maximize button based on enabled state
-        maximizeButton?.visibility = if (enabled) View.VISIBLE else View.GONE
 
         // Under Windows Phone 8.1 a maximizable window is *always* maximized. Hooked here
         // rather than at each of the dozen call sites so Solitaire, Internet Explorer and
@@ -830,7 +806,6 @@ class WindowsDialog @JvmOverloads constructor(
         forceMaximized = enabled
         if (!enabled) return
         canMaximize = true
-        maximizeButton?.visibility = View.GONE
         // Deferred: the frame has no measured size until it has been laid out, and
         // maximizeWindow() stashes those dimensions as the restore target.
         post { if (!isMaximized) maximizeWindow() }
@@ -1258,9 +1233,6 @@ class WindowsDialog @JvmOverloads constructor(
 
         isMaximized = true
 
-        // Update maximize button icon to show restore icon (if it exists)
-        updateMaximizeButtonIcon()
-
         onMaximizeListener?.invoke()
 
         // Save the maximized state
@@ -1294,31 +1266,11 @@ class WindowsDialog @JvmOverloads constructor(
 
         isMaximized = false
 
-        // Update maximize button icon to show maximize icon
-        updateMaximizeButtonIcon()
-
         // Center the window after a brief delay to allow layout to update
         post {
             centerWindowFrame()
             // Save the restored state after centering is complete
             saveWindowState()
-        }
-    }
-
-    /**
-     * Updates the maximize button icon based on current state
-     */
-    private fun updateMaximizeButtonIcon() {
-        maximizeButton?.let { button ->
-            val mainActivity = context as? MainActivity
-            if (mainActivity != null) {
-                val iconRes = if (isMaximized) {
-                    mainActivity.themeManager.getRestoreIcon()
-                } else {
-                    mainActivity.themeManager.getMaximizeIcon()
-                }
-                button.setImageResource(iconRes)
-            }
         }
     }
 

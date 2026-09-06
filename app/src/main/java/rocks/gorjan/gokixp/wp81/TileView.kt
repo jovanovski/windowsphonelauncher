@@ -766,10 +766,9 @@ class TileView(
         frontFace.addView(iconRow, LayoutParams(
             LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
 
-        label.textSize = LIVE_CAPTION_SP
+        applyLabelStyle(label)
         label.maxLines = 1
         label.ellipsize = android.text.TextUtils.TruncateAt.END
-        label.typeface = segoe(LABEL_FONT)
         for (text in listOf(label, liveHeadline, liveDetail)) tightenLines(text)
         // Added to the tile itself rather than to a face: the app's name stays put whether
         // the tile is showing its icon or a notification.
@@ -787,7 +786,7 @@ class TileView(
         liveDetail.typeface = segoe(SUBTITLE_FONT)
         liveDetail.maxLines = 2
         liveDetail.ellipsize = android.text.TextUtils.TruncateAt.END
-        liveAside.typeface = segoe(CAPTION_FONT)
+        applyLabelStyle(liveAside)
         liveAside.maxLines = 2
         liveAside.ellipsize = android.text.TextUtils.TruncateAt.END
         liveAside.visibility = GONE
@@ -830,7 +829,7 @@ class TileView(
         backText.typeface = segoe(SUBTITLE_FONT)
         for (text in listOf(backTitle, backText)) tightenLines(text)
 
-        backAside.typeface = segoe(CAPTION_FONT)
+        applyLabelStyle(backAside)
         backAside.maxLines = 2
         backAside.ellipsize = android.text.TextUtils.TruncateAt.END
         backAside.visibility = GONE
@@ -906,15 +905,17 @@ class TileView(
 
         alarmMark.scaleType = ImageView.ScaleType.FIT_CENTER
         alarmMark.visibility = GONE
-        // The far corner from the widget's own mark, so a tile can carry both and neither
-        // is read as belonging to the other. It is the label's corner, and the label gives
-        // way to it - see applyAlarmMarkVisibility. Sized and inset by the rule every
-        // corner mark on this tile follows; see applyCornerMark.
+        // The corner every mark on this tile uses, so a mark means the same thing wherever
+        // it is seen. It used to sit at the foot, which is the label's band: the two could
+        // not both be up, and the tile that carries this mark is now the tile that carries
+        // its program's name. Nothing contends for the corner - the two tiles that wear
+        // this mark are the clock and the calendar, and neither turns over or carries a
+        // widget mark of its own. Sized and inset by [applyCornerMark].
         addView(alarmMark, LayoutParams(
             dp(CORNER_MARK_DP), dp(CORNER_MARK_DP),
-            Gravity.BOTTOM or Gravity.START).apply {
-            bottomMargin = dp(CORNER_INSET_DP)
-            marginStart = dp(CORNER_INSET_DP)
+            Gravity.TOP or Gravity.END).apply {
+            topMargin = dp(CORNER_INSET_DP)
+            marginEnd = dp(CORNER_INSET_DP)
         })
 
         alarmCorner.isClickable = true
@@ -925,7 +926,7 @@ class TileView(
         // pass it on with.
         addView(alarmCorner, LayoutParams(
             dp(FLIP_CORNER_DP), dp(FLIP_CORNER_DP),
-            Gravity.BOTTOM or Gravity.START))
+            Gravity.TOP or Gravity.END))
     }
 
     /**
@@ -1304,6 +1305,18 @@ class TileView(
 
     private fun segoe(res: Int): Typeface? = ResourcesCompat.getFont(context, res)
 
+    /**
+     * Sets a view in the wall's label style. See [TileLabel].
+     *
+     * The size is a starting point rather than the last word for anything that has to fit
+     * a gap it does not control - [sizeAside] takes it back down where the number beside
+     * it has left nothing - but everything in this style starts here.
+     */
+    private fun applyLabelStyle(view: TextView) {
+        view.textSize = TileLabel.SIZE_SP
+        view.typeface = segoe(TileLabel.FONT)
+    }
+
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     // ---------------------------------------------------------------- content
@@ -1576,9 +1589,9 @@ class TileView(
      *
      * Handed the columns when the tile is wide enough to read them side by side, and an
      * empty list when it is not - which puts the tile back to whatever it would otherwise
-     * show, exactly as an empty mosaic hands the People tile back. The host decides which
-     * of the two it is, because the readings are its to fetch and the footprint is a
-     * property of the tile; see TileSize.canShowForecast and MainActivity.refreshWP81Weather.
+     * show, exactly as an empty mosaic hands the People tile back. Which of the two it is
+     * is settled by the wall, which knows what size each of its tiles was left at; see
+     * TileSize.canShowForecast and StartScreenView.setForecast.
      *
      * Like the mosaic, a tile showing this does not turn itself over any more: there is
      * nothing left to turn over to. See [canTurnOver].
@@ -1784,18 +1797,17 @@ class TileView(
     }
 
     /**
-     * Shows the foot mark where there is a foot to put it in.
+     * Shows the mark where there is a corner to put it in.
      *
-     * The label owns the bottom of a tile whenever it is up, and the two would be drawn
-     * over each other. The 1x1 has no room for it at all: its reading is set to the width
-     * of the whole tile - a time fills it corner to corner - so a mark down there would be
-     * under the digits rather than beside them.
+     * Everywhere but the 1x1, which has none to spare: its reading is set to the width of
+     * the whole tile - a time fills it corner to corner - so a mark up there would be over
+     * the digits rather than beside them. It used to stand down for the label as well,
+     * when the two shared the foot of the tile; from the top corner they no longer meet.
      */
     private fun applyAlarmMarkVisibility() {
         alarmMark.visibility = when {
             alarmMark.drawable == null || isEditMode -> GONE
             tile.size == TileSize.SMALL -> GONE
-            label.visibility == VISIBLE -> GONE
             else -> VISIBLE
         }
         // Nothing to aim at while there is no mark, and a corner that swallowed taps for a
@@ -2630,7 +2642,7 @@ class TileView(
      */
     private fun sizeAside(number: TextView, aside: TextView) {
         val scale = resources.displayMetrics.scaledDensity
-        aside.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, LIVE_ASIDE_SP)
+        aside.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, TileLabel.SIZE_SP)
         if (aside.visibility != VISIBLE) return
         val text = aside.text?.toString().orEmpty()
         if (text.isEmpty()) return
@@ -2641,13 +2653,13 @@ class TileView(
         val room = inner - taken - dp(ASIDE_GAP_DP)
         if (room <= 0f) return
         val paint = android.text.TextPaint(aside.paint)
-        paint.textSize = LIVE_ASIDE_SP * scale
+        paint.textSize = TileLabel.SIZE_SP * scale
         // The widest of its lines: the clock's stands two deep.
         val wide = text.split('\n').maxOf { paint.measureText(it) }
         if (wide <= room) return
         aside.setTextSize(
             android.util.TypedValue.COMPLEX_UNIT_SP,
-            (LIVE_ASIDE_SP * room / wide).coerceAtLeast(LIVE_ASIDE_MIN_SP))
+            (TileLabel.SIZE_SP * room / wide).coerceAtLeast(TileLabel.MIN_SP))
     }
 
     /**
@@ -2804,9 +2816,14 @@ class TileView(
             // corner over to a name while one of them has the whole tile. The 1x1 has room
             // for neither.
             hasPeopleMosaic -> if (tile.size.canShowText) VISIBLE else GONE
-            // The forecast fills the tile corner to corner and names each of its columns.
-            // A "Weather" along the foot of that is the one word on it nobody needs.
-            hasForecast -> GONE
+            // A program's live tile says which program it is, exactly as its icon tile
+            // would: the clock is Alarms', the pictures are Files', and a reading with no
+            // name under it is a number the wall does not account for. Two cells and up,
+            // and not on a one-row tile - a strip's reading already owns its height, and a
+            // name under it would crush both. What is left of the tile is kept clear for
+            // it; see [applyContentFooter].
+            tile.kind.isProgramWidget ->
+                if (tile.size.canShowText && !tile.size.isStrip) VISIBLE else GONE
             // Only once it has something to show. A widget whose content has not arrived
             // yet - the weather before the forecast is fetched, the news before the first
             // story - is a tile with an icon on it and nothing else, and it names itself
@@ -2827,11 +2844,29 @@ class TileView(
             else -> VISIBLE
         }
         // The same question this method opens with - is the tile showing content, or is it
-        // showing itself - is the one the scrim answers, so it is asked here too. And the
-        // foot mark stands where the label does, so what the label just decided decides
-        // that as well.
+        // showing itself - is the one the scrim answers, so it is asked here too, along
+        // with the room the content has to leave for what the label just decided.
         applyAlarmMarkVisibility()
+        applyContentFooter()
         invalidateContentScrim()
+    }
+
+    /**
+     * Keeps the foot of a live tile clear for its name.
+     *
+     * The name is drawn over the faces rather than beside them, so content that fills the
+     * tile has to stop short of it or be printed through. Only what would be: a reading,
+     * and the forecast's columns. A picture and a wall of faces are meant to run under it
+     * - the name sits on them over a scrim, exactly as a story's source does.
+     */
+    private fun applyContentFooter() {
+        val band = if (label.visibility == VISIBLE) dp(8) + dp(NOTIFICATION_LABEL_GAP_DP) else 0
+        forecastPanel?.let {
+            if (it.paddingBottom != band) it.setPadding(0, 0, 0, band)
+        }
+        if (!tile.kind.isLiveWidget) return
+        val pad = dp(8)
+        if (liveBox.paddingBottom != band) liveBox.setPadding(pad + dp(2), 0, pad, band)
     }
 
     /**
@@ -3207,7 +3242,8 @@ class TileView(
         // meant showing the app's name on a tile that should never carry one.
         applyLabelVisibility()
         if (tile.kind.isLiveWidget) {
-            liveBox.setPadding(pad + dp(2), 0, pad, 0)
+            // Its side padding, and whatever the name at the foot has left it.
+            applyContentFooter()
             applyLiveTextSizes()
         } else {
             // Room along the bottom for the app name, which is drawn over both faces -
@@ -3711,11 +3747,28 @@ class TileView(
         private const val FOLDER_DOT_DP = 8
         private const val FOLDER_DOT_GAP_DP = 5
 
-        /** What stands beside a reading, and the air between the two. */
-        private const val LIVE_ASIDE_SP = 22f
+        /**
+         * The wall's small words, as one style.
+         *
+         * The app's name along the foot of a tile, and what stands beside a reading - the
+         * calendar's weekday. They are the same thing seen twice: a word rather than a
+         * number, read at a glance against whatever the tile is showing. Held together
+         * here so the wall's words are changed in one place rather than three.
+         *
+         * Semibold, where the rest of the small type on a tile is Semilight. These are
+         * the smallest things on the wall and the ones most often read over a photograph
+         * or a busy piece of album art, where Semilight simply disappears.
+         */
+        private object TileLabel {
+            const val SIZE_SP = 13f
 
-        /** However little room is left beside a number, it is still meant to be read. */
-        private const val LIVE_ASIDE_MIN_SP = 11f
+            /** However little room is left beside a number, it is still meant to be read. */
+            const val MIN_SP = 11f
+
+            val FONT = R.font.segoeui_semibold
+        }
+
+        /** The air between a reading and what stands beside it. */
         private const val ASIDE_GAP_DP = 5
 
 
@@ -3749,7 +3802,6 @@ class TileView(
 
         /** A reading is set in weight as well as in size: it is the tile's whole point. */
         private val NUMBER_FONT = R.font.segoeui_semibold
-        private val CAPTION_FONT = R.font.segoeui_semilight
 
         /**
          * The line over a reading, a weight up from the rest of the small type.
@@ -3759,14 +3811,6 @@ class TileView(
          * to disappear into the accent behind it.
          */
         private val SUBTITLE_FONT = R.font.segoeui_regular
-
-        /**
-         * The app's name along the foot of the tile, which is the exception.
-         *
-         * It is the smallest thing on the wall and the one most often read over a
-         * photograph or a busy piece of album art, where Semilight simply disappears.
-         */
-        private val LABEL_FONT = R.font.segoeui_semibold
 
         /** Leading, as a multiple of the font's own. See tightenLines. */
         private const val LINE_SPACING = 0.9f

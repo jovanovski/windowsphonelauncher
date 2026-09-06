@@ -22,9 +22,8 @@ import rocks.gorjan.gokixp.wp81.WP81Palette
  * made it, how to get around, and what changed - laid out as a panorama instead of a
  * dialog with a picture and two buttons.
  *
- * No music. The desktop welcome plays a startup theme on a loop, which belongs to a
- * machine booting up; a phone that started playing music because an app updated would be
- * a phone with something wrong with it.
+ * The host plays the startup jingle as it opens - the desktop welcome played its theme
+ * on a loop, and this is the phone's, once.
  *
  * The release notes are fetched rather than bundled, from the same GitHub releases the
  * desktop welcome reads - so there is one list of what changed and it is never a build
@@ -285,24 +284,16 @@ class WelcomeApp(
 
         const val WELCOME_TEXT =
             "This is a passion project from Gorjan Jovanovski, a developer who grew up " +
-                "with these aesthetics and prefers them over new design any day.\n\n" +
-                "If you're an 80s or 90s kid, you remember these days fondly, and this is " +
-                "a chance to relive them on a modern daily driver, in your pocket.\n\n" +
+                "with the Metro design, and wanted the same experience but on a modern usable phone.\n\n" +
                 "A few tips:\n" +
-                "1) Tap on things that look tappable, chances are they are.\n" +
-                "2) Hold a tile to move it, resize it, or paint it another colour.\n" +
-                "3) Swipe left from Start for everything installed, and press the search " +
-                "key to find one by name.\n" +
+                "1) Long press on the start icon to access settings.\n" +
+                "2) Hold a tile to move it, resize it, or paint it another colour using the buttons on the bottom.\n" +
+                "3) Swipe left from Start for everything installed.\n" +
                 "4) Tap the corner of a tile to turn it over.\n" +
-                "5) The settings key on the left of the navigation bar is where the " +
-                "accent, the background and the Start photo live.\n\n" +
-                "Swipe across to the permissions page to switch on the parts that need " +
-                "them - the keyboard, the People and Calendar tiles, the weather, and " +
-                "your photos and music. Everything works without them; what you leave " +
-                "off just stays empty.\n\n" +
+                "5) Enable the app's keyboard to get a Windows Phone keyboard too'.\n\n" +
                 "All the copyrighted information belongs to their respective authors; the " +
                 "aim here is to recreate nostalgia for fun.\n\n" +
                 "For any feature requests, drop me an email at hey@gorjan.rocks\n\n" +
-                "Thanks for using Windows!"
+                "Thanks for using Windows Phone, and donate to keep the project alive!"
     }
 }

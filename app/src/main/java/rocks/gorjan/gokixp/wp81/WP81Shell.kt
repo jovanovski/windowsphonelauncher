@@ -245,9 +245,16 @@ class WP81Shell(
         tiles: List<Tile>,
         notifications: (Tile) -> List<TileView.Line> = { emptyList() },
         tileColors: (Tile) -> Int? = { null },
+        liveWidget: (Tile) -> TileView.Reading? = { null },
+        widgetGlyphs: (Tile) -> Pair<Int?, Int?> = { null to null },
+        widgetBacks: (Tile) -> TileView.Reading? = { null },
+        alarmMarks: (Tile) -> Int? = { null },
         glyphs: (Tile) -> MonochromeIconProvider.Glyph?
     ) {
-        folderPage.show(name, tiles, notifications, tileColors, glyphs)
+        folderPage.show(
+            name, tiles, notifications, tileColors,
+            liveWidget, widgetGlyphs, widgetBacks, alarmMarks, glyphs
+        )
         refreshNavMode()
     }
 

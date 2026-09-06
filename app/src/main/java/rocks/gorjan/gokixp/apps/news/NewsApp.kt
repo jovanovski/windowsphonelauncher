@@ -138,20 +138,9 @@ class NewsApp(
         return root
     }
 
-    /**
-     * One section per outlet, and one for all of them.
-     *
-     * Built from what the feed has rather than from what is enabled, so an outlet whose
-     * feed is down does not leave an empty section named after it.
-     */
+    /** One section per outlet, and one for all of them. See [sectionNames]. */
     private fun buildSections() {
-        val outlets = feed.bySource()
-        val names = buildList {
-            if (outlets.size > 1) add(LATEST)
-            addAll(outlets.keys)
-        }.ifEmpty { listOf(LATEST) }
-
-        for (name in names) {
+        for (name in sectionNames()) {
             val list = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(0, dp(4), dp(PAGE_MARGIN_DP), dp(24))
@@ -176,11 +165,50 @@ class NewsApp(
      * way until it is.
      */
     fun bind() {
+        // Which outlets there are can change under the app, not just which stories they
+        // hold: turning a feed on in settings is a section arriving, and turning one off is
+        // a section going. Refilling the columns the app opened with would leave a new
+        // outlet with nowhere to be shown until the app was closed and opened again.
+        if (sectionNames() != columns.keys.toList()) rebuildSections()
         stale.addAll(columns.keys)
         columns.keys.elementAtOrNull(panorama.currentPage())?.let { bindSection(it) }
         // The rows an outstanding reveal was measured against have just been thrown away.
         // Ask again on the ones that replaced them - the story may have moved up the page.
         revealOpening()
+    }
+
+    /**
+     * The sections the feed as it stands calls for, in the order they are shown.
+     *
+     * From what the feed has rather than from what is enabled, so an outlet whose feed is
+     * down does not leave an empty section named after it - and so the app agrees with the
+     * tile about which outlets are actually being read.
+     */
+    private fun sectionNames(): List<String> {
+        val outlets = feed.bySource()
+        return buildList {
+            if (outlets.size > 1) add(LATEST)
+            addAll(outlets.keys)
+        }.ifEmpty { listOf(LATEST) }
+    }
+
+    /**
+     * Lays the sections again, because the outlets have changed.
+     *
+     * Everything built for the old set goes - the columns, the rows waiting to be built,
+     * the marks saying which still need building - and [bind] fills the new set from
+     * scratch. The reader is left on the section it was on where that section survived;
+     * where it did not, on the first, which is where opening the app would have put it.
+     */
+    private fun rebuildSections() {
+        val reading = columns.keys.elementAtOrNull(panorama.currentPage())
+        panorama.clearPages()
+        columns.clear()
+        pending.clear()
+        stale.clear()
+        buildSections()
+        val again = columns.keys.indexOf(reading)
+        if (again > 0) panorama.goTo(again, animated = false)
     }
 
     // ---------------------------------------------------------------- opening on a story

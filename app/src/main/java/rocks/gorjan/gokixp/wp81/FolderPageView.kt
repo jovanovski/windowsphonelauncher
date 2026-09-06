@@ -78,16 +78,35 @@ class FolderPageView(
         applyPalette(palette)
     }
 
+    /**
+     * Puts a folder's contents on the page.
+     *
+     * Takes what a live tile shows as well as what an icon tile does, because a program's
+     * tile is live wherever it is filed: a page of them is a Start screen, and a clock on
+     * it is a clock. The four are [StartScreenView.setTiles]'s own, passed straight
+     * through - see MainActivity.reopenWP81Folder, which is where they come from.
+     */
     fun show(
         folderName: String,
         tiles: List<Tile>,
         notifications: (Tile) -> List<TileView.Line> = { emptyList() },
         tileColors: (Tile) -> Int? = { null },
+        liveWidget: (Tile) -> TileView.Reading? = { null },
+        widgetGlyphs: (Tile) -> Pair<Int?, Int?> = { null to null },
+        widgetBacks: (Tile) -> TileView.Reading? = { null },
+        alarmMarks: (Tile) -> Int? = { null },
         glyphs: (Tile) -> MonochromeIconProvider.Glyph?
     ) {
         header.setTitle(folderName)
         contents.setTiles(
-            tiles, liveWidget = { null }, tileColors = tileColors, glyphs = glyphs)
+            tiles,
+            liveWidget = liveWidget,
+            widgetGlyphs = widgetGlyphs,
+            widgetBacks = widgetBacks,
+            alarmMarks = alarmMarks,
+            tileColors = tileColors,
+            glyphs = glyphs
+        )
         contents.setNotifications(notifications)
         emptyLabel.visibility = if (tiles.isEmpty()) VISIBLE else GONE
 

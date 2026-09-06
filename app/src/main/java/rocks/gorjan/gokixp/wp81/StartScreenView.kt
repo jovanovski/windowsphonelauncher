@@ -335,12 +335,21 @@ class StartScreenView(
 
     // ---------------------------------------------------------------- data
 
+    // What a live tile is currently showing, kept from the last rebuild. A tile built
+    // after it - the band a folder opens into - is dressed from the same four, so what is
+    // in a folder is as live as what is around it; and the tick can ask every tile on the
+    // surface again without the caller handing them over twice. See [dress].
+    private var liveWidgetContent: (Tile) -> TileView.Reading? = { null }
+    private var widgetGlyphContent: (Tile) -> Pair<Int?, Int?> = { null to null }
+    private var widgetBackContent: (Tile) -> TileView.Reading? = { null }
+    private var alarmMarkContent: (Tile) -> Int? = { null }
+
     /**
      * Rebuilds the whole Start screen.
      *
-     * [liveWidget] supplies the reading for the built-in live widgets, which show their
-     * content on the front face permanently rather than flipping to reveal it. Returning
-     * null leaves the tile as an ordinary icon tile.
+     * [liveWidget] supplies the reading for the live tiles that show one, which sits on
+     * the front face permanently rather than being flipped to. Returning null leaves the
+     * tile as an ordinary icon tile.
      */
     fun setTiles(
         newTiles: List<Tile>,
@@ -363,27 +372,45 @@ class StartScreenView(
         // and refuses to open it again.
         closeFolder(animated = false)
 
+        liveWidgetContent = liveWidget
+        widgetGlyphContent = widgetGlyphs
+        widgetBackContent = widgetBacks
+        alarmMarkContent = alarmMarks
+
         tiles.clear()
         tiles.addAll(newTiles.sortedBy { it.index })
         grid.removeAllViews()
         for (tile in tiles) {
             val view = buildTileView(tile, glyphs)
-            if (tile.kind.isLiveWidget) {
-                liveWidget(tile)?.let { reading -> view.setLiveWidget(reading) }
-            }
-            val (frontGlyph, backGlyph) = widgetGlyphs(tile)
-            view.setWidgetGlyph(frontGlyph, backGlyph)
             view.setTileColor(tileColors(tile))
-            view.setWidgetBack(widgetBacks(tile))
-            view.setAlarmMark(alarmMarks(tile))
+            dress(view)
             grid.addView(view)
         }
         grid.requestLayout()
     }
 
-    /** Refreshes one live widget's content in place, without rebuilding the grid. */
-    fun setLiveWidgetContent(tileId: String, reading: TileView.Reading) {
-        forEachTileView { if (it.tile.id == tileId) it.setLiveWidget(reading) }
+    /** Hands one tile whatever its kind is showing at the moment it is built. */
+    private fun dress(view: TileView) {
+        val tile = view.tile
+        if (tile.kind.isLiveWidget) {
+            liveWidgetContent(tile)?.let { reading -> view.setLiveWidget(reading) }
+        }
+        val (frontGlyph, backGlyph) = widgetGlyphContent(tile)
+        view.setWidgetGlyph(frontGlyph, backGlyph)
+        view.setWidgetBack(widgetBackContent(tile))
+        view.setAlarmMark(alarmMarkContent(tile))
+    }
+
+    /**
+     * Asks every tile on the surface what it is showing now, band included.
+     *
+     * The tick's job. Walks the views rather than [tiles], because a folder opened into
+     * the wall is a band of tiles inside the wall's own grid and is not in that list - and
+     * a clock in a folder is a clock, which is to say it is wrong within the minute if
+     * nobody asks it again.
+     */
+    fun refreshLiveWidgets() {
+        forEachTileView { dress(it) }
     }
 
     /** Repaints one tile, without rebuilding the wall around it. */
@@ -401,6 +428,41 @@ class StartScreenView(
     }
 
     /**
+     * The same run, to every tile of one kind at once.
+     *
+     * Which is how a program's live tile is fed: it is pinned from the app list like any
+     * other tile, so there can be two of them on the wall, and both are showing the same
+     * headlines. The tile-at-a-time form above is for a run that differs between them -
+     * the weather, whose labels are shortened to the tile they are being read on.
+     */
+    fun setLiveWidgetRotation(
+        kind: Tile.Kind,
+        faces: List<TileView.LiveFace>,
+        style: TileView.LiveStyle
+    ) {
+        forEachTileView { if (it.tile.kind == kind) it.setLiveWidgetRotation(faces, style) }
+    }
+
+    /**
+     * The same run, worked out for each tile of the kind in turn.
+     *
+     * For content that differs between two tiles of one kind: the weather, whose labels
+     * are shortened to the tile they are being read on. Returning null for a tile leaves
+     * its faces alone, which is what a reading that has not arrived yet wants - a tile
+     * still turning the last forecast beats a tile turning nothing.
+     */
+    fun setLiveWidgetRotation(
+        kind: Tile.Kind,
+        style: TileView.LiveStyle,
+        faces: (Tile) -> List<TileView.LiveFace>?
+    ) {
+        forEachTileView { view ->
+            if (view.tile.kind != kind) return@forEachTileView
+            faces(view.tile)?.let { view.setLiveWidgetRotation(it, style) }
+        }
+    }
+
+    /**
      * Hands the People tile the address book its wall of faces is made of.
      *
      * Both parts of it: the favourites, and the rest of the book the tile makes its
@@ -412,22 +474,28 @@ class StartScreenView(
      * on it.
      */
     fun setPeopleMosaic(
-        tileId: String,
         favourites: List<ContactFeed.Person>,
         others: List<ContactFeed.Person> = emptyList()
     ) {
-        forEachTileView { if (it.tile.id == tileId) it.setPeopleMosaic(favourites, others) }
+        forEachTileView {
+            if (it.tile.kind == Tile.Kind.LIVE_PEOPLE) it.setPeopleMosaic(favourites, others)
+        }
     }
 
     /**
-     * Hands the weather tile the forecast it lays across itself, or nothing at all.
+     * Hands every weather tile the forecast it lays across itself, or nothing at all.
      *
-     * Nothing is how the tile is told to go back to turning its readings over one at a
-     * time, which is what a tile too small for a row of columns does. See
-     * TileView.setForecast.
+     * Nothing is how a tile is told to go back to turning its readings over one at a time,
+     * which is what a tile too small for a row of columns does - and which of the two each
+     * tile gets is settled here rather than by the caller, because two weather tiles can
+     * be pinned at two different sizes and only the wall knows what size they are. See
+     * TileSize.canShowForecast and TileView.setForecast.
      */
-    fun setForecast(tileId: String, columns: List<ForecastPanelView.Column>) {
-        forEachTileView { if (it.tile.id == tileId) it.setForecast(columns) }
+    fun setForecast(columns: List<ForecastPanelView.Column>) {
+        forEachTileView {
+            if (it.tile.kind != Tile.Kind.LIVE_WEATHER) return@forEachTileView
+            it.setForecast(if (it.tile.size.canShowForecast) columns else emptyList())
+        }
     }
 
     /** Hands every tile the loader it fetches face pictures through. */
@@ -449,23 +517,8 @@ class StartScreenView(
      * it stepped aside for. Every other tile's icon is settled when the wall is built and
      * never moves; this one changes with the shade. See MainActivity.refreshWP81People.
      */
-    fun setGlyph(tileId: String, glyph: MonochromeIconProvider.Glyph?) {
-        forEachTileView { if (it.tile.id == tileId) it.setGlyph(glyph) }
-    }
-
-    /** Refreshes one live widget's corner marks in place: the front's, and the reverse's. */
-    fun setWidgetGlyph(tileId: String, front: Int?, back: Int?) {
-        forEachTileView { if (it.tile.id == tileId) it.setWidgetGlyph(front, back) }
-    }
-
-    /** Refreshes one live widget's reverse in place. */
-    fun setWidgetBack(tileId: String, back: TileView.Reading?) {
-        forEachTileView { if (it.tile.id == tileId) it.setWidgetBack(back) }
-    }
-
-    /** Puts the mark at one tile's foot up, or takes it down. */
-    fun setAlarmMark(tileId: String, res: Int?) {
-        forEachTileView { if (it.tile.id == tileId) it.setAlarmMark(res) }
+    fun setGlyph(kind: Tile.Kind, glyph: MonochromeIconProvider.Glyph?) {
+        forEachTileView { if (it.tile.kind == kind) it.setGlyph(glyph) }
     }
 
     private fun buildTileView(
@@ -549,8 +602,8 @@ class StartScreenView(
     /**
      * How many columns the wall is set to, as the user chose it.
      *
-     * A portrait number - three or four across a phone held upright. What the packer is
-     * actually given is [packedColumns], which is this scaled to the shape of the screen.
+     * A portrait number - three, four or six across a phone held upright. What the packer
+     * is actually given is that scaled to the shape of the screen; see [applyColumns].
      */
     var columns: Int = TileGridLayout.COLUMNS
         set(value) {
@@ -955,7 +1008,14 @@ class StartScreenView(
             bottomReservePx = overhang
         }
         for (child in contents.sortedBy { it.index }) {
-            inner.addView(buildTileView(child, glyphs).apply { setTileColor(tileColors(tile)) })
+            val view = buildTileView(child, glyphs)
+            view.setTileColor(tileColors(child))
+            // A folder opens into the wall, so what is in it is live in the same way what
+            // is around it is: the tile is dressed from the same four the wall was built
+            // from. The runs that turn over - a forecast, a wall of faces - arrive after
+            // this, by kind, and reach the band because it is one of the grid's children.
+            dress(view)
+            inner.addView(view)
         }
         column.addView(inner, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))

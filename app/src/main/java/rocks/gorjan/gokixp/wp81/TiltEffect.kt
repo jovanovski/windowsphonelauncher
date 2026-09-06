@@ -105,7 +105,17 @@ object TiltEffect {
     private fun restingScaleOf(view: View): Float =
         (view as? Target)?.restingScale() ?: 1f
 
-    private fun release(v: View) {
+    private fun release(v: View) = settle(v)
+
+    /**
+     * Springs a view flat and back to its resting scale.
+     *
+     * Public because a [Target]'s resting scale can change while the release is still in
+     * flight - a tap that selects something is handled *after* the finger has lifted, so
+     * the spring is already aimed at the size the view was before the tap. Setting the
+     * scale from under a running animation loses; re-settling re-aims it.
+     */
+    fun settle(v: View) {
         val resting = restingScaleOf(v)
         v.animate().cancel()
         v.animate()

@@ -30,8 +30,10 @@ import java.util.concurrent.Executors
  * opening a folder of two thousand photographs decodes the dozen the user can see rather
  * than all of them. See the pending queue in [MetroFilesApp].
  *
- * Held in a cache keyed by the file's path, size and date, so scrolling back up is free
- * and a file replaced under the same name is drawn again rather than remembered wrong.
+ * Held in a cache keyed by the file's path, size and date - and by the box it was asked
+ * for at, since a row's mark and a cell of the photo grid want the same picture at very
+ * different sizes - so scrolling back up is free and a file replaced under the same name
+ * is drawn again rather than remembered wrong.
  * Static, like the app's clipboard: the pictures in a folder are a fact about the phone,
  * and leaving the app and coming back should not mean decoding all of them a second time.
  */
@@ -65,7 +67,7 @@ object FileThumbnails {
      * select mode - so a row that already had its picture can put it back as it is drawn,
      * instead of showing a glyph until the queue comes round to it again.
      */
-    fun held(file: File): Bitmap? = cache.get(keyOf(file))
+    fun held(file: File, sizePx: Int): Bitmap? = cache.get(keyOf(file, sizePx))
 
     /**
      * Hands [onReady] a picture of [file] at roughly [sizePx] square.
@@ -81,7 +83,8 @@ object FileThumbnails {
      * rebuilt while a decode is in flight, which happens on every tap in select mode.
      */
     fun load(file: File, kind: Kind, sizePx: Int, onReady: (Bitmap?) -> Unit) {
-        val key = keyOf(file)
+        val box = bucket(sizePx)
+        val key = keyOf(file, sizePx)
         cache.get(key)?.let {
             onReady(it)
             return
@@ -99,7 +102,7 @@ object FileThumbnails {
             waiting[key] = mutableListOf(onReady)
         }
         executor.execute {
-            val bitmap = decode(file, kind, sizePx)
+            val bitmap = decode(file, kind, box)
             if (bitmap == null) failed.add(key) else cache.put(key, bitmap)
             val asked = synchronized(waiting) { waiting.remove(key) }.orEmpty()
             main.post { for (callback in asked) callback(bitmap) }
@@ -113,8 +116,30 @@ object FileThumbnails {
      * a download, is a different picture at the same address. Size and date are what every
      * filesystem will say cheaply about that, and between them they catch it.
      */
-    private fun keyOf(file: File): String =
-        "${file.absolutePath}|${file.lastModified()}|${file.length()}"
+    private fun keyOf(file: File, sizePx: Int): String =
+        "${file.absolutePath}|${file.lastModified()}|${file.length()}|${bucket(sizePx)}"
+
+    /**
+     * The size a request is actually served at: the next rung of [BOXES] at or above it.
+     *
+     * There are several places in the app that want a picture of the same file at slightly
+     * different sizes - a row's mark, a cell in an album's mosaic, a photograph in the grid
+     * inside one - and a cache keyed on the exact number asked for would hold a copy of
+     * every photograph on the phone for each of them, differing by a few pixels. The rungs
+     * collapse all of that onto a handful of sizes.
+     *
+     * They step by half rather than by double, and that is not fussiness: a thumbnail is a
+     * square of pixels, so a rung twice as wide is a bitmap four times the size, and the
+     * cache is a fixed slice of the heap. Rounding a 270px cell up to 512 rather than to
+     * 384 would halve how many photographs fit in it - which is felt as a grid that
+     * re-decodes everything each time it is scrolled back up.
+     *
+     * The round-up is also what pays for the crop. These thumbnailers fit the whole picture
+     * inside the box they are given while the grid crops a square out of the middle, so an
+     * ordinary 4:3 photograph comes back only three-quarters of the box tall - and asking
+     * for the next rung up is what leaves that three-quarters still larger than the cell.
+     */
+    private fun bucket(sizePx: Int): Int = BOXES.firstOrNull { it >= sizePx } ?: BOXES.last()
 
     private fun decode(file: File, kind: Kind, sizePx: Int): Bitmap? = try {
         val box = Size(sizePx, sizePx)
@@ -196,6 +221,16 @@ object FileThumbnails {
         "mp4", "mkv", "avi", "mov", "wmv", "webm", "m4v", "3gp", "mpg", "mpeg"
     )
     private val DOCUMENT_TYPES = setOf("pdf")
+
+    /**
+     * Every size a thumbnail is ever decoded at. See [bucket].
+     *
+     * The floor is a cell of an album's mosaic on a plain screen; the ceiling is a cell of
+     * the photo grid on a dense one, which is as large as anything in this app draws. Above
+     * that the file is being *looked* at rather than listed, and the phone opens it
+     * properly in whatever program does that.
+     */
+    private val BOXES = intArrayOf(64, 96, 128, 192, 256, 384, 512)
 
     private const val TAG = "MetroFileThumbs"
 }

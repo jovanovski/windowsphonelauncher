@@ -60,7 +60,7 @@ class WP81SettingsView(
     /** Fired when the hide-tile-colours checkbox is toggled. */
     var onHideTileColorsChanged: ((Boolean) -> Unit)? = null
 
-    /** Fired when the notification-numbers checkbox is toggled. */
+    /** Fired when the tiles are set to count their notifications, or only to mark them. */
     var onTileCountsChanged: ((Boolean) -> Unit)? = null
 
     /** Fired when the wall is set to a different number of columns. */
@@ -92,6 +92,8 @@ class WP81SettingsView(
     private val themeRows = mutableListOf<Pair<View, Boolean>>()
     private val columnRows = mutableListOf<Pair<View, Int>>()
     private var selectedColumns = 4
+    private val countRows = mutableListOf<Pair<View, Boolean>>()
+    private var selectedCounts = true
     private val wallpaperTiles = mutableListOf<Pair<StripTile, String?>>()
     private val blurLabel = TextView(context).apply {
         text = "blur"
@@ -119,16 +121,6 @@ class WP81SettingsView(
      */
     private val hideColorsRow =
         CheckRow("hide custom tile colors") { on -> onHideTileColorsChanged?.invoke(on) }
-
-    /**
-     * Whether a tile says how many are waiting, or only that something is.
-     *
-     * Not filed under the background with the other two: those describe a photograph and
-     * go away with it, where this is about the tiles themselves and is worth setting on a
-     * plain black Start screen as much as on a picture.
-     */
-    private val countsRow =
-        CheckRow("notification numbers") { on -> onTileCountsChanged?.invoke(on) }
 
     /**
      * Whether a link opens here or in the phone's own browser.
@@ -173,25 +165,32 @@ class WP81SettingsView(
         // Two mutually exclusive choices of one word each: a column of them wasted a
         // screenful of height on a decision that fits across one row.
         backgroundRow.orientation = LinearLayout.HORIZONTAL
-        backgroundRow.addView(themeRow("Dark", true), half())
-        backgroundRow.addView(themeRow("Light", false), half())
+        backgroundRow.addView(themeRow("Dark", true), share())
+        backgroundRow.addView(themeRow("Light", false), share())
         column.addView(backgroundRow, wide())
 
         column.addView(sectionLabel("accent color"), wide())
         buildAccentGrid()
         column.addView(accentGrid, wide())
 
-        column.addView(sectionLabel("tiles"), wide())
-        // Two words on one row, like Dark and Light: it is the same kind of decision, and
-        // a column of two would spend a screenful of height on it.
+        // The word the three answers share is said once, in the heading: at a third of the
+        // width each there is no room to repeat "columns" beside every marker, and three
+        // rows of one word would spend a screenful of height on one decision.
+        column.addView(sectionLabel("tile columns"), wide())
         val columnsRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-        columnsRow.addView(columnsOption("3 columns", 3), half())
-        columnsRow.addView(columnsOption("4 columns", 4), half())
+        for (count in COLUMN_CHOICES) columnsRow.addView(columnsOption(count), share())
         column.addView(columnsRow, wide())
-        // Always offered, unlike the background's own switches, so it is shown from the
-        // start rather than waiting to be told what it is.
-        countsRow.setVisible(true)
-        column.addView(countsRow.view, wide())
+
+        // A section of its own, and a pair rather than a switch. What a tile does with an
+        // unread notification is not "numbers, or nothing": with the number off it still
+        // marks the tile, with a dot. A checkbox called "notification numbers" left the
+        // other half of that unsaid, so turning it off read as turning notifications off.
+        // Naming both answers says what the wall will actually look like either way.
+        column.addView(sectionLabel("notifications"), wide())
+        val countsRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+        countsRow.addView(countsOption("numbers", true), share())
+        countsRow.addView(countsOption("dots", false), share())
+        column.addView(countsRow, wide())
 
         column.addView(sectionLabel("start background"), wide())
         wallpaperStrip.orientation = LinearLayout.HORIZONTAL
@@ -257,8 +256,8 @@ class WP81SettingsView(
     private fun wide() = LinearLayout.LayoutParams(
         LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
 
-    /** One of two columns sharing a row. */
-    private fun half() = LinearLayout.LayoutParams(
+    /** One of an equal-width set sharing a row. */
+    private fun share() = LinearLayout.LayoutParams(
         0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
 
     private fun sectionLabel(text: String) = TextView(context).apply {
@@ -302,17 +301,51 @@ class WP81SettingsView(
         return row
     }
 
-    /** One of the two widths, marked the way Dark and Light are. */
-    private fun columnsOption(label: String, count: Int): View {
+    /** One of the widths, marked the way Dark and Light are. */
+    private fun columnsOption(count: Int): View {
+        val first = count == COLUMN_CHOICES.first()
         val row = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(if (count == 3) dp(24) else dp(8), dp(12), dp(8), dp(12))
+            setPadding(if (first) dp(24) else dp(8), dp(12), dp(8), dp(12))
             isClickable = true
             setOnClickListener {
                 selectedColumns = count
                 repaintColumnRows()
                 onColumnsPicked?.invoke(count)
+            }
+            TiltEffect.apply(this)
+        }
+        val marker = View(context)
+        row.addView(marker, LinearLayout.LayoutParams(dp(20), dp(20)))
+        row.addView(TextView(context).apply {
+            text = count.toString()
+            textSize = 17f
+            typeface = ResourcesCompat.getFont(context, R.font.segoeui_regular)
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(14) })
+        row.tag = marker
+        columnRows.add(row to count)
+        return row
+    }
+
+    /**
+     * One of the two answers to what an unread tile shows, marked the way the widths are.
+     *
+     * Round markers, because these two are a set: choosing one unchooses the other. See
+     * [markerDrawable].
+     */
+    private fun countsOption(label: String, counts: Boolean): View {
+        val row = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(if (counts) dp(24) else dp(8), dp(12), dp(8), dp(12))
+            isClickable = true
+            setOnClickListener {
+                selectedCounts = counts
+                repaintCountRows()
+                onTileCountsChanged?.invoke(counts)
             }
             TiltEffect.apply(this)
         }
@@ -326,8 +359,16 @@ class WP81SettingsView(
             LinearLayout.LayoutParams.WRAP_CONTENT,
             LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(14) })
         row.tag = marker
-        columnRows.add(row to count)
+        countRows.add(row to counts)
         return row
+    }
+
+    private fun repaintCountRows() {
+        for ((row, counts) in countRows) {
+            (row.tag as View).background =
+                markerDrawable(round = true, on = counts == selectedCounts)
+            ((row as LinearLayout).getChildAt(1) as TextView).setTextColor(palette.foreground)
+        }
     }
 
     private fun repaintColumnRows() {
@@ -476,10 +517,28 @@ class WP81SettingsView(
 
         private var resting = UNSELECTED_SCALE
 
+        /**
+         * Moves the square to the size its state now calls for.
+         *
+         * Springs rather than sets, once the strip is on screen. A tap is handled after
+         * the finger has already lifted, so [TiltEffect] has read the old resting scale
+         * and started springing the square back to it - a scale set from under that
+         * animation is overwritten a frame later, and the chosen wallpaper only grew on
+         * the *second* tap, once the spring already had the new size to aim at. Re-aiming
+         * the spring is what makes the first tap show.
+         *
+         * Before the first layout there is no animation to fight and nothing to see, so
+         * the strip fills at its resting sizes rather than growing into them.
+         */
         fun restAt(scale: Float) {
+            if (scale == resting && scaleX == scale) return
             resting = scale
-            scaleX = scale
-            scaleY = scale
+            if (isLaidOut) {
+                TiltEffect.settle(this)
+            } else {
+                scaleX = scale
+                scaleY = scale
+            }
         }
 
         override fun restingScale(): Float = resting
@@ -522,10 +581,11 @@ class WP81SettingsView(
         )
     }
 
-    /** Seeds the tile switches, which are not tied to whether a background is set. */
+    /** Seeds the tile settings, which are not tied to whether a background is set. */
     fun setTileControls(counts: Boolean, columns: Int) {
-        countsRow.set(counts)
+        selectedCounts = counts
         selectedColumns = columns
+        repaintCountRows()
         repaintColumnRows()
     }
 
@@ -716,9 +776,9 @@ class WP81SettingsView(
             android.content.res.ColorStateList.valueOf(p.foreground)
         driftRow.repaint()
         hideColorsRow.repaint()
-        countsRow.repaint()
         openLinksRow.repaint()
         defaultBrowserRow.repaint()
+        repaintCountRows()
         repaintColumnRows()
         blurSlider.applyPalette(p)
         repaintThemeRows()
@@ -730,8 +790,8 @@ class WP81SettingsView(
      * Stands every setting in from the page's left edge, leaving the headings on it.
      *
      * The page was one flat column: a heading and the rows under it began at the same
-     * margin, so "tiles" and "start background" read as two more rows rather than as the
-     * names of what followed. An indent is enough to show which is which - the headings
+     * margin, so "tile columns" and "start background" read as two more rows rather than
+     * as the names of what followed. An indent is enough to show which is which - the headings
      * hang out to the left, and each group is visibly a group.
      */
     private fun indentSettingRows() {
@@ -750,6 +810,16 @@ class WP81SettingsView(
 
     companion object {
         private const val TAG_SECTION = "wp81_section"
+
+        /**
+         * The widths the wall can be set to, narrowest first.
+         *
+         * Four is WP8.1's own; three is a wall of bigger tiles, and six is what the phone
+         * itself offered on its larger screens under the name "show more tiles". The row
+         * is built from this list, so the first entry is the one that carries the page's
+         * left margin. See TileGridLayout.columns.
+         */
+        private val COLUMN_CHOICES = listOf(3, 4, 6)
 
         /** How far a setting stands in from the heading above it. See indentSettingRows. */
         private const val SECTION_INSET_DP = 12

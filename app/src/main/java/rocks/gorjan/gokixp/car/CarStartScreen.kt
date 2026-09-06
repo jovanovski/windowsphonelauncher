@@ -225,13 +225,13 @@ class CarStartScreen(carContext: CarContext) : Screen(carContext) {
             val tileHost = WP81TileHost(
                 context = carContext,
                 icons = { icons },
-                // The phone's hidden set is not the car's. A clock hidden on a phone that
-                // shows one in its status bar says nothing about a car screen, which has
-                // no status bar; and the picture tile is not something to be reading at
-                // the wheel. So the car names what it wants and ignores the rest.
-                hiddenTiles = { theme ->
-                    theme.getWP81HiddenTiles() - CAR_TILES + (ALL_BUILT_INS - CAR_TILES)
-                }
+                // The phone's hidden set is not the car's. A calendar hidden on a phone
+                // that shows the date in its status bar says nothing about a car screen,
+                // which has no status bar - so the car takes both of the shell's own
+                // tiles whether or not the phone is hiding them. What it does not want is
+                // a program's tile now rather than a hideable widget, and comes off by
+                // kind instead; see [CAR_LEAVES_OFF].
+                hiddenTiles = { theme -> theme.getWP81HiddenTiles() - SHELL_TILES }
             ).apply { refreshColors() }
 
             val show = Presentation(carContext, display.display)
@@ -279,7 +279,7 @@ class CarStartScreen(carContext: CarContext) : Screen(carContext) {
                         index = -1,
                         kind = Tile.Kind.APP
                     )
-                ) + tileHost.buildTiles())
+                ) + tileHost.buildTiles().filterNot { it.kind in CAR_LEAVES_OFF })
                     .sortedBy { it.index }
                     .onEachIndexed { i, tile -> tile.index = i }
                 Log.i(TAG, "wall has ${tiles.size} tiles: ${tiles.joinToString { it.label }}")
@@ -479,17 +479,27 @@ class CarStartScreen(carContext: CarContext) : Screen(carContext) {
         const val SPOTIFY = "com.spotify.music"
         const val ZUNE = "system.zune"
 
-        /** Every built-in the shell offers, so the car can name the ones it does not want. */
-        val ALL_BUILT_INS = setOf(
-            WP81TileHost.WIDGET_CLOCK, WP81TileHost.WIDGET_AQI, WP81TileHost.WIDGET_WEATHER,
-            WP81TileHost.WIDGET_CALENDAR, WP81TileHost.WIDGET_NEWS, WP81TileHost.WIDGET_PHOTOS,
-            WP81TileHost.WIDGET_PEOPLE, "system.welcome"
-        )
+        /**
+         * The tiles the shell still provides itself, both of which the car wants.
+         *
+         * The day and the air outside are exactly what a glance from the wheel is for, so
+         * neither is ever taken off the car's wall.
+         */
+        val SHELL_TILES = setOf(WP81TileHost.WIDGET_AQI, WP81TileHost.WIDGET_CALENDAR)
 
-        /** What belongs on a car screen: the things worth a glance from the wheel. */
-        val CAR_TILES = setOf(
-            WP81TileHost.WIDGET_CLOCK, WP81TileHost.WIDGET_AQI,
-            WP81TileHost.WIDGET_WEATHER, WP81TileHost.WIDGET_CALENDAR
+        /**
+         * The live tiles the car leaves off, whoever they belong to.
+         *
+         * A wall of faces and a camera roll are not things to be reading at the wheel, and
+         * a headline is a paragraph of somebody else's words. The clock and the forecast
+         * stay - those are the two readings the driver's seat is actually for - and they
+         * arrive as Alarms' tile and Weather's, which is what the phone has them as.
+         *
+         * By kind rather than by id: these are pinned tiles now, with no one id to name,
+         * and a program pinned twice would otherwise come through twice.
+         */
+        val CAR_LEAVES_OFF = setOf(
+            Tile.Kind.LIVE_NEWS, Tile.Kind.LIVE_PHOTOS, Tile.Kind.LIVE_PEOPLE
         )
     }
 }

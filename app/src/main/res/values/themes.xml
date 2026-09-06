@@ -17,54 +17,28 @@
         <item name="android:colorControlHighlight">@android:color/transparent</item>
         <!-- Windows XP specific attributes -->
         <item name="primaryFontFamily">@font/tahoma_font_family</item>
-        <item name="secondaryFontFamily">@font/tahoma_font_family</item>
-        <item name="scrollbarTrackDrawable">@drawable/scrollbar_track_xp</item>
-        <item name="scrollbarThumbDrawable">@drawable/scrollbar_thumb_xp</item>
-        <item name="winButtonStyle">@style/WinXPButton</item>
-        <item name="windowBackgroundColor">#ebe9da</item>
-        <item name="dialogBackgroundColor">#ebe9da</item>
-        <item name="menuBarBackground">@drawable/menu_bar</item>
-        <item name="solitareGreen">@color/solitare_green</item>
-        <item name="notificationBubble">@drawable/bubble</item>
-        <item name="notificationBubbleTitleColor">#000000</item>
         <!-- Windows Phone 8.1 defaults, so wp81_* resources resolve under any theme. -->
         <item name="wpAccent">#1BA1E2</item>
         <item name="wpBackground">#000000</item>
         <item name="wpForeground">#FFFFFF</item>
         <item name="wpForegroundSubtle">#99FFFFFF</item>
 
-
-    </style>
-
-    <!-- Windows Vista Theme -->
-    <style name="Theme.GokiXP.Vista" parent="Base.Theme.GokiXP">
-        <item name="primaryFontFamily">@font/segoeui_font_family</item>
-        <item name="secondaryFontFamily">@font/segoeui_font_family</item>
-        <item name="scrollbarTrackDrawable">@drawable/scrollbar_track_vista</item>
-        <item name="scrollbarThumbDrawable">@drawable/scrollbar_thumb_vista</item>
-        <item name="winButtonStyle">@style/WinVistaButton</item>
-        <item name="windowBackgroundColor">#cad9e7</item>
-        <item name="dialogBackgroundColor">#FFFFFF</item>
-        <item name="menuBarBackground">@drawable/menu_bar_vista</item>
-        <item name="solitareGreen">@drawable/solitare_green</item>
-        <item name="notificationBubble">@drawable/bubble_vista</item>
-        <item name="notificationBubbleTitleColor">#4C54C7</item>
-
-
     </style>
 
     <!--
-      Windows Phone 8.1.
+      Windows Phone 8.1, and the only theme the shell has.
 
-      Inherits the Vista style on purpose: WP8.1 has no desktop of its own, and its
-      windows are Vista windows (see AppTheme.chrome / DesktopChrome.VISTA). Only the
-      typography and the phone-shell palette differ. The accent and Light/Dark values
-      here are the out-of-box defaults; the live values come from ThemeManager and are
-      applied programmatically so they can change without recreating the activity.
+      A Theme.GokiXP.Vista used to sit between this and the base, because WP8.1 has no
+      window chrome of its own and drew its programs in Vista's - so the two shared a
+      layer. There is no other shell to share it with now, and what it contributed is set
+      here directly: the Vista button style and the ground its windows stand on.
+
+      The accent and Light/Dark values are the out-of-box defaults; the live ones come
+      from WP81Settings and are applied programmatically, so they can change without
+      recreating the activity.
     -->
-    <style name="Theme.GokiXP.WP81" parent="Theme.GokiXP.Vista">
+    <style name="Theme.GokiXP.WP81" parent="Base.Theme.GokiXP">
         <item name="primaryFontFamily">@font/segoe_wp_family</item>
-        <item name="secondaryFontFamily">@font/segoe_wp_family</item>
         <item name="wpAccent">#1BA1E2</item>
         <item name="wpBackground">#000000</item>
         <item name="wpForeground">#FFFFFF</item>
@@ -93,41 +67,4 @@
         <item name="android:colorControlActivated">#61ADDA</item>
     </style>
 
-
-
-    <!-- Button Widget Styles -->
-
-    <style name="WinXPButton" parent="@android:style/Widget.Button">
-        <item name="android:textColor">#000000</item>
-        <item name="android:fontFamily">@font/tahoma_font_family</item>
-        <item name="android:textSize">12sp</item>
-        <item name="android:paddingLeft">16dp</item>
-        <item name="android:paddingRight">16dp</item>
-        <item name="android:paddingTop">3dp</item>
-        <item name="android:paddingBottom">3dp</item>
-        <item name="android:backgroundTint">@null</item>
-        <item name="android:background">@drawable/vista_button</item>
-        <item name="android:gravity">center</item>
-    </style>
-
-    <style name="WinVistaButton" parent="@android:style/Widget.Button">
-        <item name="android:textColor">#000000</item>
-        <item name="android:fontFamily">@font/segoeui_font_family</item>
-        <item name="android:textSize">12sp</item>
-        <item name="android:paddingLeft">16dp</item>
-        <item name="android:paddingRight">16dp</item>
-        <item name="android:paddingTop">3dp</item>
-        <item name="android:paddingBottom">3dp</item>
-        <item name="android:backgroundTint">@null</item>
-        <item name="android:background">@drawable/vista_button</item>
-        <item name="android:gravity">center</item>
-    </style>
-
-
-
-
-
-    <style name="LightDialogButton" parent="Widget.Material3.Button.TextButton.Dialog">
-        <item name="android:textColor">#0078D7</item>
-    </style>
 </resources>

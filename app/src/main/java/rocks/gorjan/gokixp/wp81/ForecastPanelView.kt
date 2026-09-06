@@ -15,14 +15,16 @@ import rocks.gorjan.gokixp.R
  * The weather tile's forecast, laid out across the tile instead of turned through it.
  *
  * A tile with one cell to its name can only show one reading at a time, so it shows them
- * in turn: now, today's high, tomorrow's. Give it two cells and turning them over stops
- * being economy and starts being a delay - the tile has the room to say all of it at once,
- * and a glance at a wide tile should not have to be timed to catch the day it wanted.
+ * in turn: now, what the sky does next, tomorrow's. Give it two cells and turning them
+ * over stops being economy and starts being a delay - the tile has the room to say all of
+ * it at once, and a glance at a wide tile should not have to be timed to catch the day it
+ * wanted.
  *
  * So each reading gets a column of its own - what it is of, what the sky is doing, and the
  * figure - and the tile stops rotating for as long as it is wide enough to hold them. Which
- * readings there are is not this view's business: it draws the columns it is handed, two of
- * them or three, and the host drops today's once the day's high is behind us.
+ * readings there are is not this view's business: it draws the columns it is handed, two
+ * of them or three, and the host settles what the middle one is of - today's high while
+ * the day can still reach it, tonight's low once it cannot.
  *
  * Drawn rather than laid out in child views. Three bands of different kinds of thing, sized
  * against each other and against the tile they are in, are easier to keep on one baseline
@@ -86,10 +88,14 @@ class ForecastPanelView(
         labelPaint.color = ink
         readingPaint.color = ink
 
+        // The foot may be spoken for by the tile's name, which is drawn over this view.
+        // What is left above it is the panel: a named tile sets its columns a little
+        // higher rather than printing them through the name. See TileView.applyContentFooter.
+        val depth = height - paddingBottom
         val pad = dp(EDGE_DP)
         val columnWidth = (width - 2 * pad) / columns.size.toFloat()
         // One size for the whole panel rather than one per column: three readings side by
-        // side are one row of type, and a "9°" set larger than the "35°C" beside it would
+        // side are one row of type, and a "9°" set larger than the "35°" beside it would
         // read as the more important of the two rather than the shorter.
         val room = columnWidth - dp(COLUMN_GAP_DP)
 
@@ -98,7 +104,7 @@ class ForecastPanelView(
         // wall uses elsewhere, so a tall tile is unchanged and a short one shrinks to fit
         // rather than losing the mark between its two lines - which is what happened when
         // the mark was given only what the type had left over.
-        val usable = height - 2 * pad
+        val usable = depth - 2 * pad
         val gap = minOf(dp(BAND_GAP_DP), usable * GAP_MAX_SHARE)
         val bands = usable - 2 * gap
         labelPaint.textSize = minOf(
@@ -120,7 +126,7 @@ class ForecastPanelView(
         ).coerceAtLeast(0f)
 
         val block = labelHeight + gap + side + gap + readingHeight
-        val top = (height - block) / 2f
+        val top = (depth - block) / 2f
 
         for ((index, column) in columns.withIndex()) {
             val centre = pad + columnWidth * (index + 0.5f)
@@ -199,7 +205,7 @@ class ForecastPanelView(
          *
          * Taken out of the room the type is fitted to rather than drawn: what it actually
          * does is make the figures a size smaller on the tile with three of them across
-         * two cells, which is where "28°C 35°C 31°C" would otherwise run together into one
+         * two cells, which is where "28° 35° 31°" would otherwise run together into one
          * long number.
          */
         private const val COLUMN_GAP_DP = 12

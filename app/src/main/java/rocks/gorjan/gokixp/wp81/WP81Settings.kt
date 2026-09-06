@@ -59,40 +59,6 @@ class WP81Settings(private val context: Context) {
     // ========== The app's own icon ==========
 
 
-
-    // ========== Plus! 95 theme support ==========
-
-    data class Plus95Theme(
-        val slug: String,
-        val displayName: String,
-        val menuColor: Int,
-        val busyAsset: String?,
-        /** Asset played by MainActivity.playClickSound in place of the default UI click. */
-        val soundAsset: String?,
-        /** Asset played as the startup sound at launch and whenever this theme is applied. */
-        val startupAsset: String?
-    )
-
-
-
-
-    /**
-     * Always null here.
-     *
-     * Microsoft Plus! dressed up Windows Classic, and Classic ships in the desktop
-     * launcher. The callers - the window chrome, the context menu, the click and startup
-     * sounds - all already treat null as "no Plus! theme", which is the only answer this
-     * launcher can give. Kept as a seam rather than unpicked from five files at once.
-     */
-    fun getActivePlus95(): Plus95Theme? = null
-
-
-
-
-
-    /** Windows are always drawn in Vista chrome here; the phone had no chrome of its own. */
-    fun isVistaChrome(): Boolean = true
-
     /**
      * Built-in tiles the user has hidden from Start.
      *
@@ -109,17 +75,6 @@ class WP81Settings(private val context: Context) {
     fun setWP81HiddenTiles(ids: Set<String>) {
         prefs.edit { putString(KEY_WP81_HIDDEN_TILES, ids.joinToString(",")) }
     }
-
-
-    /**
-     * The theme name that legacy raw-string `when (selectedTheme)` blocks should branch on.
-     *
-     * A number of sites still read the "selected_theme" pref directly and switch on the
-     * string with a silent `else -> XP` fallback. Those are not compiler-checked, so
-     * WP8.1 would quietly fall through to XP assets. In-window callers should use this
-     * instead of the raw pref so WP8.1 resolves to Vista.
-     */
-    fun chromeThemeString(): String = "Windows Vista"
 
     // ========== Windows Phone 8.1 accent + background ==========
 
@@ -418,69 +373,17 @@ class WP81Settings(private val context: Context) {
     fun getThemeStyleRes(): Int = R.style.Theme_GokiXP_WP81
 
 
-
-
-
-
-
-
-
-    fun getIEIcon(): Int = R.drawable.ie7
-
-
-
-
-    fun getRegeditIcon(): Int = R.drawable.regedit_icon_vista
-
-    fun getSolitareIcon(): Int = R.drawable.solitare_icon_vista
-
-
-    fun getWinampIcon(): Int = R.drawable.winamp_icon_xp
-
-    fun getWmpIcon(): Int = R.drawable.wmp_vista_icon
-
-
-    fun getMinesweeperIcon(): Int = R.drawable.minesweeper_icon_vista
-
-
-    fun getNotepadIcon(): Int = R.drawable.notepad_icon_vista
-
-
-    fun getClockIcon(): Int = R.drawable.icon_clock_vista
-
+    /**
+     * Art for a My Computer row carried in from the desktop launcher.
+     *
+     * Kept for the same reason the row is: a migrated wall still has to match what was
+     * there. Nothing on the phone creates one - see the icon loader.
+     */
     fun getMyComputerIcon(): Int = R.drawable.my_computer_vista_icon
 
 
-
-
-
-
-
-
-
-
-
-    fun getMaximizeIcon(): Int = R.drawable.vista_title_bar_maximize
-
-    fun getRestoreIcon(): Int = R.drawable.vista_title_bar_restore
-
-
-
-    // ========== Icon Resource Mappings ==========
-
-    /**
-     * Gets the folder icon drawable resource ID for the given theme.
-     */
+    /** The folder art, for a folder with no icon of its own. */
     fun getFolderIconRes(): Int = R.drawable.folder_vista
-
-
-
-    // ========== Font Resource Mappings ==========
-
-
-
-    // ========== Scrollbar Styling ==========
-
 
     companion object {
         private const val KEY_SELECTED_THEME = "selected_theme"
@@ -559,36 +462,7 @@ class WP81Settings(private val context: Context) {
             "Mauve" to 0xFF76608A.toInt(),
             "Taupe" to 0xFF87794E.toInt(),
         )
-        const val KEY_PLUS95_THEME = "plus95_theme"
-        const val PLUS95_DEFAULT = "default"
 
-        val PLUS95_THEMES: List<Plus95Theme> = listOf(
-            Plus95Theme("architecture", "Architecture", 0xFFC0C0C0.toInt(), "busy.png", "menu.ogg", "start.ogg"),
-            Plus95Theme("baseball", "Baseball", 0xFFD0A870.toInt(), "busy.png", "menu.ogg", "start.ogg"),
-            Plus95Theme("cityscape", "Cityscape", 0xFFC0C0C0.toInt(), "busy.png", "menu.ogg", "start.ogg"),
-            Plus95Theme("dangerous_creatures", "Dangerous Creatures", 0xFF707070.toInt(), null, "menu.ogg", "start.ogg"),
-            Plus95Theme("falling_leaves", "Falling Leaves", 0xFFC0C0C0.toInt(), "busy.png", "menu.ogg", "start.ogg"),
-            Plus95Theme("fashion", "Fashion", 0xFFC0C0C0.toInt(), "busy.png", "menu.ogg", "start.ogg"),
-            Plus95Theme("garfield", "Garfield", 0xFFC0C0C0.toInt(), "busy.png", "menu.ogg", "start.ogg"),
-            Plus95Theme("geometry", "Geometry", 0xFFC0C0C0.toInt(), "busy.png", "menu.ogg", "start.ogg"),
-            Plus95Theme("golf", "Golf", 0xFFE0C8A0.toInt(), "busy.png", "menu.ogg", "start.ogg"),
-            Plus95Theme("inside_your_computer", "Inside your Computer", 0xFFA8C8A8.toInt(), null, "menu.ogg", "start.ogg"),
-            Plus95Theme("jazz", "Jazz", 0xFFC0C0C0.toInt(), "busy.png", "menu.ogg", "start.ogg"),
-            Plus95Theme("jungle", "Jungle", 0xFFB8A068.toInt(), "busy.png", "menu.ogg", "start.ogg"),
-            Plus95Theme("leonardo_da_vinci", "Leonardo da Vinci", 0xFFBFA59F.toInt(), "busy.png", "menu.ogg", "start.ogg"),
-            Plus95Theme("mystery", "Mystery", 0xFF687868.toInt(), null, "menu.ogg", "start.ogg"),
-            Plus95Theme("nature", "Nature", 0xFFD8C0A0.toInt(), "busy.png", "menu.ogg", "start.ogg"),
-            Plus95Theme("rock_n_roll", "Rock 'n' Roll", 0xFFC0C0C0.toInt(), "busy.png", "menu.ogg", "start.ogg"),
-            Plus95Theme("sci_fi", "Sci-Fi", 0xFFC0C0C0.toInt(), "busy.png", "menu.ogg", "start.ogg"),
-            Plus95Theme("science", "Science", 0xFF8399B1.toInt(), null, "menu.ogg", "start.ogg"),
-            Plus95Theme("space", "Space", 0xFF809098.toInt(), "busy.png", "menu.ogg", "start.ogg"),
-            Plus95Theme("sports", "Sports", 0xFFB0E0A0.toInt(), null, "menu.ogg", "start.ogg"),
-            Plus95Theme("the_60s_usa", "The 60's USA", 0xFFD068D8.toInt(), null, "menu.ogg", "start.ogg"),
-            Plus95Theme("the_golden_era", "The Golden Era", 0xFFB8C8B8.toInt(), null, "menu.ogg", "start.ogg"),
-            Plus95Theme("travel", "Travel", 0xFF908070.toInt(), null, "menu.ogg", "start.ogg"),
-            Plus95Theme("tropical_interlude", "Tropical Interlude", 0xFFB0A888.toInt(), "busy.png", "menu.ogg", "start.ogg"),
-            Plus95Theme("underwater", "Underwater", 0xFF3868C8.toInt(), "busy.png", "menu.ogg", "start.ogg"),
-        )
 
         /**
          * The one launcher alias the manifest ships enabled. Anything else reported as
@@ -597,6 +471,5 @@ class WP81Settings(private val context: Context) {
          */
         private const val DEFAULT_LAUNCHER_ALIAS = ".LauncherIconXP"
 
-        const val CLASSIC_GRAY: Int = 0xFFD3CEC7.toInt()
     }
 }

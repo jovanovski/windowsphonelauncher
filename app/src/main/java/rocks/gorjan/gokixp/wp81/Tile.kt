@@ -128,16 +128,29 @@ data class Tile(
         APP, SYSTEM_APP, FOLDER, MY_COMPUTER, RECYCLE_BIN, URL_SHORTCUT,
 
         /**
-         * Built-in live widgets pinned to the top of Start.
+         * The two live tiles that are the shell's own rather than any program's.
          *
-         * Unlike app tiles these render their content directly rather than an icon, are
-         * always live, and cannot be unpinned - they are part of the shell, not the user's
-         * arrangement. Fed from the same data the Quick Glance widget uses.
+         * What is left here once the programs have taken theirs back: the day the phone is
+         * standing in, and the air outside it. Neither has an app behind it to be the tile
+         * of - the calendar reads the phone's own events and AirCare is not a window this
+         * shell opens - so the shell provides them, and they cannot be unpinned. See
+         * [isBuiltIn].
          */
-        LIVE_CLOCK, LIVE_CALENDAR, LIVE_AQI, LIVE_WEATHER, LIVE_NEWS,
+        LIVE_CALENDAR, LIVE_AQI,
 
         /**
-         * The camera roll, turning over one picture at a time.
+         * The clock, which is the Alarms tile: the time, the date, and an alarm coming.
+         */
+        LIVE_CLOCK,
+
+        /** The forecast, which is the Weather tile. */
+        LIVE_WEATHER,
+
+        /** The headlines, which is the News tile. */
+        LIVE_NEWS,
+
+        /**
+         * The camera roll, turning over one picture at a time - the Files tile.
          *
          * The one live tile whose content the phone already has - and the one that shows
          * a picture rather than a reading, so its faces carry no words and no wash. See
@@ -146,7 +159,8 @@ data class Tile(
         LIVE_PHOTOS,
 
         /**
-         * The address book, as the wall of faces Windows Phone put on Start.
+         * The address book, as the wall of faces Windows Phone put on Start - the People
+         * tile.
          *
          * The other tile whose content the phone already has, and the only one that is a
          * grid rather than a face: it fills itself with contact pictures and turns them
@@ -154,16 +168,6 @@ data class Tile(
          * which reads them.
          */
         LIVE_PEOPLE,
-
-        /**
-         * Welcome, which the shell provides rather than the user pinning.
-         *
-         * Not a live widget - it has an icon like any program and only speaks up when
-         * there is an update - but part of the shell all the same: it is where the release
-         * notes are, and a launcher that had just updated itself and left no way to find
-         * out what changed would be hiding the one thing worth reading.
-         */
-        WELCOME,
 
         /**
          * The launcher's own settings (Display Properties).
@@ -174,18 +178,34 @@ data class Tile(
          */
         SETTINGS;
 
-        val isLiveWidget: Boolean
-            get() = this == LIVE_CLOCK || this == LIVE_CALENDAR ||
-                this == LIVE_AQI || this == LIVE_WEATHER || this == LIVE_NEWS ||
+        /**
+         * The live tile one of the shell's own programs has instead of an icon.
+         *
+         * Five of them, and each is that program's tile rather than a widget standing
+         * beside it: Alarms shows the time, Files the camera roll, and Weather, News and
+         * People the three things they are named after. Live in every way the shell's own
+         * two are - they draw their content instead of a mark, and the host hands it to
+         * them by kind rather than by name - but pinned, moved, resized and unpinned like
+         * any other program's tile, because that is what they are. See
+         * WP81TileHost.PROGRAM_WIDGETS, which is where a package name becomes one of
+         * these.
+         */
+        val isProgramWidget: Boolean
+            get() = this == LIVE_CLOCK || this == LIVE_WEATHER || this == LIVE_NEWS ||
                 this == LIVE_PHOTOS || this == LIVE_PEOPLE
+
+        /** Whether the tile draws a reading of its own rather than a mark. */
+        val isLiveWidget: Boolean
+            get() = this == LIVE_CALENDAR || this == LIVE_AQI || isProgramWidget
 
         /**
          * Tiles the shell provides rather than the user pinning them.
          *
          * They can be moved and resized but not removed: they are rebuilt on every
-         * refresh, so unpinning one would only make it reappear.
+         * refresh, so unpinning one would only make it reappear. A program's live tile is
+         * not one of these - see [isProgramWidget].
          */
         val isBuiltIn: Boolean
-            get() = isLiveWidget || this == WELCOME || this == SETTINGS
+            get() = this == LIVE_CALENDAR || this == LIVE_AQI || this == SETTINGS
     }
 }

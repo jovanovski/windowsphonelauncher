@@ -6,16 +6,28 @@
   tile wears - so the icon in the drawer and the tile on Start are recognisably one thing.
 
   Drawn on the source set's own 76x76 viewport rather than the 108x108 an adaptive
-  foreground is nominally laid out on. The logo spans roughly 17 to 59 of those 76 units,
-  which is the middle 55% - inside the 61% an adaptive icon guarantees will not be cropped
-  by whatever mask the launcher applies, and without having to move the path to get there.
+  foreground is nominally laid out on. The path spans 17 to 59 of those 76 units and is
+  already centred on 38,38, so it needs no moving - but a mark that wide is only inside
+  the safe zone edge-on. The safe zone is a circle, and the logo's corners sit further
+  from the centre than its sides do: at full size they reach 77% of the viewport across,
+  well past the 61% circle an adaptive icon guarantees, so a round mask clips them.
+
+  The group scales the path about its own centre - 0.72, which pulls those corners in to
+  56% of the viewport, inside that circle with room to spare, and leaves the logo 40%
+  wide and whole under every mask a launcher might apply.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="76.00"
     android:viewportHeight="76.00">
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M 17,23L 34,20.7738L 34,37L 17,37L 17,23 Z M 34,55.2262L 17,53L 17,39L 34,39L 34,55.2262 Z M 59,17.5L 59,37L 36,37L 36,20.5119L 59,17.5 Z M 59,58.5L 36,55.4881L 36,39L 59,39L 59,58.5 Z " />
+    <group
+        android:pivotX="38.0"
+        android:pivotY="38.0"
+        android:scaleX="0.72"
+        android:scaleY="0.72">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M 17,23L 34,20.7738L 34,37L 17,37L 17,23 Z M 34,55.2262L 17,53L 17,39L 34,39L 34,55.2262 Z M 59,17.5L 59,37L 36,37L 36,20.5119L 59,17.5 Z M 59,58.5L 36,55.4881L 36,39L 59,39L 59,58.5 Z " />
+    </group>
 </vector>

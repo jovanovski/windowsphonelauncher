@@ -1,22 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Font family attributes for theming -->
+    <!-- The face every window, dialog and menu is lettered in. -->
     <attr name="primaryFontFamily" format="reference" />
-    <attr name="secondaryFontFamily" format="reference" />
-
-    <!-- Scrollbar attributes for theming -->
-    <attr name="scrollbarTrackDrawable" format="reference" />
-    <attr name="scrollbarThumbDrawable" format="reference" />
-
-    <!-- Widget style attributes for theming -->
-    <attr name="winButtonStyle" format="reference" />
-
-    <attr name="windowBackgroundColor" format="color" />
-    <attr name="dialogBackgroundColor" format="color"/>
-    <attr name="solitareGreen" format="reference"/>
-    <attr name="menuBarBackground" format="reference" />
-    <attr name="notificationBubble" format="reference"/>
-    <attr name="notificationBubbleTitleColor" format="color" />
 
     <!-- Windows Phone 8.1 shell.
          Defined on the base theme too, so wp81_* drawables and layouts still resolve

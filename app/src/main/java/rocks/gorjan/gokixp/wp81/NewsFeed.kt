@@ -86,6 +86,14 @@ class NewsFeed(private val onUpdated: () -> Unit) {
     @Volatile
     private var fetchedFor: List<String> = emptyList()
 
+    /** Which feeds the fetch under way is reading, so a change made during one is seen. */
+    @Volatile
+    private var fetchingFor: List<String> = emptyList()
+
+    /** A set asked for while a fetch was running, to be read as soon as it is over. */
+    @Volatile
+    private var queued: List<String>? = null
+
     private val main = Handler(Looper.getMainLooper())
 
     /** The current run of stories. Empty until the first fetch lands. */
@@ -106,7 +114,14 @@ class NewsFeed(private val onUpdated: () -> Unit) {
      * which feeds are on bypasses it, because then the answer *has* changed.
      */
     fun refreshIfStale(enabled: List<String>, force: Boolean = false) {
-        if (fetching) return
+        if (fetching) {
+            // Asked for a set the fetch under way is not reading - a feed turned on while
+            // the last one was still in the air. Dropping it left the new outlet unread
+            // until something else happened to ask again, which in practice meant closing
+            // the reader and opening it. Held instead, and read the moment this one lands.
+            if (enabled != fetchingFor) queued = enabled
+            return
+        }
         val sources = enabled.mapNotNull { NewsSources.byId(it) }
         if (sources.isEmpty()) {
             if (stories.isNotEmpty()) {
@@ -123,6 +138,7 @@ class NewsFeed(private val onUpdated: () -> Unit) {
         if (!force && !changed && fresh) return
 
         fetching = true
+        fetchingFor = enabled
         Thread {
             val gathered = sources.map { source ->
                 try {
@@ -132,7 +148,6 @@ class NewsFeed(private val onUpdated: () -> Unit) {
                     emptyList()
                 }
             }
-            fetching = false
             val merged = newestFirst(gathered)
             if (merged.isNotEmpty()) {
                 stories = merged
@@ -141,8 +156,19 @@ class NewsFeed(private val onUpdated: () -> Unit) {
                 }.filter { it.second.isNotEmpty() }.toMap()
                 fetchedAt = SystemClock.elapsedRealtime()
                 fetchedFor = enabled
-                main.post { onUpdated() }
             }
+            // Cleared last, so a set asked for right at the end is queued rather than
+            // racing a second fetch against this one.
+            val next = queued
+            queued = null
+            fetching = false
+            // Announced when there is something new, and when there was nothing to begin
+            // with: a reader that asked and got nothing is waiting on an answer, and "the
+            // feeds had nothing" is one - left unsaid it goes on saying it is reading them.
+            // A failed refresh over stories already on screen says nothing, because nothing
+            // about them has changed.
+            if (merged.isNotEmpty() || stories.isEmpty()) main.post { onUpdated() }
+            next?.let { main.post { refreshIfStale(it, force = true) } }
         }.start()
     }
 

@@ -223,11 +223,6 @@ class ContextMenuView @JvmOverloads constructor(
         val screenWidth = resources.displayMetrics.widthPixels
         val screenHeight = resources.displayMetrics.heightPixels
 
-
-        // Get taskbar position to avoid showing menu below it
-        val taskbarTop = getTaskbarTopPosition()
-        val availableHeight = if (taskbarTop > 0) taskbarTop else screenHeight
-
         // Smart positioning logic like Windows
         var finalX = x
         var finalY = y
@@ -238,9 +233,9 @@ class ContextMenuView @JvmOverloads constructor(
             finalX = (x - menuWidth).coerceAtLeast(0f)
         }
 
-        // Handle vertical positioning - check against taskbar top, not screen bottom
-        if (y + menuHeight > availableHeight) {
-            // Would go below taskbar - position above click point
+        // Handle vertical positioning
+        if (y + menuHeight > screenHeight) {
+            // Would go off the bottom edge - position above click point
             finalY = (y - menuHeight).coerceAtLeast(0f)
         }
 
@@ -259,25 +254,6 @@ class ContextMenuView @JvmOverloads constructor(
         translationY = finalY
     }
 
-    private fun getTaskbarTopPosition(): Int {
-        try {
-            // Try to find the taskbar container in the activity
-            val activity = context as? MainActivity
-            val taskbarContainer = activity?.findViewById<View>(R.id.taskbar_container)
-
-            if (taskbarContainer != null) {
-                // Get taskbar position on screen
-                val location = IntArray(2)
-                taskbarContainer.getLocationOnScreen(location)
-                return location[1] // Y position of taskbar top
-            }
-        } catch (e: Exception) {
-            // Ignore - we'll fall back to screen height
-        }
-
-        return 0 // Return 0 to indicate taskbar not found (use screen height instead)
-    }
-    
     private fun Int.dpToPx(): Int {
         return (this * resources.displayMetrics.density).toInt()
     }

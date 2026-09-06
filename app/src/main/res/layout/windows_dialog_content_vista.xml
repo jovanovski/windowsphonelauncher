@@ -65,14 +65,6 @@
 
 
             <ImageView
-                android:id="@+id/dialog_maximize_button"
-                android:layout_width="20dp"
-                android:layout_height="22dp"
-                android:paddingBottom="9dp"
-                android:src="@drawable/vista_title_bar_maximize"
-                android:scaleType="fitXY" />
-
-            <ImageView
                 android:id="@+id/dialog_close_button"
                 android:layout_width="32dp"
                 android:layout_height="22dp"

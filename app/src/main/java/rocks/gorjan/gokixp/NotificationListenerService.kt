@@ -84,30 +84,6 @@ class NotificationListenerService : NotificationListenerService() {
         /** Every package that currently has text worth showing on a tile. */
         fun packagesWithText(): Set<String> = notificationText.keys.toSet()
 
-        // Common email app package names
-        private val EMAIL_PACKAGES = setOf(
-            "com.google.android.gm",           // Gmail
-            "com.yahoo.mobile.client.android.mail", // Yahoo Mail
-            "com.microsoft.office.outlook",    // Outlook
-            "ru.yandex.mail",                  // Yandex Mail
-            "com.samsung.android.email.provider", // Samsung Email
-            "com.android.email",               // Stock Android Email
-            "com.email",                       // Generic email
-            "com.android.mail",                // Android Mail
-            "com.google.android.email",        // Google Email
-            "com.yahoo.mail",                  // Yahoo Mail (alternate)
-            "com.microsoft.outlook",           // Outlook (alternate)
-            "com.Edison.Mail",                 // Edison Mail
-            "com.easilydo.mail",               // Edison Mail (alternate)
-            "com.fsck.k9",                     // K-9 Mail
-            "com.bluemail.mail",               // BlueMail
-            "com.typemailapp.mail",            // TypeMail
-            "com.mail.mobile.android.mail",    // Mail.Ru
-            "com.syntomo.email",               // Email - Mail Mailbox
-            "org.kman.AquaMail",               // Aqua Mail
-            "com.mobisystems.office",          // OfficeSuite Mail
-        )
-
         fun getInstance(): NotificationListenerService? = instance
 
         fun getActiveNotificationPackages(): Set<String> = activeNotificationPackages.toSet()
@@ -128,8 +104,6 @@ class NotificationListenerService : NotificationListenerService() {
         }
 
         fun hasNotification(packageName: String): Boolean = activeNotificationPackages.contains(packageName)
-
-        fun isEmailApp(packageName: String): Boolean = EMAIL_PACKAGES.contains(packageName)
     }
     
     override fun onListenerConnected() {
@@ -148,7 +122,6 @@ class NotificationListenerService : NotificationListenerService() {
         super.onNotificationPosted(sbn)
 
         val packageName = sbn.packageName
-        val isOngoing = sbn.notification.flags and android.app.Notification.FLAG_ONGOING_EVENT != 0
 
         // Keep the small icon for the WP8.1 Start tiles. Harvested from every posted
         // notification, including ongoing and silent ones that are filtered out below -
@@ -157,24 +130,6 @@ class NotificationListenerService : NotificationListenerService() {
             sbn.notification.smallIcon?.let { smallIcons[packageName] = it }
         } catch (e: Exception) {
             Log.w(TAG, "Could not read small icon for $packageName", e)
-        }
-        // Handle email notifications specially - always play sound and show dot
-        // even if they would normally be filtered out
-        if (isEmailApp(packageName)) {
-            Log.d(TAG, "Email notification detected from: $packageName")
-            val mainActivity = MainActivity.getInstance()
-            if (mainActivity != null) {
-                Log.d(TAG, "MainActivity instance found, playing email sound")
-                mainActivity.playEmailSound()
-            } else {
-                Log.w(TAG, "MainActivity instance is null, cannot play email sound")
-            }
-            // Only add non-ongoing, non-silent email notifications
-            if (!isOngoing && !isSilentNotification(sbn)) {
-                activeNotificationPackages.add(packageName)
-                notifyMainActivity()
-            }
-            return
         }
 
         // A missed call is read by what it is rather than by who sent it, and who sent it

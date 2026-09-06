@@ -174,6 +174,25 @@ class MetroPanorama(
     }
 
     /**
+     * Takes every section out, so a program can lay them again.
+     *
+     * Most panoramas settle their sections once, when the program opens, and never touch
+     * them after. News cannot: its sections are the outlets being read, and those can be
+     * turned on and off while it is open. Emptied rather than added to, because a section
+     * can go as well as arrive, and the order is the feed's rather than the order things
+     * happened to be switched on in.
+     */
+    fun clearPages() {
+        settleAnimator?.cancel()
+        settleAnimator = null
+        pages.clear()
+        pageHost.removeAllViews()
+        titleTexts.clear()
+        rebuildStrip()
+        offset = 0f
+    }
+
+    /**
      * Lays the section names out end to end, once each.
      *
      * Once. The strip used to be repeated so the last name could run straight into the

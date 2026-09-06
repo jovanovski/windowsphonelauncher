@@ -34,10 +34,11 @@ class TileGridLayout @JvmOverloads constructor(
     /**
      * How many small cells fit across.
      *
-     * Four is WP8.1's phone default and what every metric here is derived from. Three is
-     * offered as well, for the same reason the phone offered six: a cell is a share of the
-     * width, so fewer of them is bigger tiles rather than a wider screen. The packer, the
-     * cell size and the resize drag all read this, so changing it is the whole change.
+     * Four is WP8.1's phone default and what every metric here is derived from. Three and
+     * six are offered as well, for the reason the phone offered six: a cell is a share of
+     * the width, so fewer of them is bigger tiles rather than a wider screen, and more of
+     * them is a wall that holds more. The packer, the cell size and the resize drag all
+     * read this, so changing it is the whole change.
      */
     var columns = COLUMNS
         set(value) {

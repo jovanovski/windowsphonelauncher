@@ -141,9 +141,14 @@ class WP81TileHost(
     /**
      * The tiles the shell always provides, pinned above the user's own.
      *
-     * All are part of the shell rather than the user's arrangement: they always show
-     * current content and cannot be unpinned, so they are rebuilt on every refresh
-     * instead of being persisted as desktop icons.
+     * Two of them now. Both are part of the shell rather than the user's arrangement:
+     * they always show current content and cannot be unpinned, so they are rebuilt on
+     * every refresh instead of being persisted as desktop icons.
+     *
+     * The five that used to stand here belong to the programs they were about - see
+     * [PROGRAM_WIDGETS] - and Welcome was never live at all. What each of those was
+     * showing became a tile of its own program's, at the place this had it; see
+     * MainActivity.connectWP81ProgramTiles.
      */
     fun builtInTiles(
         placements: MutableMap<String, Pair<TileSize, Int>>
@@ -152,30 +157,20 @@ class WP81TileHost(
         // indices so a first run sorts them ahead of any tiles the user already had; the
         // dense renumber that follows turns those into ordinary positions.
         val defaults = listOf(
-            Triple(WIDGET_CLOCK, "Clock", Tile.Kind.LIVE_CLOCK),
             Triple(WIDGET_AQI, "Air quality", Tile.Kind.LIVE_AQI),
-            Triple(WIDGET_WEATHER, "Weather", Tile.Kind.LIVE_WEATHER),
-            Triple(WIDGET_CALENDAR, "Calendar", Tile.Kind.LIVE_CALENDAR),
-            Triple(WIDGET_NEWS, "News", Tile.Kind.LIVE_NEWS),
-            Triple(WIDGET_PHOTOS, "Photos", Tile.Kind.LIVE_PHOTOS),
-            Triple(WIDGET_PEOPLE, "People", Tile.Kind.LIVE_PEOPLE),
-            // Its id is the package the shell knows it by, so the tile picks up the update
-            // through the same lookup an app's tile uses for its notifications.
-            Triple("system.welcome", "Welcome", Tile.Kind.WELCOME)
+            Triple(WIDGET_CALENDAR, "Calendar", Tile.Kind.LIVE_CALENDAR)
         )
-        // Drop any stored placement for the Settings tile, which no longer exists.
-        placements.remove(WIDGET_SETTINGS)
+        // Placements for tiles this no longer provides, so a wall built before they were
+        // handed back does not go on holding room for them.
+        RETIRED_WIDGETS.forEach { placements.remove(it) }
 
         val hidden = hiddenTiles(themeManager)
         return defaults.filterNot { (id, _, _) -> id in hidden }
             .mapIndexed { position, (id, label, kind) ->
                 val stored = placements[id]
-                // A headline needs a line to itself; the calendar wants room for what is
-                // on; and the People tile is a wall of faces, which is the tile Windows
-                // Phone shipped across the full width - eighteen of them rather than nine.
+                // The calendar wants room for what is on; the index is a number.
                 val defaultSize = when (kind) {
-                    Tile.Kind.LIVE_CALENDAR, Tile.Kind.LIVE_NEWS,
-                    Tile.Kind.LIVE_PEOPLE -> TileSize.WIDE
+                    Tile.Kind.LIVE_CALENDAR -> TileSize.WIDE
                     else -> TileSize.MEDIUM
                 }
                 Tile(
@@ -189,6 +184,14 @@ class WP81TileHost(
             }
     }
 
+    /**
+     * Which kind of tile an icon becomes.
+     *
+     * A program with a live tile has it wherever the icon is - out on the wall, or filed
+     * in a folder. A folder opens into a band of the wall's own grid and the page a nested
+     * one opens is a Start screen of its own, so both are fed exactly as the wall is:
+     * there is no place to pin one of these where it is only a picture of itself.
+     */
     fun kindFor(icon: DesktopIcon): Tile.Kind =
         when (icon.type) {
             IconType.FOLDER -> Tile.Kind.FOLDER
@@ -196,8 +199,9 @@ class WP81TileHost(
             IconType.RECYCLE_BIN -> Tile.Kind.RECYCLE_BIN
             IconType.URL_SHORTCUT -> Tile.Kind.URL_SHORTCUT
             IconType.APP ->
-                if (MainActivity.isSystemApp(icon.packageName)) Tile.Kind.SYSTEM_APP
-                else Tile.Kind.APP
+                PROGRAM_WIDGETS[icon.packageName]
+                    ?: if (MainActivity.isSystemApp(icon.packageName)) Tile.Kind.SYSTEM_APP
+                    else Tile.Kind.APP
         }
 
     /**
@@ -237,10 +241,11 @@ class WP81TileHost(
     }
 
     /**
-     * What a built-in live tile has to say right now.
+     * What a live tile that shows one steady reading has to say right now.
      *
-     * Weather and news are absent on purpose: they show a run of faces rather than one
-     * reading, and arrive through setLiveWidgetRotation instead.
+     * The clock, the calendar and the index. The rest are absent on purpose: the weather,
+     * the news, the pictures and the faces are runs rather than single readings, and
+     * arrive through setLiveWidgetRotation and setPeopleMosaic instead.
      */
     fun liveContent(
         tile: Tile,
@@ -288,11 +293,25 @@ class WP81TileHost(
         }
     }
 
-    fun loadBuiltInPlacements(): MutableMap<String, Pair<TileSize, Int>> {
+    fun loadBuiltInPlacements(): MutableMap<String, Pair<TileSize, Int>> =
         // The upright arrangement stands in until the screen has been arranged on its
         // side, exactly as an icon's own placement does.
-        val raw = (if (landscape()) prefs.getString(KEY_BUILTIN_TILES_LANDSCAPE, null) else null)
-            ?: prefs.getString(KEY_BUILTIN_TILES, null) ?: return mutableMapOf()
+        (if (landscape()) storedBuiltInPlacements(sideways = true) else null)
+            ?: storedBuiltInPlacements(sideways = false)
+            ?: mutableMapOf()
+
+    /**
+     * One arrangement's stored placements, with no standing in for the other.
+     *
+     * Null where that arrangement has never been written, which is what [loadBuiltInPlacements]
+     * falls back on - and what anything moving these placements elsewhere has to know
+     * about, since writing an upright position into the sideways arrangement would settle
+     * a wall the user has never laid out.
+     */
+    fun storedBuiltInPlacements(sideways: Boolean): MutableMap<String, Pair<TileSize, Int>>? {
+        val raw = prefs.getString(
+            if (sideways) KEY_BUILTIN_TILES_LANDSCAPE else KEY_BUILTIN_TILES, null
+        ) ?: return null
         val result = mutableMapOf<String, Pair<TileSize, Int>>()
         for (entry in raw.split(";")) {
             val parts = entry.split(":")
@@ -303,11 +322,14 @@ class WP81TileHost(
         return result
     }
 
-    fun saveBuiltInPlacements(placements: Map<String, Pair<TileSize, Int>>) {
+    fun saveBuiltInPlacements(
+        placements: Map<String, Pair<TileSize, Int>>,
+        sideways: Boolean = landscape()
+    ) {
         val raw = placements.entries.joinToString(";") { (id, p) ->
             "$id:${p.first.name}:${p.second}"
         }
-        val key = if (landscape()) KEY_BUILTIN_TILES_LANDSCAPE else KEY_BUILTIN_TILES
+        val key = if (sideways) KEY_BUILTIN_TILES_LANDSCAPE else KEY_BUILTIN_TILES
         prefs.edit().putString(key, raw).apply()
     }
 
@@ -336,8 +358,9 @@ class WP81TileHost(
      * the word - which is the forecast panel, where three of them stand in a row and the
      * label under each is already spoken for by which day it is.
      *
-     * [night] is only ever true for the reading taken now: a forecast for tomorrow is
-     * about tomorrow's daylight, whatever hour it is being read at.
+     * [night] is true of tonight's low, and of the reading taken now when it is taken
+     * after dark: a forecast for tomorrow is about tomorrow's daylight, whatever hour it
+     * is being read at.
      */
     fun weatherGlyph(code: Int, night: Boolean = false): Int? =
         WeatherCodes.glyph(code, night)
@@ -346,37 +369,46 @@ class WP81TileHost(
      * One of the readings the weather tile shows: the figure, the sky it was taken under,
      * and which of them it is.
      *
-     * [name] is the plain word - "now", "today", "tomorrow" - and what each surface makes
-     * of it is its own business: a turning face has a whole tile for it and says "max
-     * today", a column in the panel has a column's width and says "today".
+     * [name] is the plain word - "now", "noon", "tonight", "tomorrow" - which is what a
+     * column in the panel is headed by, having a column's width for it. [spelled] is the
+     * same reading said in full, for a face with a whole tile to say it on: "noon" alone
+     * does not say that the figure under it is a maximum. Where the word is already the
+     * whole of it, the two are the same.
      */
     private data class WeatherReading(
         val temperature: Int,
         val code: Int,
         val name: String,
-        /** Whether this reading was taken after dark. Only ever true of "now". */
+        val spelled: String = name,
+        /**
+         * Whether this reading falls after dark: the one taken now, when it is taken at
+         * night, and tonight's low always.
+         */
         val night: Boolean = false
     )
 
     /**
      * What there is to say about the weather, in the order the tile says it.
      *
-     * Now, then today's high while the day can still reach it, then tomorrow's. Once the
-     * afternoon peak is behind us today's figure is one the day has already spent - a
-     * number that can only be higher than the reading beside it, for a reason that has
-     * passed - so it comes out of the run entirely. See [todayHighAhead].
+     * Now, then what the sky does next, then tomorrow's high. The middle of the three
+     * turns over during the day: while the day can still reach its peak it is today's
+     * high, and once that peak is behind us it is tonight's low instead. A high already
+     * spent is a number that can only be higher than the reading beside it, for a reason
+     * that has passed; the night after it has not happened yet, and the tile is worth
+     * three readings either way. See [todayHighAhead] and [tonightReading].
      *
      * Empty when there is no cached reading at all, and one long when the forecast has not
-     * arrived with it.
+     * arrived with it - or two, in an evening whose hourly figures have run out and can no
+     * longer say what tonight does.
      */
     private fun weatherReadings(): List<WeatherReading> {
         val cached = cachedWeatherJson() ?: return emptyList()
         return try {
             val current = cached.getJSONObject("current")
             // The cache is metric whoever wrote it - see WeatherStore - so every figure
-            // out of it is converted here rather than at the point it is drawn. The tile
-            // used to append the letter without doing the arithmetic, which meant a phone
-            // set to Fahrenheit showed the Celsius number with "F" after it.
+            // out of it is converted here rather than at the point it is drawn. This is the
+            // only place the scale is applied, and the tile prints no letter to say which
+            // one it is, so the number has to be right on its own.
             val unit = weatherUnit()
             val readings = mutableListOf(
                 WeatherReading(
@@ -391,16 +423,22 @@ class WP81TileHost(
             val codes = daily?.optJSONArray("weather_code")
             if (highs != null && codes != null && highs.length() >= 2) {
                 if (todayHighAhead(cached)) {
+                    // Headed "noon" rather than "today", which the reading beside it is
+                    // also of: what separates the two is the hour, not the day.
                     readings += WeatherReading(
                         WeatherStore.temperature(highs.getDouble(0), unit),
                         codes.optInt(0, -1),
-                        "today"
+                        "noon",
+                        "max today"
                     )
+                } else {
+                    tonightReading(cached, unit)?.let { readings += it }
                 }
                 readings += WeatherReading(
                     WeatherStore.temperature(highs.getDouble(1), unit),
                     codes.optInt(1, -1),
-                    "tomorrow"
+                    "tomorrow",
+                    "max tomorrow"
                 )
             }
             readings
@@ -418,10 +456,6 @@ class WP81TileHost(
      * the hour today reaches its highest - the last of them, if the peak is flat - and see
      * whether it is behind the current hour.
      *
-     * Times come back in the location's own zone (timezone=auto), which is not necessarily
-     * the phone's, so "now" is worked out against the offset the response states rather
-     * than the device clock's.
-     *
      * True whenever the answer cannot be read - a cache saved before the hourly figures
      * were asked for, or one left over from another day - which leaves the tile as it was
      * rather than hiding a face on a guess.
@@ -432,11 +466,7 @@ class WP81TileHost(
             val times = hourly.optJSONArray("time") ?: return true
             val temperatures = hourly.optJSONArray("temperature_2m") ?: return true
 
-            val offsetMillis = cached.optLong("utc_offset_seconds", 0L) * 1000L
-            val stamp = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH", java.util.Locale.US)
-            stamp.timeZone = java.util.TimeZone.getTimeZone("UTC")
-            // The wall clock where the weather is: UTC formatting of a shifted instant.
-            val now = stamp.format(java.util.Date(System.currentTimeMillis() + offsetMillis))
+            val now = localHour(cached)
             val today = now.substring(0, 10)
 
             var peak = Double.NEGATIVE_INFINITY
@@ -464,6 +494,88 @@ class WP81TileHost(
     }
 
     /**
+     * The hour it is where the weather is, as "yyyy-MM-ddTHH".
+     *
+     * Times come back in the location's own zone (timezone=auto), which is not necessarily
+     * the phone's, so an hour of the forecast is held against this rather than against the
+     * device clock: the wall clock there is a UTC formatting of an instant shifted by the
+     * offset the response states.
+     *
+     * Cut to the hour so that it sorts against the response's own times, which are longer
+     * - it falls below every minute of its own hour and above all of the one before.
+     */
+    private fun localHour(cached: org.json.JSONObject): String {
+        val offsetMillis = cached.optLong("utc_offset_seconds", 0L) * 1000L
+        val stamp = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH", java.util.Locale.US)
+        stamp.timeZone = java.util.TimeZone.getTimeZone("UTC")
+        return stamp.format(java.util.Date(System.currentTimeMillis() + offsetMillis))
+    }
+
+    /**
+     * Tonight's low, and the sky it falls under.
+     *
+     * The daily block has no such reading. Its minimum is the whole day's, and by the
+     * evening that figure is this morning's - already spent, which is the same fault that
+     * takes the day's high out of the run. So the hours answer it instead: from this one
+     * until the sun is up again, the coldest of them, under whatever the sky is doing at
+     * that hour.
+     *
+     * Morning is tomorrow's sunrise where the response states one and nine o'clock where
+     * it does not. The window is only ever asked for once today's peak has passed, so it
+     * runs from an afternoon or an evening forward into the night rather than across a
+     * whole day.
+     *
+     * Null when the hourly figures are missing, or have nothing left between now and the
+     * morning: a tile two readings wide is better than a low nobody looked up.
+     */
+    private fun tonightReading(cached: org.json.JSONObject, unit: String): WeatherReading? {
+        return try {
+            val hourly = cached.optJSONObject("hourly") ?: return null
+            val times = hourly.optJSONArray("time") ?: return null
+            val temperatures = hourly.optJSONArray("temperature_2m") ?: return null
+
+            val daily = cached.optJSONObject("daily")
+            val sunrise = daily?.optJSONArray("sunrise")?.optString(1).orEmpty()
+            val date = daily?.optJSONArray("time")?.optString(1).orEmpty()
+            val morning = when {
+                sunrise.isNotEmpty() -> sunrise
+                date.isNotEmpty() -> "${date}T09:00"
+                else -> return null
+            }
+
+            val now = localHour(cached)
+            var lowest = Double.NaN
+            var at = -1
+            for (i in 0 until minOf(times.length(), temperatures.length())) {
+                val time = times.optString(i)
+                // The hour it is now is tonight's as much as the ones after it - what is
+                // left of it is still to come - and the stamp sorts below it, so it is in.
+                if (time < now || time > morning) continue
+                val temperature = temperatures.optDouble(i, Double.NaN)
+                if (temperature.isNaN()) continue
+                // < rather than <=: a trough held flat for hours belongs to the first of
+                // them, whose sky is the nearer of the two to now.
+                if (at < 0 || temperature < lowest) {
+                    lowest = temperature
+                    at = i
+                }
+            }
+            if (at < 0) return null
+
+            WeatherReading(
+                WeatherStore.temperature(lowest, unit),
+                hourly.optJSONArray("weather_code")?.optInt(at, -1) ?: -1,
+                "tonight",
+                "low tonight",
+                night = true
+            )
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "could not read tonight's low", e)
+            null
+        }
+    }
+
+    /**
      * The readings the weather tile turns over, one face each.
      *
      * What a tile falls back on rather than what it prefers: a tile with two cells or more
@@ -480,19 +592,19 @@ class WP81TileHost(
      */
     fun weatherFaces(size: TileSize): List<TileView.LiveFace> {
         val small = size == TileSize.SMALL
-        val unit = if (small) "" else weatherUnit()
         return weatherReadings().map { reading ->
             TileView.LiveFace(
-                title = "${reading.temperature}°$unit",
+                // The degree and no letter. Which scale it is in was settled once, in the
+                // Weather app's own settings, and a wall that repeated the answer on every
+                // face would be answering a question nobody is still asking - the room goes
+                // to the number, which is what the tile is for.
+                title = "${reading.temperature}°",
                 // What the sky is doing, and under it which reading this is. That order
                 // because the weather is what the tile is about and the label is only
                 // which of the run it is showing.
                 detail = listOfNotNull(
                     weatherWord(reading.code),
-                    when {
-                        reading.name == "now" || small -> reading.name
-                        else -> "max ${reading.name}"
-                    }
+                    if (small) reading.name else reading.spelled
                 ).joinToString("\n")
             )
         }
@@ -510,12 +622,14 @@ class WP81TileHost(
      * answers for itself once it knows how wide the tile made it.
      */
     fun weatherPanel(): List<ForecastPanelView.Column> {
-        val unit = weatherUnit()
         return weatherReadings().map { reading ->
             ForecastPanelView.Column(
                 label = reading.name,
                 glyph = weatherGlyph(reading.code, reading.night),
-                reading = "${reading.temperature}°$unit"
+                // Bare, as on a turning face - and more so here, where three of them are
+                // read across one row and the letter would be printed three times to say
+                // one thing. See [weatherFaces].
+                reading = "${reading.temperature}°"
             )
         }
     }
@@ -535,17 +649,21 @@ class WP81TileHost(
         val calendar = java.util.Calendar.getInstance()
         val small = size == TileSize.SMALL
 
-        // The day of the month as the number with the weekday against it - "sun 30" -
+        // The day of the month as the number with the weekday against it - "Sun 30" -
         // which is how a date is read, the number being what is looked for and the
-        // weekday what places it.
+        // weekday what places it. Capitalised where the rest of the shell is lower case:
+        // a weekday is a name, and the calendar tile is the one place it stands alone.
         val weekdayPattern = if (size == TileSize.WIDE) "EEEE" else "EEE"
         val weekday = java.text.SimpleDateFormat(weekdayPattern, locale).format(now)
+            // Not every locale hands back a capital - "dom.", "lun." - so it is done here
+            // rather than left to the format.
+            .replaceFirstChar { it.titlecase(locale) }
 
         return TileView.Reading(
             number = calendar.get(java.util.Calendar.DAY_OF_MONTH).toString(),
             // The 1x1 has room for the date and nothing else.
             caption = if (small) null else caption ?: "no events",
-            aside = weekday.lowercase(locale)
+            aside = weekday
         )
     }
 
@@ -710,6 +828,44 @@ class WP81TileHost(
         const val WIDGET_AQI = "wp81.widget.aqi"
         const val WIDGET_WEATHER = "wp81.widget.weather"
         const val WIDGET_SETTINGS = "wp81.widget.settings"
+
+        /** The Welcome tile's id, which was the package the shell knows it by. */
+        const val WIDGET_WELCOME = "system.welcome"
+
+        /**
+         * The programs whose tile on the wall is a live one, and what it shows.
+         *
+         * The shell used to keep these five as widgets of its own, standing beside the
+         * programs they were about: a Weather tile and a Weather app, a News tile and the
+         * reader it opened. They were always the same thing said twice, and the tile was
+         * the half that could not be unpinned. So each is the program's own tile now -
+         * pinned from the app list like any other, and drawing what the program has to say
+         * instead of its mark.
+         *
+         * Alarms takes the clock because a clock is what its three pages are all about,
+         * and Files takes the camera roll because Files is where the pictures on this
+         * phone actually are.
+         */
+        val PROGRAM_WIDGETS: Map<String, Tile.Kind> = mapOf(
+            "system.alarms" to Tile.Kind.LIVE_CLOCK,
+            "system.weather" to Tile.Kind.LIVE_WEATHER,
+            "system.news" to Tile.Kind.LIVE_NEWS,
+            "system.files" to Tile.Kind.LIVE_PHOTOS,
+            "system.people" to Tile.Kind.LIVE_PEOPLE
+        )
+
+        /**
+         * Widget ids the shell no longer places: the five above, Welcome, and Settings.
+         *
+         * Kept as a list because a placement outlives the tile it was for - it sits in
+         * preferences until something takes it out - and because the one-time move onto
+         * the programs' own tiles reads the positions out of it first.
+         */
+        val RETIRED_WIDGETS: List<String> = listOf(
+            WIDGET_CLOCK, WIDGET_WEATHER, WIDGET_NEWS, WIDGET_PHOTOS, WIDGET_PEOPLE,
+            WIDGET_WELCOME, WIDGET_SETTINGS
+        )
+
         const val KEY_BUILTIN_TILES = "wp81_builtin_tiles"
         const val KEY_BUILTIN_TILES_LANDSCAPE = "wp81_builtin_tiles_landscape"
     }

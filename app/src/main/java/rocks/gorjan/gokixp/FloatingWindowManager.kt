@@ -55,41 +55,31 @@ class FloatingWindowManager(private val context: Context, private val container:
         // Set the new window as focused
         windowsDialog.setFocused()
 
-        // Apply fade-in animation for Vista
-        if (themeManager.isVistaChrome()) {
-            windowsDialog.alpha = 0f
-            windowsDialog.animate()
-                .alpha(1f)
-                .setDuration(150)
-                .start()
-        }
-
-        // Retint Classic gray surfaces if a Plus! 95 theme is active
-        themeManager.getActivePlus95()?.let { plus95 ->
-            (context as? MainActivity)?.applyPlus95MenuColor(windowsDialog, plus95.menuColor)
-        }
+        // A window fades in. Asked unconditionally: this used to be guarded on Vista
+        // chrome, and the 98 and Classic frames that appeared without a fade went with
+        // their shells. So did the Plus! 95 retint that followed it here.
+        windowsDialog.alpha = 0f
+        windowsDialog.animate()
+            .alpha(1f)
+            .setDuration(150)
+            .start()
 
         onWindowCountChanged?.invoke(visibleWindowCount())
     }
 
     fun removeWindow(windowsDialog: WindowsDialog) {
         try {
-            // Apply fade-out animation for Vista
-            if (themeManager.isVistaChrome()) {
-                windowsDialog.animate()
-                    .alpha(0f)
-                    .setDuration(150)
-                    .withEndAction {
-                        container.removeView(windowsDialog)
-                        activeWindows.remove(windowsDialog)
-                        onWindowCountChanged?.invoke(visibleWindowCount())
-                    }
-                    .start()
-            } else {
-                container.removeView(windowsDialog)
-                activeWindows.remove(windowsDialog)
-                onWindowCountChanged?.invoke(visibleWindowCount())
-            }
+            // And fades out again. The branch that took a window off the screen with no
+            // animation was the other chromes'; there is only this one now.
+            windowsDialog.animate()
+                .alpha(0f)
+                .setDuration(150)
+                .withEndAction {
+                    container.removeView(windowsDialog)
+                    activeWindows.remove(windowsDialog)
+                    onWindowCountChanged?.invoke(visibleWindowCount())
+                }
+                .start()
         } catch (e: Exception) {
             // Window might already be removed
         }
