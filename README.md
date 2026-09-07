@@ -1,5 +1,5 @@
 # Windows Phone Launcher for Android
-[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/jovanovski)
+Donate to keep this project alive and going: [!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/jovanovski)
 
 
 ![Windows Launcher Preview](https://i.imgur.com/v9LR4vI.jpeg)
