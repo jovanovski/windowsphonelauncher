@@ -2,7 +2,7 @@
 [!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/jovanovski)
 
 
-![Windows Launcher Preview](https://i.imgur.com/cFgpsMM.jpeg)
+![Windows Launcher Preview](https://i.imgur.com/v9LR4vI.jpeg)
 
 This is a Windows Phone 8.1 inspired launcher for Android 10+, which tries to faithfully recreate the Metro shell - the wall of live tiles, the app list, the three keys along the bottom - on modern phones. Feel free to grab a pre-compiled APK from the Releases tab or download and build the project yourself.
 
