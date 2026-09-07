@@ -135,6 +135,36 @@ class WP81Settings(private val context: Context) {
     }
 
     /**
+     * Whether every tile showing the Start photo is darkened, not only the ones with words.
+     *
+     * A tile carrying content - a notification turned face up, what is playing, a reading -
+     * is drawn over a little black so the white text on it can be read. That leaves the
+     * wall in two tones: the tiles that happen to be saying something sit darker than the
+     * ones beside them. On it, they all sit at that tone, which reads as one wall of
+     * windows rather than a wall with patches. See TileView.drawFace.
+     */
+    fun getWP81DimAllTiles(): Boolean =
+        prefs.getBoolean(KEY_WP81_DIM_ALL_TILES, false)
+
+    fun setWP81DimAllTiles(dim: Boolean) {
+        prefs.edit { putBoolean(KEY_WP81_DIM_ALL_TILES, dim) }
+    }
+
+    /**
+     * How strongly [getWP81DimAllTiles] darkens the photo, 0 (untouched) to 1 (black).
+     *
+     * Starts where the wash under a tile's own words already sits, so throwing the switch
+     * and touching nothing else puts the whole wall at the tone a few tiles were wearing
+     * rather than at some new one. See TileView.dimAmount.
+     */
+    fun getWP81DimAmount(): Float =
+        prefs.getFloat(KEY_WP81_DIM_AMOUNT, TileView.CONTENT_SCRIM_ALPHA)
+
+    fun setWP81DimAmount(amount: Float) {
+        prefs.edit { putFloat(KEY_WP81_DIM_AMOUNT, amount.coerceIn(0f, 1f)) }
+    }
+
+    /**
      * Whether the three keys along the bottom wear the accent instead of the page.
      *
      * Off by default, which is the phone this shell is copying: WP8.1's keys were
@@ -200,6 +230,23 @@ class WP81Settings(private val context: Context) {
             val color = parts.getOrNull(1)?.toIntOrNull() ?: return@mapNotNull null
             parts[0] to color
         }.toMap()
+    }
+
+    /**
+     * Tiles the user has turned the background picture off on, by tile id.
+     *
+     * The exceptions again, as with the colours: a picture is what a tile with one shows
+     * unless it has been told otherwise, so the set is empty on a fresh install and stays
+     * small. See TileView.showsBackdrop.
+     */
+    fun getWP81TilesWithoutPicture(): Set<String> =
+        prefs.getStringSet(KEY_WP81_TILE_NO_PICTURE, null)?.toSet() ?: emptySet()
+
+    /** Turns one tile's picture on or off. */
+    fun setWP81TilePicture(tileId: String, shown: Boolean) {
+        val hidden = getWP81TilesWithoutPicture().toMutableSet()
+        if (shown) hidden.remove(tileId) else hidden.add(tileId)
+        prefs.edit { putStringSet(KEY_WP81_TILE_NO_PICTURE, hidden) }
     }
 
     /** Paints one tile, or hands it back to the accent with null. */
@@ -458,7 +505,10 @@ class WP81Settings(private val context: Context) {
         const val KEY_WP81_START_BACKGROUND_DRIFT = "wp81_start_background_drift"
         const val KEY_WP81_NEWS_FEEDS = "wp81_news_feeds"
         const val KEY_WP81_TILE_COLORS = "wp81_tile_colors"
+        const val KEY_WP81_TILE_NO_PICTURE = "wp81_tile_no_picture"
         const val KEY_WP81_HIDE_TILE_COLORS = "wp81_hide_tile_colors"
+        const val KEY_WP81_DIM_ALL_TILES = "wp81_dim_all_tiles"
+        const val KEY_WP81_DIM_AMOUNT = "wp81_dim_amount"
         const val KEY_WP81_ACCENT_NAV_BAR = "wp81_accent_nav_bar"
         const val KEY_WP81_TILE_COUNTS = "wp81_tile_counts"
         const val KEY_WP81_COLUMNS = "wp81_columns"

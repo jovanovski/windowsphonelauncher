@@ -117,9 +117,25 @@ object AlarmStore {
      * therefore records which occurrence it is skipping and stays on; a one-shot has no
      * "after that" to come back for, so dismissing it is the whole of its life and it goes
      * off - the same end it would have reached by ringing.
+     *
+     * On an alarm that is snoozed the same word means the nearer thing, because the same
+     * notification is now about the snooze: call it off. The morning it belongs to has
+     * already happened - the alarm rang, and was put off - so there is nothing left to
+     * skip and tomorrow is left exactly where it was.
      */
     fun dismissNext(context: Context, id: Long) {
         val alarm = byId(context, id) ?: return
+        if (alarm.snoozedUntil > System.currentTimeMillis()) {
+            update(context, id) {
+                // A one-shot goes off with it. Snoozing switched it back on - that is how a
+                // one-shot survives its own firing long enough to ring twice - and an alarm
+                // left on after its last snooze was called off would come back tomorrow at
+                // a time nobody set it for.
+                val stopped = it.copy(snoozedUntil = 0L)
+                if (it.onlyOnce) stopped.copy(enabled = false) else stopped
+            }
+            return
+        }
         if (alarm.onlyOnce) {
             update(context, id) {
                 it.copy(enabled = false, snoozedUntil = 0L, dismissedFor = 0L, warnedFor = 0L)

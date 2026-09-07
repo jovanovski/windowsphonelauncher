@@ -42,7 +42,8 @@ class WP81SettingsView(
     var onBrowse: (() -> Unit)? = null
 
     /**
-     * Held on one of the bundled wallpapers.
+     * Held on a wallpaper - one of the bundled set, or the picked one the browse square is
+     * wearing.
      *
      * Carries the image and the bottom edge of the tile in this view's coordinates, so the
      * host can hang a command list off it. A tap on a wallpaper is what Start is wearing;
@@ -59,6 +60,12 @@ class WP81SettingsView(
 
     /** Fired when the hide-tile-colours checkbox is toggled. */
     var onHideTileColorsChanged: ((Boolean) -> Unit)? = null
+
+    /** Fired when the dim-all-tiles checkbox is toggled. */
+    var onDimAllTilesChanged: ((Boolean) -> Unit)? = null
+
+    /** Fired while the dim slider moves, 0 (untouched) to 1. */
+    var onDimAmountChanged: ((Float) -> Unit)? = null
 
     /** Fired when the tiles are set to count their notifications, or only to mark them. */
     var onTileCountsChanged: ((Boolean) -> Unit)? = null
@@ -98,6 +105,33 @@ class WP81SettingsView(
     private val countRows = mutableListOf<Pair<View, Boolean>>()
     private var selectedCounts = true
     private val wallpaperTiles = mutableListOf<Pair<StripTile, String?>>()
+
+    /**
+     * The square that opens the picker - and wears the picked picture while it is the one
+     * Start has on.
+     *
+     * Held rather than rebuilt with the strip, because what it is wearing changes on a tap
+     * elsewhere in the row: choosing a bundled wallpaper is what takes the picture off it.
+     * A picked photograph has no square of its own in the strip - it is one file, replaced
+     * by the next pick, not a library - so the square that goes and gets it is where it
+     * shows. Otherwise the one wallpaper the user chose themselves was the only one they
+     * could not see.
+     */
+    private val browseImage = ImageView(context)
+    private val browseLabel = TextView(context)
+    private val browseSquare = StripTile(context)
+
+    /** Where the picked picture lives and a thumbnail of it. See [setCustomBackground]. */
+    private var customBackground: String? = null
+    private var customPreview: Drawable? = null
+
+    /** Whether Start has a picture on at all, which is what the dim is a dim of. */
+    private var hasStartBackground = false
+
+    /** Whether the picked picture is the one Start has on, and so the one browse wears. */
+    private val wearingCustomBackground: Boolean
+        get() = customBackground != null && customBackground == selectedBackground
+
     private val blurLabel = TextView(context).apply {
         text = "blur"
         typeface = ResourcesCompat.getFont(context, R.font.segoeui_semibold)
@@ -124,6 +158,40 @@ class WP81SettingsView(
      */
     private val hideColorsRow =
         CheckRow("hide custom tile colors") { on -> onHideTileColorsChanged?.invoke(on) }
+
+    /**
+     * Darkens every tile showing the photo, not only the ones with words on them.
+     *
+     * The wash under a tile's own words is there so white text can be read over whatever
+     * the photograph happens to be doing - so it lands on the tiles that are saying
+     * something and on no others, and a wall where three of forty are is a wall with
+     * three darker squares in it. This asks for the tone on all of them. Filed under the
+     * picture rather than under the tiles because it is a setting about how much of the
+     * picture comes through, which is what the blur and the drift above it are too.
+     */
+    private val dimAllRow = CheckRow("dim all tiles") { on ->
+        // Shown from here rather than waiting on the host to hand the page its settings
+        // back: the slider is the switch's own detail, and it should arrive with the tick.
+        applyDimSliderVisibility()
+        onDimAllTilesChanged?.invoke(on)
+    }
+
+    /**
+     * How far the dim goes, offered only once it is on.
+     *
+     * A switch that darkens every tile is a switch with a strength: the tone that keeps a
+     * headline readable is not the one somebody wants their photograph held down to. Kept
+     * under the switch rather than beside the blur, because it is that switch's setting
+     * and means nothing without it. See [blurSlider], which is shaped the same way.
+     */
+    private val dimLabel = TextView(context).apply {
+        text = "dim"
+        typeface = ResourcesCompat.getFont(context, R.font.segoeui_semibold)
+        textSize = 12f
+        setPadding(dp(24), dp(0), dp(24), dp(2))
+        visibility = GONE
+    }
+    private val dimSlider = MetroSlider(context).apply { visibility = GONE }
 
     /**
      * Whether a link opens here or in the phone's own browser.
@@ -216,6 +284,8 @@ class WP81SettingsView(
             clipToPadding = false
         }
         column.addView(scroller, wide())
+        // The one square of the strip that outlives a refill of it. See buildBrowseSquare.
+        buildBrowseSquare()
 
         blurSlider.onValueChanged = { v -> onBlurChanged?.invoke(v) }
         column.addView(blurLabel, wide())
@@ -228,7 +298,14 @@ class WP81SettingsView(
         column.addView(driftRow.view, wide())
         hideColorsRow.setVisible(true)
         column.addView(hideColorsRow.view, wide())
-
+        column.addView(dimAllRow.view, wide())
+        dimSlider.onValueChanged = { v -> onDimAmountChanged?.invoke(v) }
+        column.addView(dimLabel, wide())
+        column.addView(dimSlider, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            setMargins(dp(22), 0, dp(22), dp(20))
+        })
 
         // Its own section: it is the only thing on this page that is not about what Start
         // looks like, and filing it under the wallpaper's switches would bury it.
@@ -505,7 +582,7 @@ class WP81SettingsView(
 
         wallpaperStrip.addView(wallpaperTile(null, null, "none"))
         // Browse sits right after "none", before the bundled set.
-        wallpaperStrip.addView(browseTile())
+        wallpaperStrip.addView(browseSquare)
         // The one that is on leads the set. It is the answer to the question the strip is
         // asking - which of these is Start wearing - and a few dozen squares in, it was an
         // answer the user had to go looking for. Ordered here rather than as the strip is
@@ -558,22 +635,74 @@ class WP81SettingsView(
         override fun restingScale(): Float = resting
     }
 
-    private fun browseTile(): View = StripTile(context).apply {
-        isClickable = true
-        setBackgroundColor(palette.inactive)
-        // Never the chosen one - it is a way of choosing, not a choice - so it stands back
-        // with the rest of the unchosen squares.
-        restAt(UNSELECTED_SCALE)
-        addView(TextView(context).apply {
-            text = "browse"
-            gravity = Gravity.CENTER
-            textSize = 13f
-            typeface = ResourcesCompat.getFont(context, R.font.segoeui_regular)
-            setTextColor(palette.foreground)
-        }, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-        setOnClickListener { onBrowse?.invoke() }
-        TiltEffect.apply(this)
-        layoutParams = LinearLayout.LayoutParams(dp(72), dp(120)).apply { marginEnd = dp(8) }
+    /** Assembles the browse square, once. What it shows is [repaintBrowseTile]'s. */
+    private fun buildBrowseSquare() {
+        browseImage.scaleType = ImageView.ScaleType.CENTER_CROP
+        browseSquare.addView(
+            browseImage, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+
+        browseLabel.text = "browse"
+        browseLabel.gravity = Gravity.CENTER
+        browseLabel.textSize = 13f
+        browseLabel.typeface = ResourcesCompat.getFont(context, R.font.segoeui_regular)
+        browseSquare.addView(
+            browseLabel, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+
+        browseSquare.isClickable = true
+        browseSquare.setOnClickListener { onBrowse?.invoke() }
+        // Wearing the picked picture it is a wallpaper like any other in the strip, so a
+        // hold asks the same question of it: the phone's own walls, offered on a command
+        // list. Bare it is a way of choosing rather than a choice, and a hold on it has
+        // nothing to be about - answered false, so nothing ticks and no list opens.
+        browseSquare.setOnLongClickListener {
+            val picture = customBackground?.takeIf { wearingCustomBackground }
+                ?: return@setOnLongClickListener false
+            browseSquare.performHapticFeedback(
+                android.view.HapticFeedbackConstants.LONG_PRESS,
+                android.view.HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING
+            )
+            onWallpaperLongPress?.invoke(picture, anchorYOf(browseSquare))
+            true
+        }
+        TiltEffect.apply(browseSquare)
+        browseSquare.layoutParams =
+            LinearLayout.LayoutParams(dp(72), dp(120)).apply { marginEnd = dp(8) }
+        repaintBrowseTile()
+    }
+
+    /**
+     * Hands the page the picture the user browsed for, and where it is kept.
+     *
+     * [preview] is a thumbnail of it, decoded by the host off the main thread the way the
+     * bundled ones are. Null [path] means there has never been one. Whether it is actually
+     * on show is a separate question - see [repaintBrowseTile].
+     */
+    fun setCustomBackground(path: String?, preview: Drawable?) {
+        customBackground = path
+        customPreview = preview
+        repaintBrowseTile()
+    }
+
+    /**
+     * Dresses the browse square in the picked picture, for as long as Start is wearing it.
+     *
+     * Only while it is the chosen background: the file stays on disk after the user moves
+     * to a bundled wallpaper, and a square still showing it would be claiming the wall is
+     * wearing something it is not. Wearing the picture it is the chosen square, so it
+     * stands at full size like any other chosen one, and the word goes over a wash so it
+     * can still be read off a photograph.
+     */
+    private fun repaintBrowseTile() {
+        val worn = if (wearingCustomBackground) customPreview else null
+        browseImage.setImageDrawable(worn)
+        browseImage.visibility = if (worn != null) VISIBLE else GONE
+        browseLabel.setBackgroundColor(
+            if (worn != null) Color.argb((255 * BROWSE_SCRIM_ALPHA).toInt(), 0, 0, 0)
+            else Color.TRANSPARENT
+        )
+        browseLabel.setTextColor(if (worn != null) Color.WHITE else palette.foreground)
+        browseSquare.setBackgroundColor(palette.inactive)
+        browseSquare.restAt(if (worn != null) 1f else UNSELECTED_SCALE)
     }
 
     /**
@@ -612,14 +741,30 @@ class WP81SettingsView(
         hasBackground: Boolean,
         blur: Float,
         drift: Boolean,
-        hideTileColors: Boolean
+        hideTileColors: Boolean,
+        dimAllTiles: Boolean,
+        dimAmount: Float
     ) {
+        hasStartBackground = hasBackground
         blurLabel.visibility = if (hasBackground) VISIBLE else GONE
         blurSlider.visibility = if (hasBackground) VISIBLE else GONE
         blurSlider.value = blur
         driftRow.setVisible(hasBackground)
         driftRow.set(drift)
         hideColorsRow.set(hideTileColors)
+        // One of the background's own, unlike the switch above it: with no photograph
+        // behind the wall there is nothing showing through a tile to be darkened.
+        dimAllRow.setVisible(hasBackground)
+        dimAllRow.set(dimAllTiles)
+        dimSlider.value = dimAmount
+        applyDimSliderVisibility()
+    }
+
+    /** The strength is on the page only while there is a picture and the switch is on. */
+    private fun applyDimSliderVisibility() {
+        val show = hasStartBackground && dimAllRow.isOn()
+        dimLabel.visibility = if (show) VISIBLE else GONE
+        dimSlider.visibility = if (show) VISIBLE else GONE
     }
 
     /**
@@ -766,6 +911,8 @@ class WP81SettingsView(
             repaint()
         }
 
+        fun isOn(): Boolean = isOn
+
         fun setVisible(visible: Boolean) {
             view.visibility = if (visible) VISIBLE else GONE
         }
@@ -833,6 +980,9 @@ class WP81SettingsView(
                 tile.setBackgroundColor(if (selected) palette.accent else palette.inactive)
             }
         }
+        // Whether the browse square is wearing the picked picture is the same question,
+        // asked of a square that is not in the list: choosing any of these takes it off.
+        repaintBrowseTile()
     }
 
     // ---------------------------------------------------------------- appearance
@@ -850,17 +1000,20 @@ class WP81SettingsView(
             }
         }
         blurLabel.setTextColor(p.accent)
+        dimLabel.setTextColor(p.accent)
         accentMoreLabel.setTextColor(p.foreground)
         accentChevron.imageTintList =
             android.content.res.ColorStateList.valueOf(p.foreground)
         driftRow.repaint()
         hideColorsRow.repaint()
+        dimAllRow.repaint()
         openLinksRow.repaint()
         accentNavBarRow.repaint()
         defaultBrowserRow.repaint()
         repaintCountRows()
         repaintColumnRows()
         blurSlider.applyPalette(p)
+        dimSlider.applyPalette(p)
         repaintThemeRows()
         repaintAccentSwatches()
         repaintWallpaperTiles()
@@ -912,5 +1065,8 @@ class WP81SettingsView(
 
         /** How far back a square of the strip stands while it is not the chosen one. */
         private const val UNSELECTED_SCALE = 0.88f
+
+        /** How dark the ground under the word "browse" is, once it is over a photograph. */
+        private const val BROWSE_SCRIM_ALPHA = 0.45f
     }
 }

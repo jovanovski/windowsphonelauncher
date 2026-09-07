@@ -72,8 +72,31 @@ class AppListView(
 
     override val searchHint: String get() = "search apps"
 
+    /**
+     * Whether the apps the user has put away are on show.
+     *
+     * Off every time the page is built. Hiding an app is the user saying they do not want
+     * to see it, and a launcher that came back up still showing the lot would have made
+     * that a one-time filter rather than a setting.
+     */
+    private var showingHidden = false
+
+    /** The packages the user has hidden. See [setApps]. */
+    private var hiddenPackages: Set<String> = emptySet()
+
+    /** Every app there is, hidden ones included, filed. See [showApps]. */
+    private var allApps: List<AppInfo> = emptyList()
+
+    /** The rail's second command: the hidden apps, shown or put back. */
+    private val hiddenToggle: ImageView
+
     init {
         build()
+        hiddenToggle = addRailButton(eye(EYE_HIDE)) {
+            showingHidden = !showingHidden
+            hiddenToggle.setImageDrawable(eye(if (showingHidden) EYE_SHOW else EYE_HIDE))
+            showApps()
+        }
         onSearchSubmit = { typed, matches ->
             when {
                 // The one at the top, however many there are. The list is already sorted
@@ -89,7 +112,10 @@ class AppListView(
         }
     }
 
-    fun setApps(apps: List<AppInfo>) {
+    /** One of the eyes from the phone's own icon set, drawn in the ring's ink. */
+    private fun eye(name: String) = SvgIcon.fromAsset(context, "$ICON_DIR/$name")
+
+    fun setApps(apps: List<AppInfo>, hidden: Set<String> = emptySet()) {
         // A fresh list is the one moment the art can have changed underneath the cache:
         // it is what an install, an uninstall, a chosen icon and a theme swap all end in.
         // Anything still being resolved is about the old list, and is counted out by the
@@ -99,13 +125,33 @@ class AppListView(
         queued.clear()
         swept = false
         batch++
-        val sorted = apps.sortedBy { it.name.lowercase() }
+        allApps = apps.sortedBy { it.name.lowercase() }
+        hiddenPackages = hidden
         // Every name folded once here, rather than once per app per letter typed: the
         // search reads all of them, and reads them again the moment the next key goes
-        // down. See [matches].
+        // down. See [matches]. Hidden apps included, because a search made while they are
+        // on show is a search of what is on show.
         lowered.clear()
-        sorted.forEach { lowered[it.packageName] = it.name.lowercase() }
-        setItems(sorted)
+        allApps.forEach { lowered[it.packageName] = it.name.lowercase() }
+        showApps()
+    }
+
+    /**
+     * Files whichever apps are on show, which is all of them or all but the hidden.
+     *
+     * The hidden ones are held rather than dropped, so the toggle is this list re-filing
+     * what it already has - no second walk of the package manager, and no artwork resolved
+     * twice - and the row itself says which they are by being drawn faint. See
+     * [AppHolder.bind].
+     */
+    private fun showApps() {
+        val visible =
+            if (showingHidden || hiddenPackages.isEmpty()) allApps
+            else allApps.filterNot { it.packageName in hiddenPackages }
+        setItems(visible)
+        // Artwork for whatever has just appeared. The sweep in [AppHolder.bind] runs once,
+        // off the first row ever drawn, and these were not in the list when it did.
+        if (swept) visible.forEach { request(it, urgent = false) }
     }
 
     /**
@@ -357,6 +403,10 @@ class AppListView(
             bound = item
             name.text = item.name
             name.setTextColor(palette.foreground)
+            // A hidden app on show is still a hidden app. Faint rather than marked, so the
+            // list reads as what it is - the ordinary page with the put-away ones behind
+            // it - without a badge on every row explaining itself.
+            view.alpha = if (item.packageName in hiddenPackages) HIDDEN_ALPHA else 1f
             drawGlyph(item)
             // A row being drawn at all is the list arriving on screen, and that is the
             // moment the rest of it is worth measuring: a search a keystroke later can ask
@@ -434,5 +484,13 @@ class AppListView(
          * around it than the square needed.
          */
         const val GLYPH_DP = 24
+
+        /** The phone's own icon set, which the rail's eyes are drawn from. */
+        const val ICON_DIR = "custom_icons_8"
+        const val EYE_HIDE = "appbar.eye.hide.svg"
+        const val EYE_SHOW = "appbar.eye.svg"
+
+        /** What is left of a hidden app's row when it is being shown anyway. */
+        const val HIDDEN_ALPHA = 0.7f
     }
 }

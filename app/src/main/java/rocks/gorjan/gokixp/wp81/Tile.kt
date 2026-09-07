@@ -114,15 +114,15 @@ data class Tile(
         APP, SYSTEM_APP, FOLDER, MY_COMPUTER, RECYCLE_BIN, URL_SHORTCUT,
 
         /**
-         * The two live tiles that are the shell's own rather than any program's.
+         * The one live tile that is the shell's own rather than any program's.
          *
          * What is left here once the programs have taken theirs back: the day the phone is
-         * standing in, and the air outside it. Neither has an app behind it to be the tile
-         * of - the calendar reads the phone's own events and AirCare is not a window this
-         * shell opens - so the shell provides them, and they cannot be unpinned. See
-         * [isBuiltIn].
+         * standing in. It has no app behind it to be the tile of - the calendar reads the
+         * phone's own events - so the shell provides it, and it cannot be unpinned. See
+         * [isBuiltIn]. The air outside used to stand beside it and is now one of the
+         * Weather app's own readings; see WeatherStore.airQuality.
          */
-        LIVE_CALENDAR, LIVE_AQI,
+        LIVE_CALENDAR,
 
         /**
          * The clock, which is the Alarms tile: the time, the date, and an alarm coming.
@@ -182,7 +182,7 @@ data class Tile(
 
         /** Whether the tile draws a reading of its own rather than a mark. */
         val isLiveWidget: Boolean
-            get() = this == LIVE_CALENDAR || this == LIVE_AQI || isProgramWidget
+            get() = this == LIVE_CALENDAR || isProgramWidget
 
         /**
          * Tiles the shell provides rather than the user pinning them.
@@ -192,6 +192,6 @@ data class Tile(
          * not one of these - see [isProgramWidget].
          */
         val isBuiltIn: Boolean
-            get() = this == LIVE_CALENDAR || this == LIVE_AQI || this == SETTINGS
+            get() = this == LIVE_CALENDAR || this == SETTINGS
     }
 }

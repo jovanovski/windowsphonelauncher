@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  wp81_glyph_cortana
+
+  Cortana's own mark: a heavy ring with a lighter halo standing off it.
+
+  Microsoft drew the assistant as a circle rather than as a face on purpose - she is a
+  shape that reacts, not a person - and the halo is what stops the mark being an "o". It
+  is the same two-ring logo the phone put on the tile.
+
+  Traced off the official artwork rather than eyeballed. Measured across the middle of
+  cortana-microsoft-logo-black-and-white.png, the halo runs from the full radius in to
+  0.80 of it and the solid ring from there to 0.633, which is where the hole starts; those
+  three numbers are the whole shape, and they are what the radii below are worked out from.
+
+  The halo is drawn at 42% rather than in a second colour, because these glyphs are tinted
+  by whoever uses them - accent on the app list, white on a tile - and a two-colour glyph
+  would come back one colour the moment anything tinted it. The original's lightness
+  difference is a difference in weight, and alpha is how a single-colour glyph carries
+  that.
+
+  Emitted white so callers can tint per accent / light-dark theme.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="76"
+    android:viewportHeight="76">
+    <!-- The halo: full radius in to 0.80 of it. -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillAlpha="0.42"
+        android:fillType="evenOdd"
+        android:pathData="M 13,38 A 25,25 0 1,1 63,38 A 25,25 0 1,1 13,38 Z M 18,38 A 20,20 0 1,1 58,38 A 20,20 0 1,1 18,38 Z" />
+    <!-- The ring: 0.80 of the radius in to 0.633, where the hole starts. -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M 18,38 A 20,20 0 1,1 58,38 A 20,20 0 1,1 18,38 Z M 22.18,38 A 15.82,15.82 0 1,1 53.82,38 A 15.82,15.82 0 1,1 22.18,38 Z" />
+</vector>

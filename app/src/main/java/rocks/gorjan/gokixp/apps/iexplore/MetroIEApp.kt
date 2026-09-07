@@ -68,6 +68,7 @@ import rocks.gorjan.gokixp.wp81.WP81ContextMenu
 import rocks.gorjan.gokixp.wp81.MetroAppBar
 import rocks.gorjan.gokixp.wp81.WP81Palette
 import rocks.gorjan.gokixp.wp81.WP81Program
+import rocks.gorjan.gokixp.wp81.WP81Searchable
 import rocks.gorjan.gokixp.wp81.applyToField
 
 /**
@@ -117,10 +118,11 @@ class MetroIEApp(
      */
     private val onReturnToLinkCaller: () -> Unit = {},
     /**
-     * The last page has been closed, and the browser goes with it. See [closeTab].
+     * The browser is done and its window should go: the last page has been closed, or a
+     * page another app handed over has been backed out of. See [closeTab] and [handleBack].
      */
     private val onRequestClose: () -> Unit = {}
-) : WP81Program {
+) : WP81Program, WP81Searchable {
 
     /**
      * One open page.
@@ -194,6 +196,16 @@ class MetroIEApp(
          * bar cares about - the browser forgets - rather than a sandbox.
          */
         var inPrivate = false
+
+        /**
+         * The last address this tab has already been offered somewhere else to go.
+         *
+         * One offer per address per tab. A page that reloads itself, or that is returned
+         * to with back, is not a fresh reason to ask, and a band that came back every few
+         * seconds would be an advertisement for Spotify rather than a convenience. See
+         * [offerApp].
+         */
+        var offered: String? = null
     }
 
     private lateinit var root: FrameLayout
@@ -314,6 +326,15 @@ class MetroIEApp(
      * mode back off has to put back exactly what was there, not an approximation of it.
      */
     private var mobileAgent: String? = null
+
+    /**
+     * Which addresses an app on the phone claims. See [AppLinks].
+     *
+     * Outlives the pages rather than belonging to one, because what it knows is about the
+     * phone rather than about a tab: two tabs on two Spotify links ask the package manager
+     * once between them, and a page reloaded is not asked about again at all.
+     */
+    private val appLinks = AppLinks(context)
 
     /**
      * Rebuilds the program in a new theme. See [WP81Program].
@@ -625,6 +646,48 @@ class MetroIEApp(
         return page
     }
 
+    override var onSearchOfferChanged: (() -> Unit)? = null
+
+    /**
+     * The shell's search key, while a page is what is on screen.
+     *
+     * The bar at the foot of this app says "search or enter web address" and has meant
+     * both since the phone: a browser's search box is its address bar. So the key opens
+     * that, rather than a box of its own that would have to hand what was typed to the
+     * same field anyway.
+     *
+     * Withdrawn over the tabs page and the downloads page. Neither has anything to search,
+     * and the bar the key would open is not on either of them - it would be a key that
+     * navigated somewhere in order to be able to do what it says. See [WP81Searchable].
+     */
+    override fun searchAction(): (() -> Unit)? = when {
+        // Asked before the browser has been built, which is possible in the moment a
+        // rebuild replaces the whole view tree. See applyPalette.
+        !::tabsPage.isInitialized -> null
+        tabsPage.visibility == View.VISIBLE -> null
+        downloadsTurn.isOnScreen -> null
+        else -> ({ typeInAddressBar() })
+    }
+
+    /**
+     * Puts the cursor in the address bar, with what is there already selected.
+     *
+     * The selecting is the field's own doing - see the focus listener in
+     * [buildAddressColumn], which is where tapping the bar gets it too - so that typing
+     * replaces the address rather than being appended to it. The keyboard is asked for
+     * here: a bar that took focus without one would be a search that begins with a tap on
+     * the thing that was just opened for you.
+     */
+    private fun typeInAddressBar() {
+        closeMenu()
+        addressBar.requestFocus()
+        addressBar.post {
+            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE)
+                as? android.view.inputmethod.InputMethodManager
+            imm?.showSoftInput(addressBar, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
+
     private fun openTabs() {
         closeMenu()
         addressBar.clearFocus()
@@ -638,12 +701,16 @@ class MetroIEApp(
         // Deferred a frame: a view that has been GONE has no height yet, and a turn
         // measured against one pivots around the wrong place.
         tabsPage.post { MetroPageTransition(tabsPage).playIn() }
+        // The address bar has gone with the page it belongs to, so the search key it was
+        // standing for goes back to Cortana. See searchAction.
+        onSearchOfferChanged?.invoke()
     }
 
     private fun closeTabs() {
         if (tabsPage.visibility != View.VISIBLE) return
         tabsPage.visibility = View.GONE
         tabsGrid.removeAllViews()
+        onSearchOfferChanged?.invoke()
     }
 
     /** Two across, in the order they were opened. */
@@ -935,6 +1002,7 @@ class MetroIEApp(
         // Turned in the way the shell's own pages turn. Deferred a frame, like the tabs
         // page: a view that has been GONE has no height to pivot around yet.
         downloadsPage.post { downloadsTurn.playIn() }
+        onSearchOfferChanged?.invoke()
     }
 
     /**
@@ -950,6 +1018,9 @@ class MetroIEApp(
         if (!downloadsTurn.isOnScreen) return
         root.removeCallbacks(downloadsTick)
         downloadsTurn.playOut { downloadsList.removeAllViews() }
+        // Now rather than when the turn finishes: the key belongs to the screen the user
+        // is on their way to, which is the page behind this one.
+        onSearchOfferChanged?.invoke()
     }
 
     /**
@@ -1231,6 +1302,12 @@ class MetroIEApp(
                     }
                     onUpdateWindowTitle(tab.title.ifBlank { "Internet Explorer" })
                 }
+                // Whether an app on the phone would rather have had this page, asked once
+                // it has landed rather than in shouldOverrideUrlLoading. Asking there
+                // would mean answering before the page is fetched, and an answer given
+                // then can only be a redirect - which is what somebody who wanted the app
+                // did not ask for, and what somebody who wanted the page cannot undo.
+                if (url != null && tab === current) offerApp(tab, url)
                 // Where this tab is now, so a restart puts it back here rather than on
                 // whatever it was opened at.
                 saveTabs()
@@ -2163,6 +2240,13 @@ class MetroIEApp(
             }
         )
         menuPanel.addView(menuRow("delete history") { clearHistory() })
+        // Last precisely because it is the one row that comes and goes: it is only here
+        // for a page some app on the phone claims, and anywhere further up it would shift
+        // every command beneath it by a row from one page to the next - the thing the
+        // greyed "forward" at the top of this list exists to avoid. It cannot be greyed
+        // and kept in the same way: "open in" with nothing to open in is a command about
+        // an app that is not installed, which says nothing to anybody.
+        appRow()?.let { menuPanel.addView(it) }
     }
 
     /**
@@ -2291,6 +2375,66 @@ class MetroIEApp(
     private fun playMenuEntrance() = MetroAppBar.playListEntrance(menuPanel)
 
     // ---------------------------------------------------------------- commands
+
+    /**
+     * Offers the page to an app on this phone that claims its address.
+     *
+     * The shell's own band, rather than a bar across the top of the page or a question in
+     * front of it. An offer is an announcement with something to tap, which is exactly
+     * what WP81Toast is: it lands over the page without taking a single touch away from
+     * it, it goes by itself after a few seconds, and a flick downward is a "no" that costs
+     * nothing and is not asked again. A dialog would be a question the page has to wait
+     * behind, and the page carrying on regardless is the whole point of the feature - the
+     * app is an alternative to reading this here, not a replacement for having opened it.
+     * A bar of its own would be a second strip in a program whose entire design is that
+     * there is one.
+     *
+     * The band names the app because "open in app" is a category and "Open in Spotify" is
+     * an offer; the host under it says which page is being handed over, which matters on a
+     * page that has redirected somewhere the address bar is no longer showing.
+     */
+    private fun offerApp(tab: Tab, url: String) {
+        if (tab.offered == url) return
+        tab.offered = url
+        appLinks.resolve(url) { link ->
+            // Between asking and being answered the page can have moved on, the tab can
+            // have been closed, or the browser can have gone entirely - and a band about
+            // a page nobody is looking at any more is an interruption about nothing.
+            if (link == null || tab !== current || tab.url != url) return@resolve
+            notify(link.label?.let { "Open in $it" } ?: "Open in an app", hostOf(url)) {
+                openInApp(link, url)
+            }
+        }
+    }
+
+    /**
+     * "open in Spotify", where the page being read is one an app on this phone claims.
+     *
+     * Answered out of what [AppLinks] already knows rather than asked afresh: the list is
+     * built on the main thread the moment the dots are tapped, and the answer was worked
+     * out when the page landed. A page whose answer is not in yet - one that rewrote its
+     * own address without loading anything - simply has no row, which is what having no
+     * app looks like too.
+     */
+    private fun appRow(): View? {
+        val url = liveUrl() ?: return null
+        val link = appLinks.cached(url) ?: return null
+        // Verbatim, for the same reason as InPrivate: the row is a verb and a name, and an
+        // app's name is spelled the way its makers spell it. "open in spotify" is a
+        // sentence about a brand with the brand taken out of it.
+        return menuRow("open in ${link.label ?: "app"}", verbatim = true) {
+            openInApp(link, url)
+        }
+    }
+
+    /** Takes the offer up. See [AppLinks.open] for what stops this landing in a browser. */
+    private fun openInApp(link: AppLink, url: String) {
+        if (appLinks.open(link, url)) return
+        // Said in the same words as a page's own link to an app that is not there, because
+        // it is the same thing: an app that was on the phone when the offer was made and
+        // is not there now.
+        notify("Internet Explorer", "Nothing on this phone opens that link")
+    }
 
     private fun sharePage() {
         val tab = current ?: return
@@ -2451,12 +2595,12 @@ class MetroIEApp(
      * one page open, closing this one and returning to the last. Only with a single page
      * that has nowhere left to go does it hand back to the shell, which closes the window.
      *
-     * A page another app handed over is the exception, and comes before the tab that was
-     * open behind it: somebody who followed a link out of Reddit is inside Reddit's errand,
-     * not inside a browsing session of their own, and backing out of the page they were
-     * sent to read belongs to the app that sent them rather than to whatever the browser
-     * happened to have open at the time. The page goes, and the screen goes back where it
-     * came from.
+     * A page another app handed over is the exception, and takes the whole browser with
+     * it rather than the tab that was open behind it: somebody who followed a link out of
+     * Reddit is inside Reddit's errand, not inside a browsing session of their own, and
+     * backing out of the page they were sent to read belongs to the app that sent them
+     * rather than to whatever the browser happened to have open at the time. The page
+     * goes, the window goes, and the screen goes back where it came from.
      */
     fun handleBack(): Boolean {
         if (pressMenu.isShowing()) {
@@ -2493,12 +2637,18 @@ class MetroIEApp(
         }
         if (tab.external) {
             onReturnToLinkCaller()
-            // With something else open behind it the browser stays, minus the page it was
-            // lent out for. With nothing behind it there is no browsing session here to
-            // come back to at all, so it goes with the page: unhandled, and the shell
-            // closes the window as it closes any other that has run out of back.
+            // The errand ends with the page, and the browser's part in it ends there
+            // too. Whatever is open behind is a session the user never asked to be put
+            // into - they came in through a link - so uncovering somebody's half-read
+            // pages on the way out would be the browser taking a screen that belongs to
+            // the app being returned to. The window goes either way: alone, this is
+            // unhandled and the shell closes it as it closes any window that has run out
+            // of back; with other pages open, this one is closed and the window asked to
+            // follow. Those pages stay written down and are there again the next time the
+            // browser is opened on purpose.
             if (tabs.size == 1) return false
             closeTab(tab)
+            onRequestClose()
             return true
         }
         if (tabs.size > 1) {

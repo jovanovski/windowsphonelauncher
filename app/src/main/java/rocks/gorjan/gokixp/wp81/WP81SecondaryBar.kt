@@ -42,6 +42,14 @@ class WP81SecondaryBar(
     /** Editing a tile: open its command list. */
     var onTileMenu: (() -> Unit)? = null
 
+    /**
+     * Editing a tile that has a picture: show it, or hold it back.
+     *
+     * Offered only where there is a picture - a News tile turning through photographs, a
+     * tile playing something with a cover. See [setMode] and TileView.showsBackdrop.
+     */
+    var onTilePicture: (() -> Unit)? = null
+
     /** Inside a folder, nothing selected: put another app in it. */
     var onAddApp: (() -> Unit)? = null
 
@@ -66,6 +74,10 @@ class WP81SecondaryBar(
     // Made rather than added: which of the three is on the strip is the mode's business,
     // and setMode puts them there. See MetroAppBar.makeCommand.
     private val colorButton = makeCommand(R.drawable.wp81_nav_color) { onTileColor?.invoke() }
+    // The app bar image glyph, which the Photos tile also wears - it is the same picture
+    // in both places, and this is the icon that set was drawn for.
+    private val pictureButton =
+        makeCommand(R.drawable.wp81_glyph_photos) { onTilePicture?.invoke() }
     private val menuButton = makeCommand(R.drawable.wp81_handle_menu) { onTileMenu?.invoke() }
     private val addButton = makeCommand(R.drawable.wp81_nav_add) { onAddApp?.invoke() }
 
@@ -88,18 +100,34 @@ class WP81SecondaryBar(
      * [hasSelection] is separate from the mode because both editing commands act on the
      * selected tile: with nothing selected there is nothing for the bar to say, and an
      * empty strip is worse than no strip.
+     *
+     * [picture] is the selected tile's picture: null where it has none, and otherwise
+     * whether it is currently showing it. Null takes the picture command off the strip
+     * altogether - a tile with no photograph behind it has nothing to turn off, and a key
+     * that does nothing is a key that looks broken.
      */
-    fun setMode(mode: Mode, hasSelection: Boolean) {
+    fun setMode(mode: Mode, hasSelection: Boolean, picture: Boolean? = null) {
+        // Alongside the colour rather than in the command list: both are the same kind of
+        // thing - how the tile looks, tried and untried until it looks right - where the
+        // list holds the once-only verbs. A key that is *on* says so by wearing the accent,
+        // which is what a picture that is currently showing gets.
+        val toggle = pictureButton.takeIf { picture != null }
+        setCommandOn(pictureButton, picture == true)
         val shown = when (mode) {
             Mode.NONE -> emptyList()
             // "New folder" is gone: folders are made by holding one tile over another,
             // which is how the phone did it and needs no key. Unpinning and hiding live in
             // the command list - each is a thing you do once, where recolouring is a thing
             // you do repeatedly until it looks right.
-            Mode.EDIT_START -> if (hasSelection) listOf(colorButton, menuButton) else emptyList()
+            Mode.EDIT_START ->
+                if (hasSelection) listOfNotNull(colorButton, toggle, menuButton)
+                else emptyList()
             // Inside a folder the tile's own colour is the folder's business, not the
-            // wall's, so only the command list is offered.
-            Mode.EDIT_FOLDER -> if (hasSelection) listOf(menuButton) else emptyList()
+            // wall's, so only the command list is offered - and the picture, which is not:
+            // a News tile filed away still turns through photographs, and where it is
+            // filed has nothing to do with whether they are wanted.
+            Mode.EDIT_FOLDER ->
+                if (hasSelection) listOfNotNull(toggle, menuButton) else emptyList()
             Mode.FOLDER -> listOf(addButton)
         }
         if (shown.isEmpty()) {
@@ -109,7 +137,9 @@ class WP81SecondaryBar(
         }
         // Nothing to do only if the bar is already out with these very commands on it:
         // the same mode with the bar parked - a tile reselected after being let go - still
-        // has to bring it back.
+        // has to bring it back. The ring's own state is settled above, before this: the
+        // strip is asked again the moment the picture is switched, and that changes how a
+        // command is drawn without changing which commands there are.
         if (out && mode == this.mode && shown == commands()) return
         this.mode = mode
         setCommands(shown)

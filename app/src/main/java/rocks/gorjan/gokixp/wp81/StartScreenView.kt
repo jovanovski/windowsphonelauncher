@@ -416,7 +416,33 @@ class StartScreenView(
     /** Repaints one tile, without rebuilding the wall around it. */
     fun setTileColor(tileId: String, color: Int?) {
         forEachTileView { if (it.tile.id == tileId) it.setTileColor(color) }
+        // The open folder's rules are its tile's colour, so repainting that tile repaints
+        // them - including the case that matters most, every tile on the wall being handed
+        // back to the accent so the wallpaper can show through them.
+        if (tileId == openFolderId) syncBandRules()
     }
+
+    /**
+     * Puts the open folder's rules back in step with the tile they belong to.
+     *
+     * Cheap and idempotent, so it is called from anywhere that could have changed what
+     * that tile is showing rather than being reasoned about case by case.
+     */
+    private fun syncBandRules() {
+        if (bandRules.isEmpty()) return
+        val folderView = openFolderId?.let { id -> findTileView { it.tile.id == id } }
+        val color = folderView?.fillColor ?: palette.accent
+        val window = folderView?.showsStartBackground == true
+        for (rule in bandRules) rule.setRule(color, window, ruleDim())
+    }
+
+    /**
+     * How far an open folder's rules hold their photograph down.
+     *
+     * Only the wash asked for as a look. The other one a tile can wear is there so the
+     * words on it can be read, and a rule has none. See TileView.dimAllTiles.
+     */
+    private fun ruleDim(): Float = if (dimAllTiles) dimAmount else 0f
 
     /** Hands one live widget the run of faces it turns through. */
     fun setLiveWidgetRotation(
@@ -526,6 +552,9 @@ class StartScreenView(
         val view = TileView(context, tile, palette)
         view.countsEnabled = countsEnabled
         view.tileColorsHidden = tileColorsHidden
+        view.dimAllTiles = dimAllTiles
+        view.dimAmount = dimAmount
+        view.showsBackdrop = tile.id !in picturesHidden
         view.applySize()
         view.setGlyph(glyphs(tile))
         // The wall's own crop, not a fresh one against the screen. Where there is none yet
@@ -692,6 +721,54 @@ class StartScreenView(
         }
 
     /**
+     * Whether every tile showing the photo is darkened, not only the ones carrying words.
+     *
+     * The wall's, for the reason [tileColorsHidden] is: one answer for all of them, and a
+     * tile built after it was given has to be born knowing it. See TileView.dimAllTiles.
+     */
+    var dimAllTiles: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            forEachTileView { it.dimAllTiles = value }
+            syncBandRules()
+        }
+
+    /** How strongly [dimAllTiles] darkens the photo. See TileView.dimAmount. */
+    var dimAmount: Float = TileView.CONTENT_SCRIM_ALPHA
+        set(value) {
+            if (field == value) return
+            field = value
+            forEachTileView { it.dimAmount = value }
+            syncBandRules()
+        }
+
+    /**
+     * Which tiles are holding their picture back, by id.
+     *
+     * Per tile rather than for the wall - it is a decision about the News tile or about
+     * whatever is playing, not about tiles in general - but held here for the reason
+     * [tileColorsHidden] is: the wall builds its tiles, so a tile built after the user
+     * turned its picture off has to be born knowing. See TileView.showsBackdrop.
+     */
+    var picturesHidden: Set<String> = emptySet()
+        set(value) {
+            if (field == value) return
+            field = value
+            forEachTileView { it.showsBackdrop = it.tile.id !in value }
+        }
+
+    /**
+     * Whether the selected tile is showing a picture, or null if it has none to show.
+     *
+     * One question rather than two, because the strip asks both at once: null takes the
+     * picture command off it, and true or false is which way the command's ring is
+     * turned. See WP81SecondaryBar.setMode.
+     */
+    val editingPicture: Boolean?
+        get() = editingView?.takeIf { it.hasPicture }?.showsBackdrop
+
+    /**
      * The arrow under the wall, on the right, where the app list is.
      *
      * Windows Phone put one here and it was the only visible way to the list - the swipe
@@ -750,9 +827,29 @@ class StartScreenView(
 
     private var bandAnimator: android.animation.ValueAnimator? = null
 
+    // The reveal scroll that runs alongside the gap opening: where the wall set off from,
+    // where it is going, and whether it is still being carried there. The destination is
+    // worked out once and then kept, because it belongs to the folder rather than to the
+    // frame - both edges of a band are settled the moment it has been measured, and
+    // neither moves while the gap opens. It is null only for the frame or two before that
+    // measure has happened. See [followBandOpen].
+
+    private var bandScrollFrom = 0
+    private var bandScrollTo: Int? = null
+    private var bandScrollTracking = false
+
     /** The band's own grid and the column inside it, for dragging into and sliding. */
     private var bandGrid: TileGridLayout? = null
     private var bandColumn: View? = null
+
+    /**
+     * The two rules that fence the open folder off, kept so they can be repainted.
+     *
+     * The wall's photograph reaches them by the walk, like everything else on it - see
+     * [forEachWindowPlaced] - but what they are *for* is the folder's own colour, and
+     * that can change under them while the folder is open. See [syncBandRules].
+     */
+    private var bandRules: List<BandRule> = emptyList()
 
     /** Which side of the folder the tile in hand started on. See [fileOnDrop]. */
     private var dragStartedInBand = false
@@ -819,11 +916,19 @@ class StartScreenView(
         grid.bandProgress = 0f
         grid.setBand(buildFolderBand(folder, contents, tileColors, glyphs), folder.id)
         setBandClipping(true)
-        // Brought into view once it is all there: how far down the wall has to come depends
-        // on how tall the folder turned out to be, and that is only settled when the gap
-        // has finished opening. Posted from the end of the slide rather than run in it, so
-        // the scroll is measured against a wall that has stopped moving.
-        slideBand(open = true) { post { revealBand() } }
+        // Brought into view as the gap opens rather than after it. Where the wall has to
+        // end up is known as soon as the band has been measured - a frame in, and long
+        // before any of it is on screen - so waiting for the slide to finish and only then
+        // scrolling was two movements, one after the other, for one action. See
+        // [followBandOpen]. The scroll at the end is what is left over: a correction where
+        // the band turned out taller than it measured, and nothing at all otherwise.
+        bandScrollFrom = scrollY
+        bandScrollTo = null
+        bandScrollTracking = true
+        slideBand(open = true) {
+            bandScrollTracking = false
+            post { revealBand() }
+        }
         // Built with a crop of their own by buildTileView, which is the wrong one: the
         // wall's photograph is zoomed for its own scroll range and the band's tiles have
         // to be windows onto that, not onto a fresh copy fitted to the screen.
@@ -833,20 +938,73 @@ class StartScreenView(
     fun closeFolder(animated: Boolean = true) {
         val id = openFolderId ?: return
         openFolderId = null
+        bandScrollTracking = false
         forEachTileView { if (it.tile.id == id) it.setEmptied(false) }
         if (!animated) {
             bandAnimator?.cancel()
             grid.setBand(null, null)
             grid.bandProgress = 1f
+            bandRules = emptyList()
             return
         }
         slideBand(open = false) {
             grid.setBand(null, null)
             bandGrid = null
             bandColumn = null
+            bandRules = emptyList()
             // The wall is a row shorter again, so the parallax has a different range.
             post { pushBackgroundToTiles() }
         }
+    }
+
+    /**
+     * Carries the wall towards an opening folder, a frame at a time.
+     *
+     * The gap and the scroll are one movement, so they are given one curve: [progress] is
+     * the slide's own eased value, and the wall covers that same share of the distance it
+     * has to travel. The folder is therefore fully in view the moment it is fully open,
+     * instead of the wall setting off once the gap has stopped moving.
+     *
+     * The coercion is not a formality. Room to scroll into is made by the gap itself, and
+     * the gap is still opening - a wall that ends up scrolled to its very foot has, at the
+     * halfway point, only half of that room. Coercing each frame to what there is means the
+     * wall follows the room down as it appears, which for the folder at the very bottom of
+     * Start is the whole of the movement.
+     */
+    private fun followBandOpen(progress: Float) {
+        if (!bandScrollTracking) return
+        val target = bandScrollTo ?: bandRevealTarget()?.also { bandScrollTo = it } ?: return
+        // Already whole on the screen, which is most folders: nothing to follow.
+        if (target == bandScrollFrom) {
+            bandScrollTracking = false
+            return
+        }
+        val to = bandScrollFrom + ((target - bandScrollFrom) * progress).toInt()
+        scrollTo(0, to.coerceIn(0, scrollRange()))
+    }
+
+    /**
+     * Where the wall has to get to for the folder to be on screen, or null while the band
+     * has not been measured and so has no answer to give yet.
+     *
+     * The same reckoning as [revealBand], made against the gap the folder is going to have
+     * made rather than the one it has so far: the band's top is the row it hangs under and
+     * its height is what its tiles need, and neither of those waits for the slide. The end
+     * of the wall does wait for it, so the range allowed for here is the one the wall will
+     * have once the rest of the gap has opened.
+     */
+    private fun bandRevealTarget(): Int? {
+        val band = grid.bandView ?: return null
+        val full = grid.bandFullHeight
+        if (full <= 0) return null
+        val top = grid.top + band.top
+        val bottom = top + full
+        val range = scrollRange() + full - band.height
+        return when {
+            bottom > scrollY + height -> minOf(top, bottom - height)
+            top < scrollY -> top
+            else -> scrollY
+        }.coerceIn(0, range)
     }
 
     /**
@@ -858,9 +1016,11 @@ class StartScreenView(
      * the top of the gap, because the row the folder belongs to is what says which folder
      * this is. A folder too tall to fit is shown from its own top for the same reason.
      *
-     * Nothing happens where the whole of it is already on screen, which is most of the
-     * time: a wall that jumped every time a folder was opened would be a wall that moved
-     * for no reason.
+     * Nothing happens where the whole of it is already on screen, which by the time this
+     * runs is the usual case: [followBandOpen] has been carrying the wall down for the
+     * length of the slide, and this is only what is left over - the band measured taller
+     * than it was going to be, or the wall was taken back by a finger part way. A wall
+     * that jumped every time a folder was opened would be a wall that moved for no reason.
      */
     private fun revealBand() {
         val band = grid.bandView ?: return
@@ -898,12 +1058,29 @@ class StartScreenView(
             .apply {
                 duration = BAND_MS
                 interpolator = DecelerateInterpolator()
-                addUpdateListener { grid.bandProgress = it.animatedValue as Float }
+                addUpdateListener {
+                    val value = it.animatedValue as Float
+                    grid.bandProgress = value
+                    // Only ever tracking on the way open, so the closing slide falls
+                    // straight through this.
+                    followBandOpen(value)
+                }
                 addListener(object : android.animation.AnimatorListenerAdapter() {
+                    private var cut = false
+
+                    override fun onAnimationCancel(animation: android.animation.Animator) {
+                        cut = true
+                    }
+
                     override fun onAnimationEnd(animation: android.animation.Animator) {
                         bandAnimator = null
                         if (open) setBandClipping(false)
-                        after?.invoke()
+                        // A slide cut short is one something else has taken over from - a
+                        // second folder opened on top of this one, or Start put away - and
+                        // what was to happen at the end of this slide would land in the
+                        // middle of that one: the new band taken away again, or the wall
+                        // scrolled at a folder that is no longer the one opening.
+                        if (!cut) after?.invoke()
                     }
                 })
                 start()
@@ -934,10 +1111,22 @@ class StartScreenView(
         val margin = (width * TileGridLayout.MARGIN_FRACTION).toInt()
 
         val overhang = (TileView.HANDLE_OVERHANG_DP * density).toInt()
-        // The rules fence off a folder, so they are the folder's own colour: a tile the
-        // user has painted opens into a band that matches it rather than into the accent
-        // it no longer wears.
-        val rule = findTileView { it.tile.id == folder.id }?.fillColor ?: palette.accent
+        // The rules fence off a folder, so they show whatever the folder's own tile shows:
+        // a tile the user has painted opens into a band that matches it rather than into
+        // the accent it no longer wears, and a tile that is a window onto the wallpaper
+        // opens into rules that are windows too. See [BandRule] and TileView.fillColor.
+        val folderView = findTileView { it.tile.id == folder.id }
+        val rule = folderView?.fillColor ?: palette.accent
+        val ruleIsWindow = folderView?.showsStartBackground == true
+        bandRules = listOf(BandRule(context), BandRule(context)).onEach {
+            it.setRule(rule, ruleIsWindow, ruleDim())
+            // Handed the wall's crop as they are made, exactly as [buildTileView] hands it
+            // to a tile: the band slides in over the next few frames, and a rule that
+            // waited for the next push would spend them as a bar of solid accent.
+            startBackground?.let { bmp ->
+                if (!backgroundDest.isEmpty) it.setStartBackground(bmp, backgroundSrc, backgroundDest)
+            }
+        }
 
         // Two views, not one: the outer is the window the folder is seen through and never
         // moves, the inner is the folder itself and slides up into it. One view cannot do
@@ -985,9 +1174,7 @@ class StartScreenView(
             ellipsize = android.text.TextUtils.TruncateAt.END
         }, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        heading.addView(View(context).apply {
-            setBackgroundColor(rule)
-        }, LinearLayout.LayoutParams(0, bar, 1f).apply {
+        heading.addView(bandRules[0], LinearLayout.LayoutParams(0, bar, 1f).apply {
             marginStart = (BAND_GAP_DP * density).toInt()
             // Set on the foot of the name rather than in the middle of it, so what lies
             // between the rule and the tiles is the heading's own padding and nothing
@@ -1018,9 +1205,8 @@ class StartScreenView(
         column.addView(inner, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
-        column.addView(View(context).apply {
-            setBackgroundColor(rule)
-        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, bar).apply {
+        column.addView(bandRules[1], LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, bar).apply {
             // Starting and stopping with the tiles, like the rule at the top: the two rules
             // are the folder's own edges, and edges wider than what they enclose read as a
             // second, larger thing behind it.
@@ -1113,29 +1299,38 @@ class StartScreenView(
     }
 
     /**
-     * The same walk, with each tile's position in the wall's own coordinates.
+     * Every window onto the photograph, with its position in the wall's own coordinates.
      *
-     * A tile inside the band knows where it is inside the band; the photograph behind the
-     * wall is positioned in the wall's space, so the offsets have to be accumulated on the
-     * way down or every tile in a folder shows the same wrong slice of it.
+     * The tiles, and an open folder's two rules. A tile inside the band knows where it is
+     * inside the band; the photograph behind the wall is positioned in the wall's space,
+     * so the offsets have to be accumulated on the way down or every tile in a folder
+     * shows the same wrong slice of it.
      */
-    private fun forEachTileViewPlaced(action: (TileView, Int, Int) -> Unit) {
-        placeTileViewsIn(grid, 0, 0, action)
+    private fun forEachWindowPlaced(action: (StartBackgroundWindow, Int, Int) -> Unit) {
+        placeWindowsIn(grid, 0, 0, action)
     }
 
-    private fun placeTileViewsIn(
+    /** The same walk where the position is not wanted. */
+    private fun forEachWindow(action: (StartBackgroundWindow) -> Unit) {
+        forEachWindowPlaced { window, _, _ -> action(window) }
+    }
+
+    private fun placeWindowsIn(
         parent: ViewGroup,
         offsetX: Int,
         offsetY: Int,
-        action: (TileView, Int, Int) -> Unit
+        action: (StartBackgroundWindow, Int, Int) -> Unit
     ) {
         for (i in 0 until parent.childCount) {
             val child = parent.getChildAt(i)
             val x = offsetX + child.left
             val y = offsetY + child.top
+            // A tile is both a window and a ViewGroup, and it is asked as a window: there
+            // are no tiles inside a tile, and the faces that are do not show the wall's
+            // photograph.
             when (child) {
-                is TileView -> action(child, x, y)
-                is ViewGroup -> placeTileViewsIn(child, x, y, action)
+                is StartBackgroundWindow -> action(child, x, y)
+                is ViewGroup -> placeWindowsIn(child, x, y, action)
             }
         }
     }
@@ -1300,6 +1495,11 @@ class StartScreenView(
 
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                // A finger on the wall while a folder is opening takes it back: the reveal
+                // is a courtesy, and a courtesy that goes on scrolling under a hand that
+                // has started scrolling for itself is a fight. The gap carries on opening
+                // either way - what is given up is only the wall's own movement.
+                bandScrollTracking = false
                 // Only the selected tile is draggable, and only by its body.
                 pendingDragView = editingView?.takeIf { contains(it, ev.x, ev.y) }
                 // Recorded for every press, not just draggable ones: a long-press starts a
@@ -1957,7 +2157,8 @@ class StartScreenView(
         if (bmp == null) {
             backgroundSrc = null
             backgroundDest = Rect()
-            forEachTileView { it.setStartBackground(null, null, EMPTY_RECT) }
+            forEachWindow { it.setStartBackground(null, null, EMPTY_RECT) }
+            syncBandRules()
             return
         }
         if (width == 0 || height == 0) return
@@ -1990,7 +2191,10 @@ class StartScreenView(
         val src = cropFor(bmp, dest.width(), dest.height(), backgroundFocusX)
         backgroundSrc = src
         backgroundDest = dest
-        forEachTileView { it.setStartBackground(bmp, src, dest) }
+        forEachWindow { it.setStartBackground(bmp, src, dest) }
+        // Asked after the photograph has been handed out, since whether a tile is a window
+        // is partly whether it has one to be a window onto.
+        syncBandRules()
         lastSignature = signature()
         updateTileOffsets()
     }
@@ -2094,8 +2298,8 @@ class StartScreenView(
         // Half the drift travel is the resting point, so the photo has the same room to
         // move in both directions before it runs out of image.
         val centre = driftRange / 2f
-        forEachTileViewPlaced { tile, x, y ->
-            tile.setBackgroundOffset(
+        forEachWindowPlaced { window, x, y ->
+            window.setBackgroundOffset(
                 x + centre + driftX,
                 y - backgroundShift + centre + overscrollSlack + driftY
             )
@@ -2277,6 +2481,93 @@ class StartScreenView(
             view.onMediaPlayPause = { onPlayPause(view.tile) }
             view.onMediaNext = { onNext(view.tile) }
             view.onMediaPrevious = { onPrevious(view.tile) }
+        }
+    }
+
+    /**
+     * One of the two rules that fence an open folder off.
+     *
+     * A block of the folder's colour, or - where the folder's own tile is a window onto
+     * the Start photograph - a window onto the same photograph, cut from the same crop at
+     * the rule's own place on the wall. Held solid while every tile around it turned into
+     * a window, it was the one opaque thing on the screen: a bar laid *over* the wallpaper
+     * instead of the folder's edge cut *into* the wall.
+     *
+     * A plain [View] rather than a background colour because that is what drawing a slice
+     * of a shared bitmap needs. See [StartBackgroundWindow].
+     */
+    private class BandRule(context: Context) : View(context), StartBackgroundWindow {
+
+        private var color: Int = 0
+        private var window = false
+
+        /** How far the photograph is held down, 0 to 1. Only ever the wall's own wash. */
+        private var dim = 0f
+        private var bitmap: Bitmap? = null
+        private var src: Rect? = null
+        private var dest = Rect()
+        private var offsetX = 0f
+        private var offsetY = 0f
+
+        // The same filtering the tiles draw their slice with, so a rule between two rows
+        // of them is not visibly sharper or softer than the rows are.
+        private val paint = android.graphics.Paint().apply {
+            isFilterBitmap = true
+            isDither = true
+        }
+
+        /**
+         * What this rule is: a colour, whether the photograph outranks it, and how far
+         * down the wall is holding the photograph.
+         *
+         * The dim comes along because it is part of what a window *shows* - a bright strip
+         * between two rows of darkened tiles is the same mismatch this class exists to
+         * fix, one setting further on. See TileView.dimAllTiles.
+         */
+        fun setRule(color: Int, window: Boolean, dim: Float) {
+            if (this.color == color && this.window == window && this.dim == dim) return
+            this.color = color
+            this.window = window
+            this.dim = dim
+            invalidate()
+        }
+
+        override fun setStartBackground(bitmap: Bitmap?, src: Rect?, dest: Rect) {
+            this.bitmap = bitmap
+            this.src = src
+            this.dest = dest
+            invalidate()
+        }
+
+        override fun setBackgroundOffset(x: Float, y: Float) {
+            if (x == offsetX && y == offsetY) return
+            offsetX = x
+            offsetY = y
+            if (bitmap != null) invalidate()
+        }
+
+        override fun onDraw(canvas: android.graphics.Canvas) {
+            // Clipped by hand, as the tiles are: the band does not clip its children, so
+            // the wallpaper positioned for this rule's slot would otherwise be painted
+            // across the whole wall. See TileView.onDraw.
+            val clip = canvas.save()
+            canvas.clipRect(0, 0, width, height)
+            val bmp = bitmap.takeIf { window }
+            if (bmp != null && !bmp.isRecycled) {
+                val shifted = canvas.save()
+                canvas.translate(-offsetX, -offsetY)
+                canvas.drawBitmap(bmp, src, dest, paint)
+                // Back out of the photograph's coordinates before the wash, which covers
+                // this rule and not the whole picture.
+                canvas.restoreToCount(shifted)
+                if (dim > 0f) {
+                    canvas.drawColor(
+                        android.graphics.Color.argb((255 * dim).toInt(), 0, 0, 0))
+                }
+            } else {
+                canvas.drawColor(color)
+            }
+            canvas.restoreToCount(clip)
         }
     }
 

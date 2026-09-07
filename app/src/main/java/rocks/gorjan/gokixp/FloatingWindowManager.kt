@@ -23,6 +23,16 @@ class FloatingWindowManager(private val context: Context, private val container:
     var onWindowCountChanged: ((Int) -> Unit)? = null
 
     /**
+     * Notified whenever a different window is the one in front.
+     *
+     * Separate from the count, which does not change when a window that was already open
+     * is brought forward - and the front one is a different question from how many there
+     * are. The phone shell asks it because the search key is lent to the program in front:
+     * see `MainActivity.refreshWP81SearchOffer`.
+     */
+    var onFrontWindowChanged: (() -> Unit)? = null
+
+    /**
      * How many windows are actually on screen.
      *
      * What the backdrop cares about is whether anything is covering the shell, which a
@@ -34,6 +44,9 @@ class FloatingWindowManager(private val context: Context, private val container:
     /** Re-announces the count after a window is minimized or restored. */
     fun notifyWindowVisibilityChanged() {
         onWindowCountChanged?.invoke(visibleWindowCount())
+        // A window minimized or restored is a window that has left the front or arrived
+        // at it, whichever of the two it was.
+        onFrontWindowChanged?.invoke()
     }
 
     fun showWindow(windowsDialog: WindowsDialog) {
@@ -65,6 +78,7 @@ class FloatingWindowManager(private val context: Context, private val container:
             .start()
 
         onWindowCountChanged?.invoke(visibleWindowCount())
+        onFrontWindowChanged?.invoke()
     }
 
     fun removeWindow(windowsDialog: WindowsDialog) {
@@ -78,6 +92,7 @@ class FloatingWindowManager(private val context: Context, private val container:
                     container.removeView(windowsDialog)
                     activeWindows.remove(windowsDialog)
                     onWindowCountChanged?.invoke(visibleWindowCount())
+                    onFrontWindowChanged?.invoke()
                 }
                 .start()
         } catch (e: Exception) {
@@ -110,6 +125,8 @@ class FloatingWindowManager(private val context: Context, private val container:
 
             // Request layout to apply z-order change
             container.invalidate()
+
+            onFrontWindowChanged?.invoke()
         }
     }
 

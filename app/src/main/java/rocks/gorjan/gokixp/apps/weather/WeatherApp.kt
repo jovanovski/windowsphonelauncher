@@ -31,6 +31,7 @@ import rocks.gorjan.gokixp.wp81.TiltEffect
 import rocks.gorjan.gokixp.wp81.WP81ContextMenu
 import rocks.gorjan.gokixp.wp81.WP81Palette
 import rocks.gorjan.gokixp.wp81.WP81Program
+import rocks.gorjan.gokixp.wp81.WP81Searchable
 import rocks.gorjan.gokixp.wp81.WeatherCodes
 import rocks.gorjan.gokixp.wp81.WeatherDay
 import rocks.gorjan.gokixp.wp81.WeatherHour
@@ -69,7 +70,7 @@ class WeatherApp(
     private val onAskForLocation: () -> Unit,
     /** Told after a fetch lands, so the Start screen's weather tile keeps up with it. */
     private val onWeatherChanged: () -> Unit
-) : WP81Program {
+) : WP81Program, WP81Searchable {
 
     private lateinit var root: FrameLayout
     private lateinit var panorama: MetroPanorama
@@ -139,7 +140,7 @@ class WeatherApp(
         root.addView(column, FrameLayout.LayoutParams(MATCH, MATCH))
 
         repeat(PAGE_COUNT) { page ->
-            val bar = buildBar(withAdd = page == PAGE_PLACES)
+            val bar = buildBar()
             bars.add(bar)
             root.addView(bar, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
         }
@@ -189,13 +190,18 @@ class WeatherApp(
      * The strip: what to do here, and nothing behind an ellipsis.
      *
      * Every command this app has is a ring on the row. The dots exist for the tail of a
-     * long list, and a program with three commands has no tail - a switch of units sitting
+     * long list, and a program with two commands has no tail - a switch of units sitting
      * behind them was a setting filed under "more", one tap from the settings page that
      * already holds it and says what it is set to.
+     *
+     * The plus that opened the box for a new place was the third, and stood on the places
+     * section only. It has gone to the shell's search key, which is lit for this app from
+     * all three sections and opens the same box - see [searchAction]. That also makes every
+     * section's strip the same two rings, where the row used to grow a command as the
+     * panorama passed one page.
      */
-    private fun buildBar(withAdd: Boolean): MetroAppBar {
+    private fun buildBar(): MetroAppBar {
         val bar = MetroAppBar(context, palette)
-        if (withAdd) bar.addCommand(ADD_ICON) { showSearch() }
         refreshButtons.add(bar to bar.addCommand(REFRESH_ICON) { refresh(force = true) })
         bar.addCommand(SETTINGS_ICON) { showSettings() }
         return bar
@@ -426,13 +432,16 @@ class WeatherApp(
      * The numbers behind the reading, two to a row.
      *
      * Four of them are up where they can be read without asking: whether it is going to
-     * rain, whether the sun will burn, how close the air is and what the wind is doing.
+     * rain, whether the sun will burn, what the air is like and what the wind is doing.
      * Those are the ones that change what somebody puts on or whether they go now.
      *
      * The rest are real readings that almost nobody opens a forecast for - pressure is for
      * people who already know what to do with it - so they are behind a heading that opens.
      * A screenful of figures with the useful four somewhere in it is a screenful nobody
-     * reads; four is a glance.
+     * reads; four is a glance. Humidity is down there now: it is the one of the original
+     * four that answers no question on its own, since what it actually changes - how warm
+     * it feels - is already said outright by the apparent temperature at the top of the
+     * page.
      *
      * Everything here is optional. A cache written before a field was asked for simply has
      * no line about it, which is better than a grid of dashes explaining what the phone
@@ -447,22 +456,38 @@ class WeatherApp(
 
         val asked = buildList {
             today?.let { day ->
-                if (day.chance >= 0) add("chance of rain" to "${day.chance}%")
-                if (!day.uv.isNaN()) add("uv index" to uvReading(day.uv))
+                if (day.chance >= 0) add(detail("chance of rain", "${day.chance}%"))
+                if (!day.uv.isNaN()) add(detail("uv index", uvReading(day.uv)))
             }
-            if (now.humidity >= 0) add("humidity" to "${now.humidity}%")
-            wind?.let { add("wind" to it) }
+            WeatherStore.airQuality(context)?.let { aqi ->
+                // The one reading on the page that is somebody else's, and the only one
+                // that leads anywhere: AirCare has the pollutants behind the index and the
+                // map of them, and an index with no way through to any of that is a number
+                // the reader can do nothing with. Absent altogether when there is no
+                // answer, so the tap is never an invitation to a blank.
+                add(detail(
+                    "air quality",
+                    "$aqi  ${WeatherStore.airQualityLabel(aqi)}",
+                    onTap = ::openAirCare
+                ))
+            }
+            wind?.let { add(detail("wind", it)) }
         }
         val rest = buildList {
-            if (!now.gusts.isNaN()) add("gusts" to WeatherStore.wind(context, now.gusts))
-            if (now.cloud >= 0) add("cloud cover" to "${now.cloud}%")
-            if (!now.pressure.isNaN()) add("pressure" to "${Math.round(now.pressure)} hPa")
+            if (now.humidity >= 0) add(detail("humidity", "${now.humidity}%"))
+            if (!now.gusts.isNaN()) add(detail("gusts", WeatherStore.wind(context, now.gusts)))
+            if (now.cloud >= 0) add(detail("cloud cover", "${now.cloud}%"))
+            if (!now.pressure.isNaN()) {
+                add(detail("pressure", "${Math.round(now.pressure)} hPa"))
+            }
             today?.let { day ->
                 if (!day.rainfall.isNaN()) {
-                    add("rain today" to String.format(Locale.getDefault(), "%.1f mm", day.rainfall))
+                    add(detail(
+                        "rain today",
+                        String.format(Locale.getDefault(), "%.1f mm", day.rainfall)))
                 }
-                if (day.sunrise.isNotBlank()) add("sunrise" to clock(day.sunrise))
-                if (day.sunset.isNotBlank()) add("sunset" to clock(day.sunset))
+                if (day.sunrise.isNotBlank()) add(detail("sunrise", clock(day.sunrise)))
+                if (day.sunset.isNotBlank()) add(detail("sunset", clock(day.sunset)))
             }
         }
 
@@ -481,14 +506,26 @@ class WeatherApp(
         return column
     }
 
+    /**
+     * One reading in the grid: what it is, what it says, and - for the one of them that is
+     * a way in to something else - what tapping it does.
+     */
+    private data class Detail(
+        val name: String,
+        val value: String,
+        val onTap: (() -> Unit)? = null
+    )
+
+    private fun detail(name: String, value: String, onTap: (() -> Unit)? = null) =
+        Detail(name, value, onTap)
+
     /** Readings laid out two to a row, each under its own name. */
-    private fun grid(items: List<Pair<String, String>>): View {
+    private fun grid(items: List<Detail>): View {
         val grid = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         for (pair in items.chunked(2)) {
             val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
             for (item in pair) {
-                row.addView(detailCell(item.first, item.second),
-                    LinearLayout.LayoutParams(0, WRAP, 1f))
+                row.addView(detailCell(item), LinearLayout.LayoutParams(0, WRAP, 1f))
             }
             // A single item on the last row keeps its column rather than spreading across
             // both, so the grid stays a grid all the way down.
@@ -539,24 +576,47 @@ class WeatherApp(
         return row
     }
 
-    private fun detailCell(name: String, value: String): View =
+    private fun detailCell(item: Detail): View =
         LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(10), dp(14), dp(10))
             addView(TextView(context).apply {
-                text = name
+                text = item.name
                 typeface = font(R.font.segoeui_regular)
                 textSize = 14f
                 setTextColor(palette.foregroundSubtle)
             }, wide())
             addView(TextView(context).apply {
-                text = value
+                text = item.value
                 typeface = font(R.font.segoeui_semilight)
                 textSize = 23f
                 setTextColor(palette.foreground)
                 setPadding(0, dp(1), 0, 0)
             }, wide())
+            // The tilt is the whole of the affordance, which is how the platform said a
+            // thing could be pressed: no chevron, no colour, nothing to distinguish this
+            // reading from the ones beside it until a finger is actually on it.
+            item.onTap?.let { tap ->
+                isClickable = true
+                setOnClickListener {
+                    Haptics.tap(it)
+                    tap()
+                }
+                TiltEffect.apply(this)
+            }
         }
+
+    /**
+     * AirCare, or the store page for it.
+     *
+     * Said out loud when there is nowhere at all to go - no app, no store, no browser -
+     * because a tap that does nothing and says nothing reads as the page being broken.
+     */
+    private fun openAirCare() {
+        if (!WeatherStore.openAirCare(context)) {
+            onNotify("air quality", "AirCare could not be opened")
+        }
+    }
 
     /**
      * One hour, as a row.
@@ -716,7 +776,7 @@ class WeatherApp(
         for (place in WeatherStore.places(context)) {
             placesColumn.addView(placeRow(place, place.id == selected), wide())
         }
-        placesColumn.addView(note("use the + to add a place"), wide())
+        placesColumn.addView(note("press search below to add a place"), wide())
         if (!hasLocationPermission() ) {
             placesColumn.addView(actionNote(
                 "the phone has not been allowed to say where it is, so \"my location\" " +
@@ -864,14 +924,17 @@ class WeatherApp(
         }, wide())
 
         val facts = buildList {
-            if (day.chance >= 0) add("chance of rain" to "${day.chance}%")
+            if (day.chance >= 0) add(detail("chance of rain", "${day.chance}%"))
             if (!day.rainfall.isNaN()) {
-                add("rainfall" to String.format(Locale.getDefault(), "%.1f mm", day.rainfall))
+                add(detail(
+                    "rainfall", String.format(Locale.getDefault(), "%.1f mm", day.rainfall)))
             }
-            if (!day.wind.isNaN()) add("wind up to" to WeatherStore.wind(context, day.wind))
-            if (!day.uv.isNaN()) add("uv index" to uvReading(day.uv))
-            if (day.sunrise.isNotBlank()) add("sunrise" to clock(day.sunrise))
-            if (day.sunset.isNotBlank()) add("sunset" to clock(day.sunset))
+            if (!day.wind.isNaN()) {
+                add(detail("wind up to", WeatherStore.wind(context, day.wind)))
+            }
+            if (!day.uv.isNaN()) add(detail("uv index", uvReading(day.uv)))
+            if (day.sunrise.isNotBlank()) add(detail("sunrise", clock(day.sunrise)))
+            if (day.sunset.isNotBlank()) add(detail("sunset", clock(day.sunset)))
         }
         column.addView(grid(facts), wide())
 
@@ -892,6 +955,25 @@ class WeatherApp(
     }
 
     // ---------------------------------------------------------------- searching
+
+    override var onSearchOfferChanged: (() -> Unit)? = null
+
+    /**
+     * The shell's search key, while the panorama is what is on screen.
+     *
+     * What this app has to search is the world's towns, which is the same box the plus on
+     * the strip opens - see [showSearch]. Offered from all three sections rather than only
+     * from "places", where that plus lives: the plus is on that page because adding
+     * belongs to the list being added to, while looking a town up is a question about
+     * somewhere the reader is not, and it is asked as readily standing on today's forecast
+     * for home. A key that lit on one section of a panorama and went out on the next would
+     * be a key nobody could use without watching it.
+     *
+     * Withdrawn under a page opened over the app - the box itself, the day, the settings.
+     * See [WP81Searchable].
+     */
+    override fun searchAction(): (() -> Unit)? =
+        if (overlays.isNotEmpty() || !::panorama.isInitialized) null else ({ showSearch() })
 
     /**
      * Adding a place: a box, and whatever the geocoder makes of what is in it.
@@ -1134,11 +1216,17 @@ class WeatherApp(
         overlays.add(view)
         root.addView(view, FrameLayout.LayoutParams(MATCH, MATCH))
         MetroPageTransition(view).playIn()
+        // The panorama is behind a page now, so the search key it was standing for goes
+        // back to Cortana until that page is closed. See searchAction.
+        onSearchOfferChanged?.invoke()
     }
 
     private fun dismissOverlay(view: View) {
         overlays.remove(view)
         MetroPageTransition(view).playOut { root.removeView(view) }
+        // Now rather than when the turn finishes: the key belongs to the screen the user
+        // is on their way to, not the one leaving.
+        onSearchOfferChanged?.invoke()
     }
 
     private fun hideKeyboard() {
@@ -1246,7 +1334,7 @@ class WeatherApp(
         !hasLocationPermission() && WeatherStore.selected(context)?.isHere == true ->
             actionNote(
                 "the phone has not been allowed to say where it is.  tap to allow it, " +
-                    "or add a place by name from the places section"
+                    "or press search below to add a place by name"
             ) { onAskForLocation() }
         else -> note("no reading yet.  pull the refresh from the strip below")
     }
@@ -1351,7 +1439,6 @@ class WeatherApp(
         const val DAY_MS = 24L * 60L * 60L * 1000L
 
         const val ICON_DIR = "custom_icons_8"
-        const val ADD_ICON = "$ICON_DIR/appbar.add.svg"
         const val REFRESH_ICON = "$ICON_DIR/appbar.refresh.svg"
         const val SETTINGS_ICON = "$ICON_DIR/appbar.cog.svg"
         const val MORE_ICON = "$ICON_DIR/appbar.chevron.down.svg"

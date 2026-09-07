@@ -100,6 +100,18 @@ class FolderPreviewView(
     private val scrimPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
     /**
+     * Whether the ground under the squares is a photograph being held down dark.
+     *
+     * A mini tile lightens what it sits on, which is how it reads as a tile at all on the
+     * accent. Over a darkened photograph that lightening is the dim being undone in
+     * exactly the squares the folder covers - the wall goes uniformly dark and the folder
+     * keeps a lit grid in the middle of it. So the block goes the other way instead: the
+     * same strength, in the direction the tile it is on is already going. See
+     * TileView.dimAllTiles.
+     */
+    private var darkGround = false
+
+    /**
      * This view's own offset into the rotation, 1-5 seconds.
      *
      * The same trick the tiles themselves use: without it every folder on Start would
@@ -177,13 +189,29 @@ class FolderPreviewView(
 
     fun applyPalette(p: WP81Palette) {
         palette = p
-        // The mini tiles are a lighter block of the same fill rather than a colour of
-        // their own: the folder is one tile subdivided, not a crowd of tiles pushed
-        // together, and a translucent block also leaves the Start background showing
-        // through when the tile is a window onto it.
-        scrimPaint.color = Color.argb(SCRIM_ALPHA, 255, 255, 255)
+        scrimPaint.color = scrimColor()
         for (cell in cells) cell.invalidate()
     }
+
+    /** Says which way the squares should mark themselves off. See [darkGround]. */
+    fun setDarkGround(dark: Boolean) {
+        if (darkGround == dark) return
+        darkGround = dark
+        scrimPaint.color = scrimColor()
+        for (cell in cells) cell.invalidate()
+    }
+
+    /**
+     * The block a mini tile lays over the tile's own face.
+     *
+     * A lighter block of the same fill rather than a colour of its own: the folder is one
+     * tile subdivided, not a crowd of tiles pushed together, and a translucent block also
+     * leaves the Start background showing through when the tile is a window onto it. On a
+     * darkened photograph it is the same block the other way up - see [darkGround].
+     */
+    private fun scrimColor(): Int =
+        if (darkGround) Color.argb(SCRIM_ALPHA, 0, 0, 0)
+        else Color.argb(SCRIM_ALPHA, 255, 255, 255)
 
     /** Starts the preview over: the first apps in the folder, in the first squares. */
     private fun seed() {

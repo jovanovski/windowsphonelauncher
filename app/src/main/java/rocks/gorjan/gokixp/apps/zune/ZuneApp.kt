@@ -27,6 +27,7 @@ import rocks.gorjan.gokixp.wp81.TiltEffect
 import rocks.gorjan.gokixp.wp81.MetroAppBar
 import rocks.gorjan.gokixp.wp81.WP81Palette
 import rocks.gorjan.gokixp.wp81.WP81Program
+import rocks.gorjan.gokixp.wp81.WP81Searchable
 import java.util.Locale
 import rocks.gorjan.gokixp.wp81.metroLook
 
@@ -67,7 +68,7 @@ class ZuneApp(
     private var palette: WP81Palette,
     private val onRequestPermissions: () -> Unit,
     private val hasAudioPermission: () -> Boolean
-) : WP81Program {
+) : WP81Program, WP81Searchable {
 
     // --- Library and queue --------------------------------------------------------------
     private var library: List<ZuneTrack> = emptyList()
@@ -481,34 +482,22 @@ class ZuneApp(
     // ---------------------------------------------------------------- the app bar
 
     /**
-     * The strip along the foot of the hub.
+     * The strip along the foot of the hub, which is now the dots and nothing else.
      *
-     * The two things you do to a library that are not "find a record and tap it" -
-     * start it all at random, and go looking for one thing by name - live here rather
-     * than as rows inside a shelf, which is where the phone put them and why a shelf on
-     * this platform is nothing but its own contents.
+     * Going looking for one thing by name was the ring on it, and has gone to the shell's
+     * search key: the key is lit for this app and opens the same page - see [searchAction].
+     * A magnifier on the strip directly above the magnifier on the key was the same command
+     * drawn twice, a thumb's width apart, and the one worth keeping is the one that is in
+     * the same place in every app on the phone.
+     *
+     * What is left is the list behind the dots - the commands with nowhere else to be.
+     * A strip that carries only those is a strip the phone itself had plenty of.
      *
      * The shell's own strip, not one of this app's own making: ground, rings, dots and
      * the list behind them are all [MetroAppBar]'s, and so is the theme they follow.
      */
     private fun buildAppBar(): MetroAppBar {
         val bar = MetroAppBar(context, palette)
-
-        // The two sit together in the middle, at the size and the spacing the shell's own
-        // strip uses - see WP81SecondaryBar. Spread to the corners, with the dots pushed
-        // out to the right by a gap, they read as unrelated buttons that happen to share a
-        // strip; together they read as what this app can be told to do.
-        //
-        // Only the two. Shuffling everything you own was on this strip and is a mark
-        // beside the cover as well, where it belongs: it is a setting the player is in
-        // rather than a command given to the library, and the same thing offered twice in
-        // two senses is worse than either.
-        bar.addCommand(R.drawable.wp81_nav_search) { showSearch() }
-
-        // What the dots reveal: the commands with nowhere else to be. Only those -
-        // repeating the ring standing an inch to their left, which is what the phone's bar
-        // did with its own, says nothing here: it is a magnifier, and nobody needs that
-        // named for them.
         bar.menu = { listOf(MetroAppBar.Item("refresh library") { refreshLibrary() }) }
         return bar
     }
@@ -523,6 +512,23 @@ class ZuneApp(
     }
 
     // ---------------------------------------------------------------- search
+
+    override var onSearchOfferChanged: (() -> Unit)? = null
+
+    /**
+     * The shell's search key, while the hub itself is on screen.
+     *
+     * The same command the ring on the strip carries, offered on the key as well because
+     * the key is the one you can find without looking. Every page of the panorama, since
+     * the strip is on all of them and searching a library is not a thing you do only from
+     * the shelf you happen to be standing on.
+     *
+     * Withdrawn under a page opened over the hub - a record, a shelf, the search page
+     * itself. Those have nothing of their own to search, and on the search page the key
+     * would be offering to open what is already open. See [WP81Searchable].
+     */
+    override fun searchAction(): (() -> Unit)? =
+        if (overlays.isNotEmpty() || !::panorama.isInitialized) null else ({ showSearch() })
 
     /**
      * One field and the songs that match it, as you type.
@@ -1467,11 +1473,15 @@ class ZuneApp(
     private fun pushOverlay(view: View) {
         overlays.add(view)
         root.addView(view, FrameLayout.LayoutParams(MATCH, MATCH))
+        // The hub is behind a page now, so the search key it was standing for goes back to
+        // Cortana until that page is closed. See searchAction.
+        onSearchOfferChanged?.invoke()
     }
 
     private fun dismissOverlay(view: View) {
         overlays.remove(view)
         root.removeView(view)
+        onSearchOfferChanged?.invoke()
     }
 
     /**

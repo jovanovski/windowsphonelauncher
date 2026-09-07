@@ -3,6 +3,7 @@ package rocks.gorjan.gokixp.wp81
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.res.ColorStateList
+import android.graphics.Color
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -44,6 +45,22 @@ class WP81NavBar(
     var onStartLongPress: (() -> Unit)? = null
     var onSearch: (() -> Unit)? = null
 
+    /**
+     * Holding the search key: Cortana, wherever the user is.
+     *
+     * The one key whose two meanings are not "this screen" and "the shell": the tap is
+     * lent to whatever is in front when that screen has a search of its own - the address
+     * book, the music library, the app list - and the hold is what it is lent against.
+     * Cortana is reachable from inside every one of those without leaving it first, which
+     * is the only reason the tap can be given away at all. See [WP81Searchable].
+     *
+     * Timed longer than the back key's hold, and for the opposite reason. Back means the
+     * same thing pressed slowly as pressed quickly, so a hold read early costs nothing;
+     * here a hold read early takes somebody who meant to search their contacts out of the
+     * address book entirely. See [SEARCH_HOLD_MS].
+     */
+    var onSearchLongPress: (() -> Unit)? = null
+
 
     private val backButton =
         button(R.drawable.wp81_nav_back) { onBack?.invoke() }
@@ -58,12 +75,22 @@ class WP81NavBar(
                 true
             }
         }
-    private val searchButton = button(R.drawable.wp81_nav_search) { onSearch?.invoke() }
+    private val searchButton =
+        button(
+            R.drawable.wp81_nav_search,
+            onHold = { onSearchLongPress?.invoke() },
+            holdMs = SEARCH_HOLD_MS
+        ) {
+            onSearch?.invoke()
+        }
 
     private val allButtons = listOf(backButton, startButton, searchButton)
 
     /** Whether the strip is wearing the accent. See [setAccented]. */
     private var accented = false
+
+    /** Whether the search key is standing for a search on the screen. See [setSearchOffered]. */
+    private var searchOffered = false
 
     init {
         orientation = HORIZONTAL
@@ -102,12 +129,14 @@ class WP81NavBar(
     private fun button(
         iconRes: Int,
         /**
-         * What a full second on this key means, or null for a key that only taps.
+         * What holding this key means, or null for a key that only taps.
          *
          * Taken here rather than set by the caller afterwards, because a view has one
          * touch listener and [TiltEffect] is already using it - see [applyHold].
          */
         onHold: (() -> Unit)? = null,
+        /** How long that hold has to last. Ignored by a key that only taps. */
+        holdMs: Long = HOLD_MS,
         onClick: () -> Unit
     ): ImageView =
         ImageView(context).apply {
@@ -134,7 +163,7 @@ class WP81NavBar(
                 Haptics.tap(it)
                 onClick()
             }
-            if (onHold == null) TiltEffect.apply(this) else applyHold(this, onHold)
+            if (onHold == null) TiltEffect.apply(this) else applyHold(this, holdMs, onHold)
         }
 
     /**
@@ -159,7 +188,7 @@ class WP81NavBar(
      * asked for. See [Haptics].
      */
     @SuppressLint("ClickableViewAccessibility")
-    private fun applyHold(key: ImageView, onHold: () -> Unit) {
+    private fun applyHold(key: ImageView, holdMs: Long, onHold: () -> Unit) {
         var fired = false
         val timer = Runnable {
             fired = true
@@ -170,7 +199,7 @@ class WP81NavBar(
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     fired = false
-                    view.postDelayed(timer, HOLD_MS)
+                    view.postDelayed(timer, holdMs)
                     false
                 }
                 // A finger that has wandered off the key is on its way somewhere else -
@@ -214,6 +243,25 @@ class WP81NavBar(
     }
 
     /**
+     * Lights the search key for a search on the screen behind it.
+     *
+     * The mark goes to the accent while the other two keys stay in the page's foreground.
+     * On a strip that is already wearing the accent there is no accent left to go to, so
+     * the mark goes black instead: everything drawn on an accent fill in this shell is
+     * white - see [WP81Palette.onAccent] - and the one key that is not white is therefore
+     * the one being pointed at. Both ways round it is the same idea, which is that this
+     * key is not painted like its neighbours.
+     *
+     * Said by the shell rather than worked out here, because what the key stands for is a
+     * fact about the screen in front - see [WP81Searchable] and `WP81Shell.refreshSearchKey`.
+     */
+    fun setSearchOffered(on: Boolean) {
+        if (searchOffered == on) return
+        searchOffered = on
+        repaint()
+    }
+
+    /**
      * What the strip is wearing, for the band below it to match.
      *
      * The keys stop at the top of the system's gesture bar, but the colour must not: a
@@ -229,6 +277,12 @@ class WP81NavBar(
             if (accented) palette.onAccent() else palette.foreground
         )
         for (b in allButtons) b.imageTintList = tint
+        if (searchOffered) {
+            // See setSearchOffered: the accent on an ordinary strip, black on one that is
+            // already wearing the accent.
+            searchButton.imageTintList =
+                ColorStateList.valueOf(if (accented) Color.BLACK else palette.accent)
+        }
     }
 
     companion object {
@@ -239,5 +293,17 @@ class WP81NavBar(
 
         /** How long the back key has to be held to mean the switcher. See [applyHold]. */
         private const val HOLD_MS = 200L
+
+        /**
+         * The same for the search key, which is held for Cortana.
+         *
+         * Twice as long, because this is the one key where tapping and holding go to
+         * different places and the tap is the one being aimed at. Two hundred milliseconds
+         * is inside the time an unhurried tap takes, which on back is fine - it goes back
+         * either way - and here would be a search key that opened Cortana on every
+         * deliberate press. Still short of the platform's own half second: the hold is a
+         * command, not a wait.
+         */
+        private const val SEARCH_HOLD_MS = 400L
     }
 }

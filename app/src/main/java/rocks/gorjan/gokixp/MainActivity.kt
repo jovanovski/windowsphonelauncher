@@ -481,10 +481,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         /** Inside this, an appointment is said as a countdown. See wp81EventWhen. */
         private const val RELATIVE_EVENT_MINUTES = 120L
 
-        // The two tiles the shell still provides itself. The rest of the widget ids are
+        // The one tile the shell still provides itself. The rest of the widget ids are
         // WP81TileHost's, which is where what became of them is written down.
         private const val WP81_WIDGET_CALENDAR = "wp81.widget.calendar"
-        private const val WP81_WIDGET_AQI = "wp81.widget.aqi"
         private const val KEY_WP81_BUILTIN_TILES = "wp81_builtin_tiles"
 
         /** Set once the phone's custom icons have been moved off the desktop themes' keys. */
@@ -578,8 +577,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         private const val KEY_WEATHER_DATA = "weather_data"
         private const val KEY_WEATHER_TIMESTAMP = "weather_timestamp"
         private const val KEY_WEATHER_UNIT = "weather_unit"
-        private const val KEY_AQI_DATA = "aqi_data"
-        private const val KEY_AQI_TIMESTAMP = "aqi_timestamp"
         private const val KEY_SHOW_CALENDAR_EVENTS = "show_calendar_events"
         private const val KEY_IE_HOMEPAGE = "ie_homepage"
         private const val KEY_SWIPE_RIGHT_APP = "swipe_right_app"
@@ -588,7 +585,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         private const val KEY_SHOWN_WELCOME_FOR_VERSION = "shown_welcome_for_version"
         private const val KEY_LAST_GOOGLE_DRIVE_SYNC = "last_google_drive_sync"
         private const val KEY_OPEN_URLS_IN_IE = "open_urls_in_ie"
-        private const val KEY_SHOW_AQI = "show_aqi"
 
         /**
          * The last app the launcher sent the user to, for back-back on Start.
@@ -613,8 +609,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // How far back the phone's app history is read went with the reading of it, into
         // rocks.gorjan.gokixp.wp81.RecentAppsStore.
 
-        private const val AIRCARE_URL = "https://getaircare.com"
-
         private const val LOCATION_PERMISSION_REQUEST_CODE = 1001
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1002
 
@@ -626,6 +620,34 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
         /** That the shell's own programs have been filed. See seedWindowsAppsFolder. */
         private const val KEY_WINDOWS_APPS_FOLDER_SEEDED = "wp81_windows_apps_folder_seeded"
+
+        /**
+         * Which of the shell's programs have been offered to that folder, by package.
+         *
+         * The boolean above only says that the filing happened, which was enough while the
+         * set of programs was fixed and stopped being enough the moment one was added: an
+         * install from before Cortana existed has the flag set, so she would never be filed
+         * on that phone however many times it started up.
+         *
+         * A record of what has been offered answers that without ever fighting the user's
+         * own arrangement. A program is filed once; if they then take it out of the folder
+         * it stays out, because it is in here and will not be offered again.
+         */
+        private const val KEY_WINDOWS_APPS_FOLDER_FILED = "wp81_windows_apps_folder_filed"
+
+        /**
+         * Programs added to the shell after the folder above started being seeded.
+         *
+         * Needed only for the one upgrade where a phone has the old boolean and no record
+         * of what was filed under it. Everything not named here is taken to have been
+         * offered already - which is true, because the folder was filed from the whole list
+         * as it stood - and everything named here is offered now.
+         *
+         * **A new built-in program belongs on this list.** Leave it off and it will be
+         * filed for people installing fresh and never appear for anybody who already has
+         * the launcher, which is the bug this whole mechanism exists to stop.
+         */
+        private val WINDOWS_APPS_FOLDER_LATE_ADDITIONS = setOf("system.cortana")
 
         /**
          * That the five live widgets have been handed to their programs. See
@@ -658,6 +680,15 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
          * asks the system directly, at the moment it matters.
          */
         private const val PEOPLE_PERMISSION_REQUEST_CODE = 1007
+
+        /**
+         * Cortana asking to use the microphone, so she can name what is playing.
+         *
+         * Its own code rather than the keyboard's: the keyboard asks for the same
+         * permission in order to take dictation, and the two want different things done
+         * when the answer comes back.
+         */
+        private const val CORTANA_MICROPHONE_REQUEST_CODE = 1008
 
         /** This app's own missed-call notification, asking for the page its call is on. */
         const val ACTION_SHOW_CALL_HISTORY = "rocks.gorjan.gokixp.action.SHOW_CALL_HISTORY"
@@ -715,6 +746,19 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
          * strip is smaller still. See [loadWallpaperPreview].
          */
         private const val WALLPAPER_PREVIEW_PX = 512
+
+        /**
+         * Where a picked Start background is kept, under the app's own storage.
+         *
+         * One slot, overwritten by the next pick: the picker grants read access for the
+         * session only, so the picture has to be copied somewhere that outlives a reboot -
+         * and a phone that keeps every photograph the user ever tried is a phone quietly
+         * filling up. See [copyWP81BackgroundLocally] and [wp81CustomBackgroundPath].
+         */
+        private const val WP81_BACKGROUND_FILE = "wp81_start_background.img"
+
+        /** The height of a square in the settings page's wallpaper strip, in dp. */
+        private const val WP81_STRIP_TILE_DP = 120
 
         private var instance: MainActivity? = null
 
@@ -1056,6 +1100,13 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             showFilesDialog()
         }
 
+        // Cortana, which is also where the search key goes - see the shell's onCortana.
+        // Registered here as well so she can be pinned and opened from the app list like
+        // anything else, the way the phone let Cortana be pinned to Start.
+        systemAppActions["system.cortana"] = { _ ->
+            showCortanaDialog()
+        }
+
         Log.d("MainActivity", "System apps initialized: ${systemAppActions.size} apps")
     }
 
@@ -1213,6 +1264,23 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             ))
         }
 
+        // Cortana, which is what the search key opens. She is in the list as well because
+        // the phone had her there and let her be pinned: the key is the way you reach her
+        // without thinking about it, and the tile is the way you reach her on purpose.
+        AppCompatResources.getDrawable(this, R.drawable.wp81_glyph_cortana)?.let { glyph ->
+            // The glyph is drawn white for tiles; the app list is not always dark, so it
+            // takes the accent here rather than vanishing on a Light theme.
+            val tinted = glyph.mutate()
+            androidx.core.graphics.drawable.DrawableCompat.setTint(
+                tinted, themeManager.getWP81Accent())
+            systemApps.add(AppInfo(
+                name = "Cortana",
+                exeName = "cortana.exe",
+                packageName = "system.cortana",
+                icon = iconStore.square(tinted)
+            ))
+        }
+
         // Minesweeper - scale icon to match app icon size
         val minesweeperDrawable = AppCompatResources.getDrawable(this,R.drawable.wp81_glyph_minesweeper)
         if (minesweeperDrawable != null) {
@@ -1363,8 +1431,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         return prefs.getBoolean(KEY_OPEN_URLS_IN_IE, false) // Default to the system default browser
     }
-
-    fun isShowAqiEnabled(): Boolean = wp81TileHost.showAqi()
 
 
     /**
@@ -1546,6 +1612,12 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                                 // list. Backing out of one of those is a step inside the
                                 // app rather than a way out of it.
                                 Log.d("MainActivity", "Back pressed (modern): handled by Notepad")
+                            } else if (frontWindow?.windowIdentifier == "system.cortana" &&
+                                cortanaAppInstance?.handleBack() == true
+                            ) {
+                                // Her settings were open over the greeting. Backing out of
+                                // those is a step inside the app rather than a way out of it.
+                                Log.d("MainActivity", "Back pressed (modern): handled by Cortana")
                             } else if (frontWindow?.windowIdentifier == "system.minesweeper" &&
                                 metroMinesweeperInstance?.handleBack() == true
                             ) {
@@ -2521,6 +2593,10 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             }
         )
         zuneAppInstance = zuneApp
+        // The library has a search of its own, so the key is lent to it while this is the
+        // program in front - and given back when a record or a shelf is opened over it.
+        // See refreshWP81SearchOffer.
+        zuneApp.onSearchOfferChanged = { refreshWP81SearchOffer() }
 
         val zuneView = zuneApp.createView()
         windowsDialog.setContentView(zuneView)
@@ -2593,6 +2669,92 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
     private var calculatorAppInstance: rocks.gorjan.gokixp.apps.calculator.CalculatorApp? = null
 
+    /**
+     * Opens Cortana - the screen behind the phone's search key.
+     *
+     * Full-screen and chromeless like the rest of the shell's own programs, and one window
+     * only. Pressing search while she is already open is not a request for a second
+     * Cortana; it is the same request as the first time, so the window comes forward with
+     * a new greeting on it and an empty box - see [rocks.gorjan.gokixp.apps.cortana
+     * .CortanaApp.greetAfresh]. That is the one thing about this app that is not like the
+     * others: for everything else, coming back to a window means finding it where you left
+     * it, and the whole point of this one is the moment of arriving at it.
+     */
+    private fun showCortanaDialog() {
+        if (floatingWindowManager.findAndFocusWindow("system.cortana")) {
+            cortanaAppInstance?.greetAfresh()
+            cortanaAppInstance?.focusInput()
+            return
+        }
+
+        val windowsDialog = createThemedWindowsDialog()
+        windowsDialog.windowIdentifier = "system.cortana"
+
+        val cortana = rocks.gorjan.gokixp.apps.cortana.CortanaApp(
+            context = this,
+            palette = rocks.gorjan.gokixp.wp81.WP81Palette.from(themeManager),
+            onOpenUrl = { url, inIe ->
+                // Her own setting, not the shell's. A question asked here is not a link
+                // arriving from somewhere else, and the two get separate answers - see
+                // CortanaSettings.getSearchOpensInIe.
+                if (inIe) showInternetExplorerDialog(url) else openInExternalBrowser(url)
+            },
+            hasMicrophone = {
+                checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+                    PackageManager.PERMISSION_GRANTED
+            },
+            onAskForMicrophone = {
+                requestPermissions(
+                    arrayOf(android.Manifest.permission.RECORD_AUDIO),
+                    CORTANA_MICROPHONE_REQUEST_CODE
+                )
+            }
+        )
+        cortanaAppInstance = cortana
+
+        val view = cortana.createView()
+        windowsDialog.setContentView(view)
+        windowsDialog.setBorderless()
+        windowsDialog.setSaveState(false)
+        windowsDialog.setMaximizable(true)
+        windowsDialog.setTaskbarIcon(R.drawable.wp81_glyph_cortana)
+        windowsDialog.setTitle("Cortana")
+        windowsDialog.setOnCloseListener {
+            cortana.cleanup()
+            cortanaAppInstance = null
+        }
+        windowsDialog.setContextMenuView(contextMenu)
+        floatingWindowManager.showWindow(windowsDialog)
+        turnWP81PageIn(view)
+        // After the window is up, so there is something on screen for the field to take
+        // focus in - see CortanaApp.focusInput.
+        cortana.focusInput()
+    }
+
+    private var cortanaAppInstance: rocks.gorjan.gokixp.apps.cortana.CortanaApp? = null
+
+    /**
+     * Hands a URL to whatever Android would have opened it with.
+     *
+     * The counterpart to [showInternetExplorerDialog] for the one caller that has already
+     * decided which of the two it wants. [openUrlShortcut] makes that decision from the
+     * shell's own setting; Cortana makes it from hers, and so needs the other half of that
+     * function without the deciding.
+     *
+     * Falls back to the phone's own browser rather than failing silently: a search that
+     * produced nothing at all looks like a button that does not work.
+     */
+    private fun openInExternalBrowser(url: String) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Nothing on this phone would open $url", e)
+            showInternetExplorerDialog(url)
+        }
+    }
+
     private var peopleAppInstance: rocks.gorjan.gokixp.apps.people.PeopleApp? = null
 
     /**
@@ -2626,6 +2788,8 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             onNotify = { title, message -> showNotification(title, message) }
         )
         peopleAppInstance = people
+        // The address book is the search this key was made for. See refreshWP81SearchOffer.
+        people.onSearchOfferChanged = { refreshWP81SearchOffer() }
 
         val view = people.createView()
         windowsDialog.setContentView(view)
@@ -2736,12 +2900,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         wp81TileHost.saveBuiltInPlacements(
             mapOf(host.WIDGET_CALENDAR to (rocks.gorjan.gokixp.wp81.TileSize.SMALL_WIDE to 1))
         )
-
-        // The built-in tile the default wall leaves off. Hidden rather than left unplaced:
-        // an unplaced tile takes a negative index, which would put it in front of
-        // everything above. It is still reachable, and can be put back from the shell's
-        // own settings.
-        themeManager.setWP81HiddenTiles(setOf(host.WIDGET_AQI))
 
         // And the programs, at the indices that tile the four columns. The first four are
         // the ones whose tile is a live one - the clock beside the calendar, the forecast
@@ -2914,23 +3072,55 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      */
     private fun seedWindowsAppsFolder() {
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        if (prefs.getBoolean(KEY_WINDOWS_APPS_FOLDER_SEEDED, false)) return
-        prefs.edit { putBoolean(KEY_WINDOWS_APPS_FOLDER_SEEDED, true) }
+        val everything = getSystemAppsList()
+        val firstRun = !prefs.getBoolean(KEY_WINDOWS_APPS_FOLDER_SEEDED, false)
+
+        // What has already been offered. On a phone that was filed by an older build there
+        // is no such record, so it is reconstructed: that build filed the whole list as it
+        // stood, which is everything except the programs added since.
+        val offered: Set<String> = when {
+            prefs.contains(KEY_WINDOWS_APPS_FOLDER_FILED) ->
+                prefs.getString(KEY_WINDOWS_APPS_FOLDER_FILED, "")
+                    .orEmpty().split(",").filter { it.isNotBlank() }.toSet()
+            firstRun -> emptySet()
+            else -> everything.map { it.packageName }.toSet() -
+                WINDOWS_APPS_FOLDER_LATE_ADDITIONS
+        }
 
         // A program the user has hidden from the app list is one they have said they do
         // not want to see, and a tile in a folder is more visible than the list they hid
         // it from.
         val hidden = getHiddenApps()
-        val filing = getSystemAppsList().filterNot { it.packageName in hidden }
+        val filing = everything.filterNot { it.packageName in offered || it.packageName in hidden }
+
+        // Whatever happens below, every program the shell currently has counts as offered
+        // afterwards - including the hidden ones, which were considered and deliberately
+        // passed over. Written before the early returns, so a phone that cannot be filed
+        // for some other reason does not try again on every single startup.
+        prefs.edit {
+            putBoolean(KEY_WINDOWS_APPS_FOLDER_SEEDED, true)
+            putString(
+                KEY_WINDOWS_APPS_FOLDER_FILED,
+                everything.joinToString(",") { it.packageName }
+            )
+        }
+
         // Nothing to file is no folder at all: an empty one is worse than none.
         if (filing.isEmpty()) return
+
+        val folder = desktopIcons.firstOrNull { it.id == WINDOWS_APPS_FOLDER_ID }
+
+        // A folder that is not there on an upgrade is one the user threw away, and a
+        // program added since is not a reason to put it back. On a first run there is
+        // nothing to have thrown away, so one is made.
+        if (folder == null && !firstRun) return
 
         // A folder already wearing this id is the shell's own, from a run of this that was
         // interrupted or from an arrangement restored over the top of one. Filling it is
         // what was wanted either way, and a second folder under the same id would be one
         // the shell can no longer tell from the first.
         val folderIcon = AppCompatResources.getDrawable(this, R.drawable.folder_vista) ?: return
-        if (desktopIcons.none { it.id == WINDOWS_APPS_FOLDER_ID }) desktopIcons.add(
+        if (folder == null) desktopIcons.add(
             DesktopIcon(
                 name = WINDOWS_APPS_FOLDER_NAME,
                 packageName = WINDOWS_APPS_FOLDER_ID,
@@ -2959,12 +3149,18 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // Anything already in this folder is from a run of this that was interrupted, and
         // filing a second copy of it beside the first would be the one duplicate nobody
         // asked for.
-        val already = desktopIcons
-            .filter { it.parentFolderId == WINDOWS_APPS_FOLDER_ID }
-            .map { it.packageName }
-            .toSet()
-        filing.forEachIndexed { order, app ->
-            if (app.packageName in already) return@forEachIndexed
+        val contents = desktopIcons.filter { it.parentFolderId == WINDOWS_APPS_FOLDER_ID }
+        val already = contents.map { it.packageName }.toSet()
+        // After whatever is in there, rather than from zero: a program arriving on an
+        // upgrade goes on the end of a folder the user has already arranged, not on top of
+        // whatever is currently first in it.
+        // An icon with no index has never been placed, so it has no say in where the end
+        // of the folder is - hence mapNotNull rather than a maximum over nullables.
+        var next = (contents.mapNotNull { it.tileIndex }.maxOrNull() ?: -1) + 1
+
+        var filed = 0
+        for (app in filing) {
+            if (app.packageName in already) continue
             desktopIcons.add(
                 DesktopIcon(
                     name = app.name,
@@ -2976,17 +3172,18 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                     type = IconType.APP,
                     parentFolderId = WINDOWS_APPS_FOLDER_ID,
                     tileSize = medium,
-                    tileIndex = order,
+                    tileIndex = next,
                     tileSizeLandscape = medium,
-                    tileIndexLandscape = order
+                    tileIndexLandscape = next
                 )
             )
+            next++
+            filed++
         }
         saveDesktopIcons()
         Log.d(
             "MainActivity",
-            "Filed ${filing.size - already.size} of the shell's own programs " +
-                "in $WINDOWS_APPS_FOLDER_NAME"
+            "Filed $filed of the shell's own programs in $WINDOWS_APPS_FOLDER_NAME"
         )
     }
 
@@ -3264,6 +3461,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             onRequestClose = { windowsDialog.closeWindow() }
         )
         metroIEAppInstance = ieApp
+        // The address bar takes a search as readily as an address, and the key is how it
+        // is reached without going for the strip. See refreshWP81SearchOffer.
+        ieApp.onSearchOfferChanged = { refreshWP81SearchOffer() }
 
         val ieView = ieApp.createView(initialUrl, fromAnotherApp)
         windowsDialog.setContentView(ieView)
@@ -3430,6 +3630,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             onWeatherChanged = { refreshWP81Weather() }
         )
         weatherAppInstance = weather
+        // The box that finds a town is this app's search, and the key is how it is reached
+        // from the two sections that do not carry the plus. See refreshWP81SearchOffer.
+        weather.onSearchOfferChanged = { refreshWP81SearchOffer() }
 
         val view = weather.createView()
         windowsDialog.setContentView(view)
@@ -3676,12 +3879,22 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         path: String,
         maxPx: Int = WALLPAPER_PREVIEW_PX
     ): Drawable? = try {
+        // Either a bundled asset or the picture the user browsed for, which lives in app
+        // storage under a file:// path - see copyWP81BackgroundLocally. The phone's
+        // settings page shows both in the same strip, so both are read the same way.
+        fun open(): java.io.InputStream? =
+            if (path.startsWith("content://") || path.startsWith("file://")) {
+                contentResolver.openInputStream(path.toUri())
+            } else {
+                assets.open(path)
+            }
+
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        assets.open(path).use { BitmapFactory.decodeStream(it, null, bounds) }
+        open()?.use { BitmapFactory.decodeStream(it, null, bounds) }
         val options = BitmapFactory.Options().apply {
             inSampleSize = calculateInSampleSize(bounds, maxPx, maxPx)
         }
-        val decoded = assets.open(path).use { BitmapFactory.decodeStream(it, null, options) }
+        val decoded = open()?.use { BitmapFactory.decodeStream(it, null, options) }
         // Sampling only halves, so a tall wallpaper still lands well above the square it is
         // going in - 1344x2992 asked down to 252 comes back 336x748, a megabyte apiece and
         // seventy of them in the phone's strip. Scaled the rest of the way and the
@@ -4968,6 +5181,11 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                     ) {
                         // A menu, a rename or the note itself was open over the list.
                         Log.d("MainActivity", "Back pressed (legacy): handled by Notepad")
+                    } else if (frontWindow?.windowIdentifier == "system.cortana" &&
+                        cortanaAppInstance?.handleBack() == true
+                    ) {
+                        // Her settings were open over the greeting.
+                        Log.d("MainActivity", "Back pressed (legacy): handled by Cortana")
                     } else if (frontWindow?.windowIdentifier == "system.minesweeper" &&
                         metroMinesweeperInstance?.handleBack() == true
                     ) {
@@ -5297,93 +5515,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     
 
 
-    private fun handleAqiTap() {
-        val aqiAppPackage = "com.gorjan.airquality"
-        try {
-            val intent = packageManager.getLaunchIntentForPackage(aqiAppPackage)
-            if (intent != null) {
-                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK
-                startActivity(intent)
-                Log.d("MainActivity", "Launched AQI app: $aqiAppPackage")
-            } else {
-                // App not installed, open Play Store
-                openPlayStoreForAqiApp(aqiAppPackage)
-            }
-        } catch (e: Exception) {
-            Log.e("MainActivity", "Error launching AQI app", e)
-            openPlayStoreForAqiApp(aqiAppPackage)
-        }
-    }
-
-    private fun openPlayStoreForAqiApp(packageName: String) {
-        try {
-            val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("market://details?id=$packageName"))
-            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            startActivity(intent)
-        } catch (e: Exception) {
-            // Play Store not available, open in browser
-            val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://play.google.com/store/apps/details?id=$packageName"))
-            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            startActivity(intent)
-        }
-    }
-
-    private fun refreshAqiData() {
-        Log.d("MainActivity", "Refreshing AQI data with fresh GPS location...")
-        val locationContext = attributionContext("aqi")
-        val locationManager = locationContext.getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
-
-        try {
-            if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-                checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-
-                val locationListener = object : android.location.LocationListener {
-                    override fun onLocationChanged(location: android.location.Location) {
-                        Log.d("MainActivity", "Got fresh location for AQI: ${location.latitude}, ${location.longitude}")
-                        fetchAqiData(location.latitude, location.longitude)
-                        locationManager.removeUpdates(this)
-                    }
-                    override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
-                    override fun onProviderEnabled(provider: String) {}
-                    override fun onProviderDisabled(provider: String) {}
-                }
-
-                // Request fresh GPS location first, fall back to network
-                if (locationManager.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER)) {
-                    Log.d("MainActivity", "Requesting fresh GPS location for AQI...")
-                    locationManager.requestLocationUpdates(
-                        android.location.LocationManager.GPS_PROVIDER,
-                        0, 0f, locationListener)
-                } else if (locationManager.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER)) {
-                    Log.d("MainActivity", "GPS not available, using network location for AQI...")
-                    locationManager.requestLocationUpdates(
-                        android.location.LocationManager.NETWORK_PROVIDER,
-                        0, 0f, locationListener)
-                } else {
-                    Log.w("MainActivity", "No location provider available for AQI refresh")
-                }
-
-                // Timeout after 15 seconds - fall back to cached location
-                handler.postDelayed({
-                    locationManager.removeUpdates(locationListener)
-                    // Try cached location as fallback
-                    var cachedLocation: android.location.Location? = null
-                    if (locationManager.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER)) {
-                        cachedLocation = locationManager.getLastKnownLocation(android.location.LocationManager.GPS_PROVIDER)
-                    }
-                    if (cachedLocation == null && locationManager.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER)) {
-                        cachedLocation = locationManager.getLastKnownLocation(android.location.LocationManager.NETWORK_PROVIDER)
-                    }
-                    if (cachedLocation != null) {
-                        Log.d("MainActivity", "GPS timeout, using cached location for AQI")
-                        fetchAqiData(cachedLocation.latitude, cachedLocation.longitude)
-                    }
-                }, 15000)
-            }
-        } catch (e: SecurityException) {
-            Log.e("MainActivity", "Location permission denied for AQI refresh", e)
-        }
-    }
     
     
 
@@ -5570,8 +5701,10 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                                 // just been replaced underneath it.
                                 weatherAppInstance?.bind()
                             }
-                            // Also fetch AQI data
-                            fetchAqiData(latitude, longitude)
+                            // And the air, from the other server, for the same place.
+                            rocks.gorjan.gokixp.wp81.WeatherStore.refreshAirQuality(
+                                this@MainActivity, latitude, longitude
+                            ) { weatherAppInstance?.bind() }
                             return@Thread // Success - exit retry loop
                         } catch (e: Exception) {
                             Log.e("MainActivity", "Error parsing weather JSON on attempt ${attempt + 1}", e)
@@ -5701,60 +5834,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         }
     }
 
-    // AQI (Air Quality Index) methods
-    private fun fetchAqiData(latitude: Double, longitude: Double) {
-        // Don't hit the AirCare API at all when the indicator is disabled.
-        if (!isShowAqiEnabled()) return
-        Thread {
-            try {
-                val url = "https://getaircare.com/api/v4/api.php?requestType=point&lat=$latitude&lng=$longitude"
-                val connection = URL(url).openConnection() as HttpURLConnection
-                connection.requestMethod = "GET"
-                connection.connectTimeout = 10000
-                connection.readTimeout = 10000
-
-                val responseCode = connection.responseCode
-                if (responseCode == 200) {
-                    val response = connection.inputStream.bufferedReader().use { it.readText() }
-                    val jsonObject = org.json.JSONObject(response)
-                    val measurements = jsonObject.getJSONArray("measurements")
-
-                    // Find pid: 7 (EU AQI)
-                    var aqiValue: Int? = null
-                    for (i in 0 until measurements.length()) {
-                        val measurement = measurements.getJSONObject(i)
-                        if (measurement.getInt("pid") == 7) {
-                            aqiValue = measurement.getInt("val")
-                            break
-                        }
-                    }
-
-                    if (aqiValue != null) {
-                        saveAqiData(aqiValue)
-                        Log.d("MainActivity", "AQI updated successfully: $aqiValue")
-                    }
-                } else {
-                    Log.e("MainActivity", "AQI API error: $responseCode")
-                }
-            } catch (e: Exception) {
-                Log.e("MainActivity", "Error fetching AQI data", e)
-            }
-        }.start()
-    }
-
-    private fun saveAqiData(aqi: Int) {
-        try {
-            val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-            prefs.edit().apply {
-                putInt(KEY_AQI_DATA, aqi)
-                putLong(KEY_AQI_TIMESTAMP, System.currentTimeMillis())
-                apply()
-            }
-            Log.d("MainActivity", "AQI data saved: $aqi")
-        } catch (e: Exception) {
-            Log.e("MainActivity", "Error saving AQI data", e)
-        }
-    }
 
 
     private fun isNetworkAvailable(): Boolean {
@@ -5782,6 +5861,14 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         
         when (requestCode) {
+            // Cortana asked so that she could listen for a song. Either way the answer goes
+            // straight back to her: she is the screen that put the question up, and she is
+            // the one that has to say what happens next.
+            CORTANA_MICROPHONE_REQUEST_CODE -> cortanaAppInstance?.onMicrophoneAnswered(
+                grantResults.isNotEmpty() &&
+                    grantResults[0] == PackageManager.PERMISSION_GRANTED
+            )
+
             LOCATION_PERMISSION_REQUEST_CODE -> if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 // Permission granted, fetch weather
                 fetchLocationAndWeather()
@@ -5977,7 +6064,12 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // that id again - ids are minted from a package name and the clock, so even a
         // reinstall makes a new one. Left behind, it is a preference that grows by an entry
         // per deletion and is never read again.
-        ids.forEach { themeManager.setWP81TileColor(it, null) }
+        ids.forEach {
+            themeManager.setWP81TileColor(it, null)
+            // And whether it was holding its picture back, which is remembered the same
+            // way and would otherwise be left behind for the same reason.
+            themeManager.setWP81TilePicture(it, true)
+        }
     }
 
     /**
@@ -6471,7 +6563,8 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         "system.people" to R.drawable.wp81_glyph_people,
         "system.alarms" to R.drawable.wp81_glyph_clock,
         "system.weather" to R.drawable.wp81_glyph_weather,
-        "system.files" to R.drawable.wp81_glyph_files
+        "system.files" to R.drawable.wp81_glyph_files,
+        "system.cortana" to R.drawable.wp81_glyph_cortana
     )
 
 
@@ -6669,7 +6762,16 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             shell.contextMenu.show(app.name, wp81AppMenu(app), anchorY)
         }
 
-        shell.onSearch = { launchWebSearch() }
+        // The search key opens Cortana, which is what it did on Windows Phone 8.1 - the
+        // third capacitive key stopped being "search" and became "ask her" in that release,
+        // and it is one of the most recognisable things about the phone. It used to hand
+        // off to whatever Android app claims web search, which put Google's box on top of
+        // the launcher and was the one key on the phone that left it.
+        //
+        // Where the screen in front has a search of its own the tap goes there instead and
+        // the key wears the accent to say so; holding it is Cortana wherever the user is.
+        // See WP81Searchable, and the shell's searchHere.
+        shell.onCortana = { showCortanaDialog() }
         shell.appList.onSearchWeb = { query ->
             // Leaving search behind: coming back to a list still filtered to nothing, with
             // the keyboard up, is not where anyone wants to land after being sent away.
@@ -6705,6 +6807,17 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 }
             }
         }
+        shell.secondaryBar.onTilePicture = {
+            shell.selectedTile()?.let { tile ->
+                val shown = tile.id !in themeManager.getWP81TilesWithoutPicture()
+                themeManager.setWP81TilePicture(tile.id, !shown)
+                applyWP81TilePictures()
+                // The ring wears the accent while the picture is on, so the strip has to
+                // be asked again - the commands on it have not changed, only how one of
+                // them is drawn. See WP81SecondaryBar.setMode.
+                shell.refreshNavMode()
+            }
+        }
         shell.secondaryBar.onTileMenu = {
             // Anchored to the strip the command came from, so the list opens next to it.
             shell.selectedTile()?.let { tile ->
@@ -6735,6 +6848,11 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             // hidden, so closing one left the wall turned away on a black screen.
             if (wasCovered && visible == 0) shell.startScreen.playEntrance()
         }
+        // The search key is lent to the program in front, so it has to be asked again
+        // whenever a different one is - which is not the same moment as the count changing:
+        // a program brought forward over another changes who is being asked without
+        // changing how many there are.
+        floatingWindowManager.onFrontWindowChanged = { refreshWP81SearchOffer() }
         // And once now: the callback only fires on a change, so a program left open across
         // a theme switch would otherwise have the shell believing it was on Start.
         floatingWindowManager.notifyWindowVisibilityChanged()
@@ -6769,7 +6887,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                     // nothing is a command that answers a question nobody asked.
                     rocks.gorjan.gokixp.wp81.WP81ContextMenu.Item("hidden tiles") {
                         showWP81HiddenTiles()
-                    }.takeIf { themeManager.getWP81HiddenTiles().isNotEmpty() },
+                    }.takeIf { wp81RestorableTiles().isNotEmpty() },
                     rocks.gorjan.gokixp.wp81.WP81ContextMenu.Item("refresh app list") {
                         refreshWP81AppList()
                         showNotification("App list", "Looking for new apps")
@@ -7565,12 +7683,46 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         }
     }
 
+    /**
+     * Pushes the tiles that are holding their picture back onto the wall, and onto an open
+     * folder page.
+     *
+     * The walls rather than the tiles, for the reason [applyWP81DimAllTiles] does it that
+     * way: a tile rebuilt afterwards has to be born knowing. See
+     * StartScreenView.picturesHidden.
+     */
+    private fun applyWP81TilePictures() {
+        val shell = wp81Shell ?: return
+        val hidden = themeManager.getWP81TilesWithoutPicture()
+        shell.startScreen.picturesHidden = hidden
+        shell.folderPage.contents.picturesHidden = hidden
+    }
+
+    /**
+     * Pushes the dim-every-tile setting onto the wall, and onto an open folder page.
+     *
+     * The walls rather than the tiles, which hand it down: a tile built after the switch
+     * was thrown has to be born knowing it. See TileView.dimAllTiles.
+     */
+    private fun applyWP81DimAllTiles() {
+        val shell = wp81Shell ?: return
+        val dim = themeManager.getWP81DimAllTiles()
+        val amount = themeManager.getWP81DimAmount()
+        shell.startScreen.dimAllTiles = dim
+        shell.startScreen.dimAmount = amount
+        shell.folderPage.contents.dimAllTiles = dim
+        shell.folderPage.contents.dimAmount = amount
+    }
+
     private fun refreshWP81Tiles() {
         val shell = wp81Shell ?: return
         wp81TileHost.refreshColors()
         // Set before the tiles are built, so each one is born knowing which mark to wear.
         shell.startScreen.countsEnabled = themeManager.getWP81TileCounts()
         shell.startScreen.tileColorsHidden = themeManager.getWP81HideTileColors()
+        shell.startScreen.dimAllTiles = themeManager.getWP81DimAllTiles()
+        shell.startScreen.dimAmount = themeManager.getWP81DimAmount()
+        shell.startScreen.picturesHidden = themeManager.getWP81TilesWithoutPicture()
         shell.startScreen.columns = themeManager.getWP81Columns()
         buildWP81FolderPreviews()
         shell.startScreen.setTiles(
@@ -7756,10 +7908,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             // The weather turns through three faces of its own; it has no reverse.
             rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_WEATHER -> null
 
-            // One-sided: the index is on the front and the mark in the corner says which
-            // index it is. Nothing is held back for a reverse.
-            rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_AQI -> null
-
             // One-sided, like the index. What a calendar tile is for is the day you
             // are standing in - the date, and the next thing on it - and a face that
             // turns over to another day makes the reader wait to find out which day the
@@ -7818,7 +7966,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         tile: rocks.gorjan.gokixp.wp81.Tile
     ): Pair<Int?, Int?> = when (tile.kind) {
         rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_WEATHER -> null to null
-        rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_AQI -> null to null
         rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_CALENDAR -> null to null
         // The mark stays up on both faces: every one of them is a story, and a tile of
         // nothing but text needs something to say what it is.
@@ -7937,9 +8084,8 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_WEATHER,
             rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_NEWS,
             rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_PHOTOS -> wp81SystemGlyphs[tile.packageName]
-            // The shell's own two have no program behind them to take a mark from.
-            rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_CALENDAR,
-            rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_AQI -> null
+            // The shell's own has no program behind it to take a mark from.
+            rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_CALENDAR -> null
             // People is the one that steps aside for a notification, and the mark it steps
             // aside *to* is the notification rather than the program: a handset for a call
             // that went unanswered, a bubble for a message that arrived. Only while one of
@@ -8015,20 +8161,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
             rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_PEOPLE -> openWP81People()
 
-            rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_AQI -> {
-                // Tapping doubles as the opt-in, since the desktop checkbox that normally
-                // enables air quality lives inside Settings. Enabling it also asks for a
-                // reading, so the tile has something to show on the way back.
-                if (!isShowAqiEnabled()) {
-                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                        .edit { putBoolean(KEY_SHOW_AQI, true) }
-                    refreshAqiData()
-                }
-                // Then AirCare itself, which is where the taskbar indicator goes on every
-                // other theme - the tile is that indicator, and should not behave differently
-                // for being square.
-                handleAqiTap()
-            }
             rocks.gorjan.gokixp.wp81.Tile.Kind.SETTINGS -> openWP81Settings()
         }
     }
@@ -8216,6 +8348,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         themeManager.setWP81StartBackgroundFocusX(0.5f)
         applyWP81StartBackground()
         refreshWP81BackgroundControls()
+        // The square that was tapped to get here now wears what came back, so the strip
+        // shows what Start is wearing rather than losing the answer among the bundled set.
+        refreshWP81CustomBackground()
         // Nothing else is asked. Browsing for a picture is a request to dress Start, and
         // the command list used to open over the answer offering to dress the phone's own
         // walls as well - a second question nobody had asked, standing in the way of
@@ -8321,11 +8456,10 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     /**
      * Human-readable names for the hideable built-ins, for the restore list.
      *
-     * Two of them. Every other tile that used to be hideable is a program's now, and a
+     * One of them. Every other tile that used to be hideable is a program's now, and a
      * program's tile is unpinned rather than hidden - see [unpinOrHideWP81Tile].
      */
     private fun wp81BuiltInLabel(id: String): String = when (id) {
-        WP81_WIDGET_AQI -> "Air quality"
         WP81_WIDGET_CALENDAR -> "Calendar"
         else -> id
     }
@@ -8333,13 +8467,27 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     /** Lists what has been hidden, so any of it can be put back. */
     private fun showWP81HiddenTiles() {
         val shell = wp81Shell ?: return
-        val hidden = themeManager.getWP81HiddenTiles()
+        val hidden = wp81RestorableTiles()
         if (hidden.isEmpty()) return
-        val items = hidden.sorted().map { id ->
+        val items = hidden.map { id ->
             rocks.gorjan.gokixp.wp81.WP81ContextMenu.Item(wp81BuiltInLabel(id)) { restoreWP81Tile(id) }
         }
         shell.contextMenu.show("hidden tiles", items, shell.height * 0.4f)
     }
+
+    /**
+     * What is hidden and can still be put back.
+     *
+     * A tile the shell no longer provides cannot be restored - there is nothing left to
+     * restore it to - so a wall still carrying one is not offered the chance. Air quality
+     * is the one that leaves this way, and it leaves from almost every wall there is: the
+     * default arrangement hid it, so its id is in most users' hidden sets. Filtered rather
+     * than deleted, because the set is the desktop themes' as well as this shell's.
+     */
+    private fun wp81RestorableTiles(): List<String> =
+        themeManager.getWP81HiddenTiles()
+            .filterNot { it in rocks.gorjan.gokixp.wp81.WP81TileHost.RETIRED_WIDGETS }
+            .sorted()
 
     /** Placeholder icon for the AppInfo that [uninstallApp] only reads the package from. */
     private fun wp81BlankIcon(): Drawable =
@@ -8356,10 +8504,10 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         shell.openSettings()
         shell.settingsPage.setDefaultBrowser(isDefaultBrowser())
         refreshDefaultBrowser = { shell.settingsPage.setDefaultBrowser(isDefaultBrowser()) }
+        refreshWP81CustomBackground()
         Thread {
             val items = try {
-                // The strip's squares are 72x120dp - see WP81SettingsView.wallpaperTile.
-                val stripPx = (120 * resources.displayMetrics.density).toInt()
+                val stripPx = wp81StripPreviewPx()
                 loadWallpapers(previewPx = stripPx).mapNotNull { item ->
                     val drawable = item.drawable ?: return@mapNotNull null
                     item.filePath?.let { path -> path to drawable }
@@ -8401,6 +8549,14 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         shell.settingsPage.onHideTileColorsChanged = { hidden ->
             themeManager.setWP81HideTileColors(hidden)
             applyWP81TileColors()
+        }
+        shell.settingsPage.onDimAllTilesChanged = { dim ->
+            themeManager.setWP81DimAllTiles(dim)
+            applyWP81DimAllTiles()
+        }
+        shell.settingsPage.onDimAmountChanged = { amount ->
+            themeManager.setWP81DimAmount(amount)
+            applyWP81DimAllTiles()
         }
         shell.settingsPage.onTileCountsChanged = { enabled ->
             themeManager.setWP81TileCounts(enabled)
@@ -8566,7 +8722,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      * One slot, overwritten each time - only the current background is ever needed.
      */
     private fun copyWP81BackgroundLocally(uri: Uri): String? = try {
-        val target = java.io.File(filesDir, "wp81_start_background.img")
+        val target = java.io.File(filesDir, WP81_BACKGROUND_FILE)
         contentResolver.openInputStream(uri)?.use { input ->
             target.outputStream().use { output -> input.copyTo(output) }
         }
@@ -8574,6 +8730,38 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     } catch (e: Exception) {
         Log.e("MainActivity", "WP8.1: could not copy picked background", e)
         null
+    }
+
+    /** The picked background's path, or null where the user has never browsed for one. */
+    private fun wp81CustomBackgroundPath(): String? =
+        java.io.File(filesDir, WP81_BACKGROUND_FILE)
+            .takeIf { it.length() > 0 }
+            ?.let { Uri.fromFile(it).toString() }
+
+    /** The longest edge a square of the settings strip draws. See WP81SettingsView. */
+    private fun wp81StripPreviewPx(): Int =
+        (WP81_STRIP_TILE_DP * resources.displayMetrics.density).toInt()
+
+    /**
+     * Puts the picture the user browsed for on the settings page's browse square.
+     *
+     * There is no square of its own for it: one file, replaced by the next pick, is not a
+     * library. So it is worn by the square that went and got it - see
+     * WP81SettingsView.setCustomBackground - which is also the only place the user can see
+     * the wallpaper they chose themselves at all.
+     */
+    private fun refreshWP81CustomBackground() {
+        val shell = wp81Shell ?: return
+        val path = wp81CustomBackgroundPath()
+        if (path == null) {
+            shell.settingsPage.setCustomBackground(null, null)
+            return
+        }
+        val previewPx = wp81StripPreviewPx()
+        Thread {
+            val preview = loadWallpaperPreview(path, previewPx)
+            runOnUiThread { shell.settingsPage.setCustomBackground(path, preview) }
+        }.start()
     }
 
     /** Cached Start background at full sharpness, so a drag never re-decodes. */
@@ -8678,7 +8866,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             wp81BackgroundBitmap != null,
             themeManager.getWP81StartBackgroundBlur(),
             themeManager.getWP81StartBackgroundDrift(),
-            themeManager.getWP81HideTileColors()
+            themeManager.getWP81HideTileColors(),
+            themeManager.getWP81DimAllTiles(),
+            themeManager.getWP81DimAmount()
         )
     }
 
@@ -8801,6 +8991,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // Wired before the page is filled, so its tiles are built knowing it too.
         contents.countsEnabled = themeManager.getWP81TileCounts()
         contents.tileColorsHidden = themeManager.getWP81HideTileColors()
+        contents.dimAllTiles = themeManager.getWP81DimAllTiles()
+        contents.dimAmount = themeManager.getWP81DimAmount()
+        contents.picturesHidden = themeManager.getWP81TilesWithoutPicture()
         contents.columns = themeManager.getWP81Columns()
         shell.folderPage.onBack = { shell.closeFolder() }
     }
@@ -9156,9 +9349,11 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 Log.e("MainActivity", "WP8.1: failed to load apps", e)
                 emptyList()
             }
+            // Handed the lot, plus which of them are hidden: the page has an eye in its
+            // rail that shows the hidden ones on request, so which are left out is the
+            // list's to decide from one moment to the next rather than this loader's.
             val hidden = getHiddenApps()
-            val visible = apps.filterNot { it.packageName in hidden }
-            runOnUiThread { shell.setApps(visible) }
+            runOnUiThread { shell.setApps(apps, hidden) }
         }.start()
     }
 
@@ -9392,6 +9587,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         findViewById<View>(R.id.root_container)?.setBackgroundColor(palette.background)
         paintWP81NavBar()
         repaintOpenWP81Programs(palette)
+        // A rebuild costs a program the pages that were stacked over it - see WP81Program -
+        // so the screen the key was being lent to may not be there any more.
+        refreshWP81SearchOffer()
     }
 
     /**
@@ -9422,6 +9620,28 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     }
 
     /**
+     * Hands the shell whatever the program in front means by the search key.
+     *
+     * The shell cannot work this out for itself: programs are drawn in windows above it,
+     * by a container it knows nothing about, so it can neither see which one is on top nor
+     * ask it anything. This is the join - the front window's identifier gives the program,
+     * and a program that has a search says what its current screen would do with the key.
+     * Everything else - a program with no search, a program showing a page that has none,
+     * no program at all - comes back null, and the key stays Cortana's.
+     *
+     * Asked again rather than remembered, because the answer changes underneath: a page
+     * opened over the address book withdraws it, and closing that page offers it back. See
+     * [rocks.gorjan.gokixp.wp81.WP81Searchable].
+     */
+    private fun refreshWP81SearchOffer() {
+        val shell = wp81Shell ?: return
+        val front = floatingWindowManager.getFrontVisibleWindow()?.windowIdentifier
+        val program = openWP81Programs().firstOrNull { it.first == front }?.second
+        shell.programSearch =
+            (program as? rocks.gorjan.gokixp.wp81.WP81Searchable)?.searchAction()
+    }
+
+    /**
      * Every program that is open, against the window it is open in.
      *
      * Written out rather than discovered: each program is held in a field of its own,
@@ -9440,6 +9660,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             weatherAppInstance?.let { "system.weather" to it },
             metroNotepadAppInstance?.let { "system.notepad" to it },
             calculatorAppInstance?.let { "system.calculator" to it },
+            cortanaAppInstance?.let { "system.cortana" to it },
             metroMinesweeperInstance?.let { "system.minesweeper" to it },
             metroSolitaireInstance?.let { "system.solitare" to it },
             welcomeAppInstance?.let { "system.welcome" to it }

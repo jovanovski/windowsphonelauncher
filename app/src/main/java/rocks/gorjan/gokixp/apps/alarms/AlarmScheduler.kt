@@ -84,9 +84,10 @@ object AlarmScheduler {
      * Snoozes an alarm that is going off.
      *
      * Written to the alarm rather than scheduled directly, so that it survives this
-     * process being killed between now and nine minutes' time - which, on a phone that has
+     * process being killed between now and three minutes' time - which, on a phone that has
      * just been woken at six in the morning to ring, is not a remote possibility. The
-     * store's write reschedules.
+     * store's write reschedules, and [bookWarning] puts up the notice saying when it is
+     * coming back.
      */
     fun snooze(context: Context, id: Long, minutes: Int) {
         val until = System.currentTimeMillis() + minutes * 60_000L
@@ -111,6 +112,21 @@ object AlarmScheduler {
         alarm: Alarm,
         now: Long
     ) {
+        // A snoozed alarm is the one case where the next thing to happen is not the next
+        // occurrence, and the notice follows the alarm rather than the timetable: it says
+        // when the phone is going to go off again, which after a snooze is a number that
+        // moves every time the key is pressed. Put up at once rather than booked, because
+        // three minutes is shorter than the notice is long.
+        val snooze = alarm.snoozedUntil.takeIf { it > now }
+        if (snooze != null) {
+            AlarmWarning.postSnooze(context, alarm, snooze)
+            // No second notice is booked for the occurrence after this one. Every way out
+            // of a snooze - ringing again, being called off from the notification, the
+            // alarm being switched off - is a write to the store, and every write comes
+            // back through here with the snooze gone and books it then.
+            return
+        }
+
         val occurrence = nextOccurrence(alarm, now)
         if (alarm.warnedFor == occurrence) return
 

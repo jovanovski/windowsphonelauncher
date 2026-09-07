@@ -390,11 +390,16 @@ class AlarmsApp(
             }
             TiltEffect.apply(this)
         }
-        // Stop then snooze, as on the ring screen and in the shade.
-        commands.addView(word("stop", AlarmRingService.ACTION_DISMISS))
+        // Snooze then stop, as on the ring screen and in the shade. The screen colours the
+        // two orange and red; this banner cannot, because it is drawn on the accent itself
+        // and one of those two colours is the accent about half the time. White on the
+        // accent, in the same order, is the version of that distinction this strip can
+        // keep - and it is a strip inside the app, read by somebody already looking at it,
+        // rather than a key pressed in the dark.
         if (!ringing.isCountdown) {
             commands.addView(word("snooze", AlarmRingService.ACTION_SNOOZE))
         }
+        commands.addView(word("stop", AlarmRingService.ACTION_DISMISS))
         banner.addView(commands, wide())
         return banner
     }

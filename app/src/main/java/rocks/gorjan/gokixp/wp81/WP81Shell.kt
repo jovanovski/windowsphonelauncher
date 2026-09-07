@@ -70,7 +70,27 @@ class WP81Shell(
     private var dragStartProgress = 0f
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
 
-    var onSearch: (() -> Unit)? = null
+    /**
+     * Cortana, whom the host owns the window of.
+     *
+     * What the search key means wherever nothing on screen has claimed it, and what
+     * holding it means everywhere - see [WP81NavBar.onSearchLongPress].
+     */
+    var onCortana: (() -> Unit)? = null
+
+    /**
+     * What the program in front means by search, or null if it means nothing.
+     *
+     * Set by the host: the shell cannot see the windows programs are drawn in, and cannot
+     * tell which of them is on top. See [WP81Searchable], which is the other end of this,
+     * and `MainActivity.refreshWP81SearchOffer`, which asks the program in front what its
+     * current screen would do with the key.
+     */
+    var programSearch: (() -> Unit)? = null
+        set(value) {
+            field = value
+            refreshSearchKey()
+        }
 
 
     init {
@@ -157,7 +177,10 @@ class WP81Shell(
         // each bring up the commands for that job, above the keys rather than instead of
         // them.
         startScreen.onEditModeChanged = { editing -> refreshNavMode() }
-        navBar.onSearch = { onSearch?.invoke() }
+        // Tapped: whatever is in front, if it has a search; Cortana if it has not.
+        // Held: Cortana, always. See searchHere.
+        navBar.onSearch = { (searchHere() ?: onCortana)?.invoke() }
+        navBar.onSearchLongPress = { onCortana?.invoke() }
 
         post { applyPageProgress(0f) }
     }
@@ -181,13 +204,16 @@ class WP81Shell(
     }
 
     /**
-     * Chooses the app bar for whatever is currently on screen.
+     * Chooses the app bar for whatever is currently on screen, and says whether the search
+     * key is standing for a search of it.
      *
-     * The three keys are not part of this any more - they are the same three wherever the
+     * The three keys are otherwise not part of this - they are the same three wherever the
      * user is - but every call site that used to mean "the strip has to change" still
-     * means it, so the name stays.
+     * means it, so the name stays, and the one key that does follow the screen is answered
+     * from here rather than from a second set of call sites saying the same thing.
      */
     fun refreshNavMode() {
+        refreshSearchKey()
         secondaryBar.setMode(
             when {
                 // A folder page is on top when open, so its selection wins.
@@ -198,7 +224,8 @@ class WP81Shell(
             },
             // Both editing commands act on the selected tile, so they are offered only
             // when there is one.
-            hasSelection = selectedTile() != null
+            hasSelection = selectedTile() != null,
+            picture = selectedTilePicture()
         )
     }
 
@@ -227,6 +254,17 @@ class WP81Shell(
     /** The tile currently selected, on whichever surface is on top. */
     fun selectedTile(): Tile? =
         if (isFolderOpen()) folderPage.contents.editingTile else startScreen.editingTile
+
+    /**
+     * Whether the selected tile is showing a picture, or null if it has none.
+     *
+     * Asked of the surface rather than worked out from the tile: whether there is a
+     * photograph behind a face is something the tile itself knows and the arrangement
+     * does not - it depends on the stories the feed came back with and on what happens to
+     * be playing. See StartScreenView.editingPicture.
+     */
+    fun selectedTilePicture(): Boolean? =
+        if (isFolderOpen()) folderPage.contents.editingPicture else startScreen.editingPicture
 
     /** Ends editing on whichever surface is on top. */
     fun exitEditModeEverywhere() {
@@ -365,6 +403,32 @@ class WP81Shell(
     /** Whether the Start screen itself is what the user is looking at. */
     fun isOnStartPage(): Boolean = where() == Place.START
 
+    /**
+     * What the search key would do where the user is standing, or null for Cortana.
+     *
+     * The app list is the shell's own answer to this: it is a page with a search band
+     * built into it, and the key that draws a magnifying glass at the bottom of that page
+     * should fill it in rather than leave for Cortana. Everywhere else the shell goes -
+     * Start, a folder, settings - has nothing to search, and a program in front is asked
+     * for its own answer, which it may change from screen to screen. See [programSearch].
+     *
+     * Start is deliberately not "search the app list". Somebody on Start with a question
+     * has asked it of the phone, not of the list of things installed on it, and that is
+     * Cortana's.
+     */
+    private fun searchHere(): (() -> Unit)? = when (where()) {
+        Place.PROGRAM -> programSearch
+        // Already searching is not a reason to withhold it: the key then puts the cursor
+        // back in the field it opened, which is what somebody pressing it again wants.
+        Place.APP_LIST -> ({ appList.beginSearch() })
+        else -> null
+    }
+
+    /** Lights the search key, or puts it out, for wherever the user now is. */
+    fun refreshSearchKey() {
+        navBar.setSearchOffered(searchHere() != null)
+    }
+
     private fun animateTo(target: Float, animated: Boolean) {
         if (!animated) { applyPageProgress(target); return }
         ValueAnimator.ofFloat(pageProgress, target).apply {
@@ -487,7 +551,8 @@ class WP81Shell(
 
     // ---------------------------------------------------------------- state
 
-    fun setApps(apps: List<AppInfo>) = appList.setApps(apps)
+    fun setApps(apps: List<AppInfo>, hidden: Set<String> = emptySet()) =
+        appList.setApps(apps, hidden)
 
     fun setWindowBackdropVisible(visible: Boolean) {
         if (visible == (windowBackdrop.visibility == VISIBLE)) return

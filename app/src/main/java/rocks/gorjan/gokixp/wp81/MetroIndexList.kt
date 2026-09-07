@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.graphics.drawable.Drawable
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -125,6 +126,16 @@ abstract class MetroIndexList<T>(
     private val column = LinearLayout(context)
 
     /**
+     * The commands standing in the rail under the search ring.
+     *
+     * The gutter the ring is in runs the whole way down the page and no row ever enters
+     * it, so a list with a command of its own already has somewhere to put it that costs
+     * the rows nothing. They belong to the rail rather than to the band: they leave with
+     * the ring when search is asked for, because what goes is the gutter they stand in.
+     */
+    private val railButtons = mutableListOf<ImageView>()
+
+    /**
      * Whether the list is in search mode.
      *
      * Not read off the field's visibility, which is mid-animation for a fifth of a second
@@ -213,6 +224,31 @@ abstract class MetroIndexList<T>(
             LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
 
         applyPalette(palette)
+    }
+
+    /**
+     * Puts one more ring in the rail, under whatever is already standing there.
+     *
+     * Called by the subclass after [build], because which commands a list has is the one
+     * thing this class does not know about it - only where they go, how they are painted
+     * and when they leave.
+     */
+    protected fun addRailButton(glyph: Drawable?, onClick: () -> Unit): ImageView {
+        val ring = MetroAppBar.ring(context, palette.foreground, glyph, RING_INSET_DP)
+        ring.setOnClickListener { onClick() }
+        // Straight above the band, and so under the jump grid that was added after it: the
+        // grid covers the page whole, and a command left standing on top of it would be a
+        // command for a list nobody can see.
+        addView(ring, indexOfChild(header) + 1 + railButtons.size, LayoutParams(
+            dp(RING_DP), dp(RING_DP), Gravity.START or Gravity.TOP).apply {
+            marginStart = dp(RING_MARGIN_DP)
+            // Under the band the search ring is centred in - which leaves exactly the gap
+            // below it that this puts between any two of these - and one ring further down
+            // for each command already there.
+            topMargin = dp(BAND_DP + railButtons.size * (RING_DP + RAIL_BUTTON_GAP_DP))
+        })
+        railButtons.add(ring)
+        return ring
     }
 
     /**
@@ -445,22 +481,7 @@ abstract class MetroIndexList<T>(
         // movement - the gutter slides out and the rows take the width it had.
         applyListInset(animated)
 
-        // The rail leaves the way a column leaves: sideways, off its own edge. It is not a
-        // button on a page that could fade where it stands.
-        searchRing.animate().cancel()
-        if (hasSearchRing) {
-            if (animated) {
-                searchRing.animate()
-                    .translationX(-dp(RING_MARGIN_DP + RING_DP).toFloat())
-                    .setDuration(SWAP_MS)
-                    .setInterpolator(AccelerateInterpolator())
-                    .withEndAction { searchRing.visibility = GONE }
-                    .start()
-            } else {
-                searchRing.translationX = -dp(RING_MARGIN_DP + RING_DP).toFloat()
-                searchRing.visibility = GONE
-            }
-        }
+        slideRail(away = true, animated = animated)
 
         // Every letter square on screen rolls up into its own top edge and its row closes
         // with it, so the sections fold away instead of vanishing and leaving the rows to
@@ -518,7 +539,6 @@ abstract class MetroIndexList<T>(
         if (animated) postDelayed({ expandLetters = false }, LETTER_MS)
 
         searchBox.animate().cancel()
-        searchRing.animate().cancel()
         if (animated) {
             searchBox.animate()
                 .alpha(0f).translationY(dp(FIELD_RISE_DP).toFloat())
@@ -528,25 +548,44 @@ abstract class MetroIndexList<T>(
                     searchBox.setText("")
                 }
                 .start()
-
-            if (hasSearchRing) {
-                searchRing.visibility = VISIBLE
-                searchRing.animate()
-                    .translationX(0f)
-                    .setDuration(SWAP_MS)
-                    .setInterpolator(DecelerateInterpolator())
-                    .withEndAction(null)
-                    .start()
-            }
         } else {
             searchBox.visibility = GONE
             searchBox.setText("")
             searchBox.alpha = 1f
             searchBox.translationY = 0f
-            if (hasSearchRing) {
-                searchRing.visibility = VISIBLE
-                searchRing.translationX = 0f
+        }
+        slideRail(away = false, animated = animated)
+    }
+
+    /**
+     * The rail going, or coming back: the ring and every command under it, together.
+     *
+     * The rail leaves the way a column leaves - sideways, off its own edge - rather than
+     * fading where it stands, and it leaves as one thing, because it is one thing. What
+     * the user is watching is the gutter going, not a handful of buttons each deciding
+     * for itself.
+     */
+    private fun slideRail(away: Boolean, animated: Boolean) {
+        val offset = if (away) -dp(RING_MARGIN_DP + RING_DP).toFloat() else 0f
+        val rail = railButtons + listOfNotNull(searchRing.takeIf { hasSearchRing })
+        for (view in rail) {
+            view.animate().cancel()
+            if (!animated) {
+                view.translationX = offset
+                view.visibility = if (away) GONE else VISIBLE
+                continue
             }
+            // Back on screen before it moves, or there is nothing there to watch return.
+            if (!away) view.visibility = VISIBLE
+            view.animate()
+                .translationX(offset)
+                .setDuration(SWAP_MS)
+                .setInterpolator(
+                    if (away) AccelerateInterpolator() else DecelerateInterpolator())
+                // Gone once it is off, rather than left out in the margin taking presses
+                // meant for the field that has taken its place.
+                .withEndAction(if (away) Runnable { view.visibility = GONE } else null)
+                .start()
         }
     }
 
@@ -740,6 +779,10 @@ abstract class MetroIndexList<T>(
         val ink = ColorStateList.valueOf(p.foreground)
         searchRing.backgroundTintList = ink
         searchRing.imageTintList = ink
+        for (button in railButtons) {
+            button.backgroundTintList = ink
+            button.imageTintList = ink
+        }
         jumpList.applyPalette(p)
         // The held letter is one of the list's squares and takes the same accent as the
         // rest, but it is not one of the adapter's rows and is not rebound by them. Its
@@ -906,6 +949,14 @@ abstract class MetroIndexList<T>(
 
         /** Between the rail and the list it is beside. */
         const val RAIL_GAP_DP = 10
+
+        /**
+         * Between two rings standing in the rail.
+         *
+         * The same air the band already leaves under the search ring, so a column of
+         * commands is evenly spaced from the top of the page down.
+         */
+        private const val RAIL_BUTTON_GAP_DP = 10
 
         /**
          * The band the ring and the field share.

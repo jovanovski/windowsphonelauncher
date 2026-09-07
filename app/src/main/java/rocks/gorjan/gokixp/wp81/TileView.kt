@@ -34,7 +34,7 @@ class TileView(
     context: Context,
     var tile: Tile,
     private var palette: WP81Palette
-) : FrameLayout(context), TiltEffect.Target {
+) : FrameLayout(context), TiltEffect.Target, StartBackgroundWindow {
 
     /**
      * A tile stepped back behind the one being arranged rests slightly shrunk, so the
@@ -331,7 +331,50 @@ class TileView(
      * means neither has to know the other exists.
      */
     private val backdropForFace: Bitmap?
-        get() = if (media != null) mediaArt else faceBackdrop
+        get() = when {
+            !showsBackdrop -> null
+            media != null -> mediaArt
+            else -> faceBackdrop
+        }
+
+    /**
+     * Whether the tile draws the picture it has, or is left as a plain coloured tile.
+     *
+     * A story's photograph and an album cover are somebody else's picture arriving on a
+     * wall the user arranged: they carry the tile's own colour as a wash, but a row of
+     * them still reads as a row of photographs rather than as tiles. Turning one off is
+     * per tile - the news is worth looking at and the cover of whatever is playing is
+     * not, or the other way round - and it is offered wherever there is a picture to
+     * turn off; see [hasPicture] and WP81SecondaryBar.
+     *
+     * It is the drawing that stops, and the fetching with it: an off tile asks for
+     * nothing over the network and plays no clip. See [bindBackdrop].
+     */
+    var showsBackdrop: Boolean = true
+        set(value) {
+            if (field == value) return
+            field = value
+            // The picture is only asked for when it is going to be drawn, so turning it
+            // back on has to go and ask: the face is already up, and nothing else will
+            // fetch for it until the tile turns.
+            rotation.getOrNull(rotationIndex)?.let { bindBackdrop(it) }
+            invalidate()
+        }
+
+    /**
+     * Whether the tile has a picture behind its face at all.
+     *
+     * What decides whether the picture command is on the strip: a News tile whose feed
+     * carries no photographs has nothing to turn off, and offering the command there is
+     * a key that appears to do nothing.
+     *
+     * A face that asked not to be washed is not counted - the camera roll's. There the
+     * picture *is* the tile (see [LiveFace.washed]) and turning it off would leave an
+     * empty square rather than a plainer tile.
+     */
+    val hasPicture: Boolean
+        get() = if (media != null) mediaArt != null
+        else rotation.any { it.washed && it.image.isNotBlank() }
 
     /** Fetches a story's picture. Set by the host, which owns the network. */
     var backdropLoader: ((String, (Bitmap?) -> Unit) -> Unit)? = null
@@ -582,6 +625,40 @@ class TileView(
         set(value) {
             if (field == value) return
             field = value
+            applyFolderPreviewGround()
+            invalidate()
+        }
+
+    /**
+     * Whether the wash that carries text goes over every tile showing the photo.
+     *
+     * Off, the tile is darkened only while it has words of its own on it - see
+     * [showingOwnWords] - which is what those words need to be readable and nothing more.
+     * On, it is darkened whatever it is showing, so a wall where three tiles happen to be
+     * saying something is not a wall with three darker squares in it. Set by the host from
+     * the settings switch, for the same reason [tileColorsHidden] is.
+     */
+    var dimAllTiles: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            applyFolderPreviewGround()
+            invalidate()
+        }
+
+    /**
+     * How strongly [dimAllTiles] darkens the photograph, 0 (untouched) to 1 (black).
+     *
+     * The user's, from the slider beside the switch. Only the wash asked for as a look
+     * moves with it: the one a tile puts under its own words is there so white text can be
+     * read at all, and is [CONTENT_SCRIM_ALPHA] whatever this says.
+     */
+    var dimAmount: Float = CONTENT_SCRIM_ALPHA
+        set(value) {
+            val clamped = value.coerceIn(0f, 1f)
+            if (field == clamped) return
+            field = clamped
+            applyFolderPreviewGround()
             invalidate()
         }
 
@@ -593,6 +670,19 @@ class TileView(
      * accent every other tile happens to share with it.
      */
     val fillColor: Int get() = fill
+
+    /**
+     * Whether this tile is a window onto the Start photograph rather than a block of
+     * colour - the same question [drawFace] asks before it paints one.
+     *
+     * Read by the wall for the same reason [fillColor] is: the rules that fence an open
+     * folder off belong to the tile that was opened, so they show whatever it shows. A
+     * tile the user painted is solid and its rules are that colour; a tile left to the
+     * accent while a photograph is set is a window, and a solid rule beside it reads as a
+     * bar laid over the wallpaper rather than as the folder's own edge.
+     */
+    val showsStartBackground: Boolean
+        get() = customAccent == null && startBackground?.isRecycled == false
 
     private var startBackground: Bitmap? = null
     private var backgroundSrc: Rect? = null
@@ -1341,6 +1431,9 @@ class TileView(
     fun setTileColor(color: Int?) {
         if (customAccent == color) return
         customAccent = color
+        // A painted tile is a solid block, not a window, so nothing under its squares is
+        // being dimmed any more - see [drawFace].
+        applyFolderPreviewGround()
         invalidate()
     }
 
@@ -1394,6 +1487,7 @@ class TileView(
         hasFolderPreview = show
         preview.setEntries(entries)
         preview.visibility = if (show && !isEmptied) VISIBLE else GONE
+        applyFolderPreviewGround()
         iconRow.visibility = if (show || isEmptied) GONE else VISIBLE
         applyFolderPreviewGrid()
         // Re-derives the whole front: on a one-row tile the folder's name steps aside for
@@ -2155,9 +2249,14 @@ class TileView(
         }
         // The still is still asked for below, clip or not: it is the frame the tile shows
         // while the clip opens, and what it keeps if the clip will not play at all.
-        if (face.motion && face.image.isNotBlank()) playVideo(face.image) else stopVideo()
+        if (face.motion && face.image.isNotBlank() && showsBackdrop) playVideo(face.image)
+        else stopVideo()
         val loader = backdropLoader ?: return
-        if (face.image.isBlank()) return
+        // Nothing is fetched for a tile that has been told not to show it. The whole cost
+        // of a picture - the request, the decode, the bitmap held for as long as the face
+        // is up - belongs to the drawing, so switching it off has to switch that off too
+        // rather than quietly go on paying for a picture nobody can see.
+        if (face.image.isBlank() || !showsBackdrop) return
         val wanted = face.image
         loader(wanted) { bitmap ->
             if (bitmap == null) return@loader
@@ -2863,7 +2962,16 @@ class TileView(
         }
         if (!tile.kind.isLiveWidget) return
         val pad = dp(8)
-        if (liveBox.paddingBottom != band) liveBox.setPadding(pad + dp(2), 0, pad, band)
+        // The sides are set here too, so they are what the guard has to ask about as well.
+        // A tile with no name under it asks for the bottom padding it already has - none -
+        // and a guard that read only the band skipped the whole call and left the words
+        // running to both edges of the tile. The 2x1 story tile is where it showed: a
+        // headline is the one thing on a widget long enough to reach them.
+        val side = pad + dp(2)
+        if (liveBox.paddingLeft != side || liveBox.paddingRight != pad ||
+            liveBox.paddingBottom != band) {
+            liveBox.setPadding(side, 0, pad, band)
+        }
     }
 
     /**
@@ -3072,14 +3180,15 @@ class TileView(
      * across (normally the Start screen), and the offsets are where this tile sits inside
      * that area - which is what makes every tile line up into one continuous image.
      */
-    fun setStartBackground(bitmap: Bitmap?, src: Rect?, dest: Rect) {
+    override fun setStartBackground(bitmap: Bitmap?, src: Rect?, dest: Rect) {
         startBackground = bitmap
         backgroundSrc = src
         backgroundDest = dest
+        applyFolderPreviewGround()
         invalidate()
     }
 
-    fun setBackgroundOffset(x: Float, y: Float) {
+    override fun setBackgroundOffset(x: Float, y: Float) {
         if (x == backgroundOffsetX && y == backgroundOffsetY) return
         backgroundOffsetX = x
         backgroundOffsetY = y
@@ -3115,6 +3224,33 @@ class TileView(
                 (liveBox.visibility == VISIBLE || hasWeatherFace))
 
     /**
+     * How much black goes over the photograph on this tile's face, 0 to 1.
+     *
+     * The look the user asked for wins where it is on, so a wall set to dim is one tone
+     * rather than one tone with the talking tiles darker than the rest. Off, the wash is
+     * the readability one and lands only where there are words to read. See [drawFace].
+     */
+    private val faceWash: Float
+        get() = when {
+            dimAllTiles -> dimAmount
+            tileColorsHidden && showingOwnWords -> CONTENT_SCRIM_ALPHA
+            else -> 0f
+        }
+
+    /**
+     * Tells a folder's squares whether they are sitting on a darkened photograph.
+     *
+     * The wash goes down in [drawFace], under this view's children, so the preview draws
+     * over it and its mini tiles would otherwise lighten the dim straight back out of the
+     * squares they cover. See FolderPreviewView.setDarkGround.
+     */
+    private fun applyFolderPreviewGround() {
+        folderPreview?.setDarkGround(
+            customAccent == null && startBackground != null && faceWash > 0f
+        )
+    }
+
+    /**
      * Repaints the face after what the tile is showing has changed.
      *
      * The scrim in [drawFace] is decided from the faces that are up, and a child changing
@@ -3124,6 +3260,7 @@ class TileView(
      * a wall of forty.
      */
     private fun invalidateContentScrim() {
+        applyFolderPreviewGround()
         if (tileColorsHidden && customAccent == null && startBackground != null) invalidate()
     }
 
@@ -3206,8 +3343,12 @@ class TileView(
             // to what the photograph happens to be doing behind them. Everywhere else the
             // tile's own colour is what carries them; here it is a little black instead,
             // light enough that the picture is still the thing showing through.
-            if (tileColorsHidden && showingOwnWords) {
-                canvas.drawColor(Color.argb((255 * CONTENT_SCRIM_ALPHA).toInt(), 0, 0, 0))
+            // Or over the lot of them, where the user has asked for that: the same wash,
+            // asked for as a look rather than earned by what the tile is saying, and at
+            // whatever strength they set it to. See [faceWash].
+            val dim = faceWash
+            if (dim > 0f) {
+                canvas.drawColor(Color.argb((255 * dim).toInt(), 0, 0, 0))
             }
         } else {
             canvas.drawColor(fill)
@@ -3870,7 +4011,11 @@ class TileView(
          * brought with it and has only the headline to protect, where this lies over the
          * user's own picture - the thing the switch exists to show - so it goes only as
          * far as the text needs and no further.
+         *
+         * Public because it is also where the dim slider starts: a wall switched to dim
+         * every tile, and not touched further, sits at the tone the talking tiles were
+         * already wearing. See [dimAmount] and WP81Settings.getWP81DimAmount.
          */
-        private const val CONTENT_SCRIM_ALPHA = 0.45f
+        const val CONTENT_SCRIM_ALPHA = 0.45f
     }
 }

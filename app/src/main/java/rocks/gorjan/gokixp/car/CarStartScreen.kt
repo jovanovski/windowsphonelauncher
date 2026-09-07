@@ -214,10 +214,10 @@ class CarStartScreen(carContext: CarContext) : Screen(carContext) {
             // passed that could write: the car screen has no long-press and so no way to
             // rearrange anything, and it must not be able to disturb the phone's wall.
             //
-            // No icon list yet, which leaves the built-in live tiles - the clock, the
-            // weather, the calendar, air quality - since those are placed by preference
-            // rather than by an icon. The app tiles want the launcher's icon list, which
-            // is still only reachable from MainActivity.
+            // No icon list yet, which leaves the built-in live tile - the calendar -
+            // since that is placed by preference rather than by an icon. The app tiles
+            // want the launcher's icon list, which is still only reachable from
+            // MainActivity.
             // Read once and held: the wall asks for the list again for every tile it
             // colours, and re-parsing the whole arrangement each time would be absurd.
             media = MediaSessions(carContext)
@@ -475,12 +475,12 @@ class CarStartScreen(carContext: CarContext) : Screen(carContext) {
         const val ZUNE = "system.zune"
 
         /**
-         * The tiles the shell still provides itself, both of which the car wants.
+         * The tile the shell still provides itself, which the car wants.
          *
-         * The day and the air outside are exactly what a glance from the wheel is for, so
-         * neither is ever taken off the car's wall.
+         * The day is exactly what a glance from the wheel is for, so it is never taken off
+         * the car's wall.
          */
-        val SHELL_TILES = setOf(WP81TileHost.WIDGET_AQI, WP81TileHost.WIDGET_CALENDAR)
+        val SHELL_TILES = setOf(WP81TileHost.WIDGET_CALENDAR)
 
         /**
          * The live tiles the car leaves off, whoever they belong to.

@@ -405,15 +405,20 @@ class AlarmRingService : Service() {
             .setOngoing(true)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
 
-        // Snooze is for alarms. A countdown that had run out and could be put off for nine
-        // minutes would be a countdown that had not run out.
-        // Stop first, snooze second - the same order and the same words as the ring
+        // Snooze first, stop second - the same order and the same words as the ring
         // screen. Somebody reaching for a phone that is going off should not have to
-        // re-read which button is which depending on where they are looking at it.
-        builder.addAction(action("Stop", ACTION_DISMISS))
+        // re-read which button is which depending on where they are looking at it. The
+        // screen colours the two; the shade will not let a notification's buttons be
+        // coloured, so there the order is all the distinction there is, which is the more
+        // reason for it to be the same order.
+        //
+        // Snooze is for alarms. A countdown that had run out and could be put off for
+        // three minutes would be a countdown that had not run out - so a countdown has
+        // stop on its own, in the place stop occupies on the screen beside a hidden snooze.
         if (!ringing.isCountdown) {
             builder.addAction(action("Snooze", ACTION_SNOOZE))
         }
+        builder.addAction(action("Stop", ACTION_DISMISS))
         return builder.build()
     }
 

@@ -93,6 +93,7 @@ class WelcomeApp(
             clipChildren = false
         }
         panorama.addPage("about", page(buildWelcome()))
+        panorama.addPage("tips & tricks", page(buildTips()))
         if (permissions.isNotEmpty()) panorama.addPage("permissions", page(buildPermissions()))
         panorama.addPage("release notes", page(buildNotes()))
         column.addView(panorama, LinearLayout.LayoutParams(MATCH, 0, 1f))
@@ -128,6 +129,33 @@ class WelcomeApp(
         // already made it tappable, and twice is once too many.
         column.addView(link("the source, on GitHub", GITHUB_URL), wide())
         column.addView(link("donate to project", COFFEE_URL), wide())
+        return column
+    }
+
+    /**
+     * How to drive the thing.
+     *
+     * A page rather than a numbered list in the middle of the welcome paragraph, which is
+     * where these used to be and where nobody read them twice. Nothing here is discoverable
+     * by pressing things at random - a long press that resizes, a search button that means
+     * two different things - which is the whole reason for writing them down.
+     */
+    private fun buildTips(): View {
+        val column = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(4), dp(MARGIN_DP), dp(28))
+        }
+        for ((title, text) in TIPS) {
+            column.addView(TextView(context).apply {
+                this.text = title
+                typeface = font(R.font.segoeui_semibold)
+                textSize = 12f
+                setTextColor(palette.accent)
+                setPadding(0, dp(16), 0, dp(3))
+                includeFontPadding = false
+            }, wide())
+            column.addView(body(text), wide())
+        }
         return column
     }
 
@@ -291,15 +319,46 @@ class WelcomeApp(
                 "Turning one on takes you to Android's own prompt or settings page. " +
                 "Coming back here, the switches show what you actually granted.\n"
 
+        /**
+         * The tips, each under the name of the thing it is about.
+         *
+         * Titled rather than numbered because a number is only an order, and somebody
+         * scrolling back to find the one about folders is looking for the word.
+         */
+        val TIPS = listOf(
+            "pin to start" to
+                "Press and hold any app in the list and choose pin to start. It becomes a " +
+                    "tile, and an app can have as many of them as you like.",
+            "move, resize, group" to
+                "Hold a tile and the wall goes into edit mode with that tile already in " +
+                    "your hand. Drag the chevron on its bottom corner to resize it, the pin " +
+                    "on the top corner to unpin it, and drop one tile onto another to make " +
+                    "a folder. Tap an empty space to finish.",
+            "cortana" to
+                "The search button at the bottom of the screen is Cortana. She searches the " +
+                    "web, puts a question to your favourite AI, or listens to whatever is " +
+                    "playing and tells you what it is.",
+            "search inside an app" to
+                "In an app that can search its own contents, the search button turns your " +
+                    "accent colour - tap it there and you are searching the app rather than " +
+                    "the web. Holding it always brings up Cortana, wherever you are.",
+            "settings" to
+                "Press and hold the Start button.",
+            "everything installed" to
+                "Swipe left from Start for the full app list.",
+            "live tiles" to
+                "People, Weather, Files & Photos and News turn themselves over with whatever " +
+                    "is new - a face, tomorrow's forecast, a photo, a headline.",
+            "the keyboard" to
+                "Enable this app's keyboard in Android's settings and you get the Windows " +
+                    "Phone keyboard everywhere, not just here."
+        )
+
         const val WELCOME_TEXT =
             "This is a passion project from Gorjan Jovanovski, a developer who grew up " +
                 "with the Metro design, and wanted the same experience but on a modern usable phone.\n\n" +
-                "A few tips:\n" +
-                "1) Long press on the start icon to access settings.\n" +
-                "2) Hold a tile to move it, resize it, or paint it another colour using the buttons on the bottom.\n" +
-                "3) Swipe left from Start for everything installed.\n" +
-                "4) Tap the corner of a tile to turn it over.\n" +
-                "5) Enable the app's keyboard to get a Windows Phone keyboard too'.\n\n" +
+                "Swipe across for tips and tricks, for the permissions the launcher asks for, " +
+                "and for what changed in this version.\n\n" +
                 "All the copyrighted information belongs to their respective authors; the " +
                 "aim here is to recreate nostalgia for fun.\n\n" +
                 "For any feature requests, drop me an email at hey@gorjan.rocks\n\n" +

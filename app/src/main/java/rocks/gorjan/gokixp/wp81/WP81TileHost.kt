@@ -157,7 +157,6 @@ class WP81TileHost(
         // indices so a first run sorts them ahead of any tiles the user already had; the
         // dense renumber that follows turns those into ordinary positions.
         val defaults = listOf(
-            Triple(WIDGET_AQI, "Air quality", Tile.Kind.LIVE_AQI),
             Triple(WIDGET_CALENDAR, "Calendar", Tile.Kind.LIVE_CALENDAR)
         )
         // Placements for tiles this no longer provides, so a wall built before they were
@@ -222,30 +221,12 @@ class WP81TileHost(
         return tileColors[parent]
     }
 
-    /** Whether the user opted in to air quality. */
-    fun showAqi(): Boolean = prefs.getBoolean("show_aqi", false)
-
-    /** The last air quality reading that was fetched, if there is one. */
-    fun cachedAqi(): Int? = try {
-        prefs.getInt("aqi_data", -1).takeIf { it >= 0 }
-    } catch (e: Exception) {
-        null
-    }
-
-    fun aqiLabel(aqi: Int): String = when {
-        aqi <= 26 -> "Good"
-        aqi <= 33 -> "Fair"
-        aqi <= 66 -> "Moderate"
-        aqi <= 100 -> "Poor"
-        else -> "Very poor"
-    }
-
     /**
      * What a live tile that shows one steady reading has to say right now.
      *
-     * The clock, the calendar and the index. The rest are absent on purpose: the weather,
-     * the news, the pictures and the faces are runs rather than single readings, and
-     * arrive through setLiveWidgetRotation and setPeopleMosaic instead.
+     * The clock and the calendar. The rest are absent on purpose: the weather, the news,
+     * the pictures and the faces are runs rather than single readings, and arrive through
+     * setLiveWidgetRotation and setPeopleMosaic instead.
      */
     fun liveContent(
         tile: Tile,
@@ -277,17 +258,6 @@ class WP81TileHost(
             }
 
             Tile.Kind.LIVE_CALENDAR -> calendarSummary(tile.size)
-
-            Tile.Kind.LIVE_AQI -> {
-                val aqi = if (showAqi()) cachedAqi() else null
-                // The index is the reading, and the caption over it says both what the
-                // number is and what it amounts to. Lower case: this shell shouts at nobody.
-                if (aqi == null) TileView.Reading("--", "aqi", "tap to enable")
-                else TileView.Reading(
-                    number = aqi.toString(),
-                    caption = "${aqiLabel(aqi).lowercase(locale)} aqi"
-                )
-            }
 
             else -> null
         }
@@ -594,6 +564,7 @@ class WP81TileHost(
         const val WIDGET_NEWS = "wp81.widget.news"
         const val WIDGET_PHOTOS = "wp81.widget.photos"
         const val WIDGET_PEOPLE = "wp81.widget.people"
+        /** Retired: the air is one of the Weather app's readings now. See RETIRED_WIDGETS. */
         const val WIDGET_AQI = "wp81.widget.aqi"
         const val WIDGET_WEATHER = "wp81.widget.weather"
         const val WIDGET_SETTINGS = "wp81.widget.settings"
@@ -632,7 +603,7 @@ class WP81TileHost(
          */
         val RETIRED_WIDGETS: List<String> = listOf(
             WIDGET_CLOCK, WIDGET_WEATHER, WIDGET_NEWS, WIDGET_PHOTOS, WIDGET_PEOPLE,
-            WIDGET_WELCOME, WIDGET_SETTINGS
+            WIDGET_WELCOME, WIDGET_SETTINGS, WIDGET_AQI
         )
 
         const val KEY_BUILTIN_TILES = "wp81_builtin_tiles"

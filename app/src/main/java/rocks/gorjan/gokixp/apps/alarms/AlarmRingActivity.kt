@@ -117,21 +117,28 @@ class AlarmRingActivity : Activity() {
         // screen is.
         page.addView(View(this), LinearLayout.LayoutParams(MATCH, 0, 1f))
 
-        // Side by side, stop on the left. A hand reaching for a phone that is going off
-        // is reaching for the button that makes it quiet, and that is the one that should
-        // be under the thumb first; snooze is the deliberate second choice beside it.
+        // Side by side, snooze on the left. The two keys are not equals: one of them buys
+        // another few minutes and the other ends the alarm for good, and a hand that
+        // arrives at this screen still asleep should land on the reversible one. Stop sits
+        // the width of a thumb away, in red, where it has to be aimed at.
+        //
+        // The colours carry the same distinction without being read - orange for the one
+        // that waits, red for the one that finishes - which at six in the morning is the
+        // difference between recognising a button and reading it.
         val commands = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        commands.addView(command("stop") {
-            AlarmRingService.send(this, AlarmRingService.ACTION_DISMISS)
-            finishAndRemoveTask()
-        }, LinearLayout.LayoutParams(0, WRAP, 1f))
         commands.addView(
-            command("snooze") {
+            command("snooze", SNOOZE_COLOR) {
                 AlarmRingService.send(this, AlarmRingService.ACTION_SNOOZE)
                 finishAndRemoveTask()
             }.also { snooze = it },
-            LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(12) }
+            // The gap belongs to snooze rather than to stop, so that a countdown - which
+            // has no snooze - leaves stop centred on the row instead of pushed off it.
+            LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginEnd = dp(12) }
         )
+        commands.addView(command("stop", DISMISS_COLOR) {
+            AlarmRingService.send(this, AlarmRingService.ACTION_DISMISS)
+            finishAndRemoveTask()
+        }, LinearLayout.LayoutParams(0, WRAP, 1f))
         page.addView(commands, wide())
 
         return page
@@ -144,18 +151,23 @@ class AlarmRingActivity : Activity() {
      * lowercase word in it. Full width here because there are two of them and they are the
      * only things on the lower half of the screen - a phone being answered in the dark
      * should not require aim.
+     *
+     * [color] draws the edge and the word both, rather than filling the rectangle: a
+     * solid block of red across half the screen is a warning, and an alarm going off is
+     * not one. The theme's accent is deliberately not used - these two have to mean orange
+     * and red whatever colour the wall happens to be set to this week.
      */
-    private fun command(text: String, onTap: () -> Unit): View = TextView(this).apply {
+    private fun command(text: String, color: Int, onTap: () -> Unit): View = TextView(this).apply {
         this.text = text
         typeface = ResourcesCompat.getFont(context, R.font.segoeui_regular)
         textSize = 20f
         gravity = Gravity.CENTER
-        setTextColor(palette.foreground)
+        setTextColor(color)
         setPadding(0, dp(18), 0, dp(18))
         background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             setColor(Color.TRANSPARENT)
-            setStroke(dp(2), palette.foreground)
+            setStroke(dp(2), color)
         }
         isClickable = true
         setOnClickListener {
@@ -249,6 +261,18 @@ class AlarmRingActivity : Activity() {
     companion object {
         private const val MATCH = LinearLayout.LayoutParams.MATCH_PARENT
         private const val WRAP = LinearLayout.LayoutParams.WRAP_CONTENT
+
+        /**
+         * The two keys' colours: Windows Phone's own Orange and Red.
+         *
+         * Taken from the same twenty the theme picker offers - see
+         * [rocks.gorjan.gokixp.wp81.WP81Settings.WP81_ACCENTS] - so that two colours the
+         * shell does not otherwise use still belong to it. Held as values rather than
+         * looked up by name from that list, which is a table of what the user may choose
+         * and not a place to address a colour from.
+         */
+        private val SNOOZE_COLOR = 0xFFFA6800.toInt()
+        private val DISMISS_COLOR = 0xFFE51400.toInt()
 
         /**
          * How the service and the notification both open this.

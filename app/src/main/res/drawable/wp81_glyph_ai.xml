@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  wp81_glyph_ai
+
+  The four-point sparkle that has come to mean "ask a model this" everywhere - one large
+  star with two small ones off its shoulder. Cortana's second button wears it, beside the
+  magnifier that means the plain search: the two glyphs are the whole of how that pair
+  says which kind of answer each one goes and gets.
+
+  Emitted white so callers can tint per accent / light-dark theme.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="32"
+    android:viewportHeight="32">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="m13.294 7.436.803 2.23c.892 2.475 2.841 4.424 5.316 5.316l2.23.803c.201.073.201.358 0 .43l-2.23.803c-2.475.892-4.424 2.841-5.316 5.316l-.803 2.23c-.073.201-.358.201-.43 0l-.803-2.23c-.892-2.475-2.841-4.424-5.316-5.316l-2.23-.803c-.201-.073-.201-.358 0-.43l2.23-.803c2.475-.892 4.424-2.841 5.316-5.316l.803-2.23c.072-.202.357-.202.43 0z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="m23.332 2.077.407 1.129c.452 1.253 1.439 2.24 2.692 2.692l1.129.407c.102.037.102.181 0 .218l-1.129.407c-1.253.452-2.24 1.439-2.692 2.692l-.407 1.129c-.037.102-.181.102-.218 0l-.407-1.129c-.452-1.253-1.439-2.24-2.692-2.692l-1.129-.407c-.102-.037-.102-.181 0-.218l1.129-.407c1.253-.452 2.24-1.439 2.692-2.692l.407-1.129c.037-.103.182-.103.218 0z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="m23.332 21.25.407 1.129c.452 1.253 1.439 2.24 2.692 2.692l1.129.407c.102.037.102.181 0 .218l-1.129.407c-1.253.452-2.24 1.439-2.692 2.692l-.407 1.129c-.037.102-.181.102-.218 0l-.407-1.129c-.452-1.253-1.439-2.24-2.692-2.692l-1.129-.407c-.102-.037-.102-.181 0-.218l1.129-.407c1.253-.452 2.24-1.439 2.692-2.692l.407-1.129c.037-.102.182-.102.218 0z" />
+</vector>

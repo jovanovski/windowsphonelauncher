@@ -411,6 +411,11 @@ object WeatherStore {
             onDone()
             return
         }
+        // Asked for alongside the forecast rather than after it. It is a second server,
+        // and a slow answer about the air must not hold up the temperature - so it runs on
+        // its own thread and calls [onDone] again when it lands, which is a redraw from
+        // the cache: the same thing the forecast's own answer ends in.
+        refreshAirQuality(context, point.first, point.second, onDone)
         fetching = true
         Thread {
             val response = read(forecastUrl(point.first, point.second))
@@ -430,6 +435,150 @@ object WeatherStore {
             fetching = false
             main.post { onDone() }
         }.start()
+    }
+
+    // ------------------------------------------------------------------ the air
+
+    /**
+     * Air quality, which is AirCare's answer rather than Open-Meteo's.
+     *
+     * It used to be a tile of its own on Start: a two-digit index and a word, standing
+     * beside the forecast and waiting on an opt-in the user had to find. It belongs here
+     * instead. The air is a fact about the weather where you are - nobody pins a second
+     * tile to decide whether to open a window - and as one of the forecast's own readings
+     * it arrives with everything else, fetched for whichever place the forecast is about
+     * rather than only for wherever the phone happens to be.
+     *
+     * The two keys the tile wrote are the two keys this reads, so a reading fetched before
+     * any of this carries straight over.
+     */
+    private const val KEY_AQI = "aqi_data"
+    private const val KEY_AQI_TIMESTAMP = "aqi_timestamp"
+
+    /**
+     * Which place the held reading is about.
+     *
+     * The forecast can be asked about anywhere and so can the air, and a reading taken for
+     * one town shown under another town's name is the one way this number can be actively
+     * wrong rather than merely old.
+     */
+    private const val KEY_AQI_PLACE = "aqi_place"
+
+    /**
+     * How old a reading may be before it is treated as no reading at all.
+     *
+     * Longer than the forecast's own window, and much shorter than a day. The air is
+     * fetched with every forecast, so a reading this old means the requests have been
+     * failing for hours - and an index from this morning presented as the air outside now
+     * is worse than an honest gap where the line would be.
+     */
+    private const val AQI_STALE_MS = 6L * 60L * 60L * 1000L
+
+    /** The app the reading comes from, and where anyone who taps it is sent. */
+    const val AIRCARE_PACKAGE = "com.gorjan.airquality"
+
+    /** Of everything AirCare measures, the one this shows: pid 7 is the European index. */
+    private const val AIRCARE_EU_INDEX = 7
+
+    /** The air where the forecast is, or null when there is no answer worth showing. */
+    fun airQuality(context: Context): Int? {
+        val prefs = prefs(context)
+        // Defaulted to "here", which is the only place the tile that used to write these
+        // keys could have been asking about.
+        if (prefs.getString(KEY_AQI_PLACE, WeatherPlace.HERE) != selectedId(context)) return null
+        val readAt = prefs.getLong(KEY_AQI_TIMESTAMP, 0L)
+        if (System.currentTimeMillis() - readAt > AQI_STALE_MS) return null
+        return prefs.getInt(KEY_AQI, -1).takeIf { it >= 0 }
+    }
+
+    /**
+     * What an index amounts to, in AirCare's own bands.
+     *
+     * The number alone is a scale nobody has memorised, exactly as the UV index is - see
+     * WeatherApp.uvReading, which says the same thing about its own.
+     */
+    fun airQualityLabel(aqi: Int): String = when {
+        aqi <= 26 -> "good"
+        aqi <= 33 -> "fair"
+        aqi <= 66 -> "moderate"
+        aqi <= 100 -> "poor"
+        else -> "very poor"
+    }
+
+    /**
+     * Asks AirCare about a point, and writes the answer through against the place the
+     * forecast is currently about.
+     *
+     * Nothing is called back on failure beyond the redraw: a missing reading is a line the
+     * details simply do not have, which is how every other optional field behaves.
+     */
+    fun refreshAirQuality(
+        context: Context,
+        latitude: Double,
+        longitude: Double,
+        onDone: () -> Unit = {}
+    ) {
+        val place = selectedId(context)
+        Thread {
+            val index = read(
+                "https://getaircare.com/api/v4/api.php" +
+                    "?requestType=point&lat=$latitude&lng=$longitude"
+            )?.let { indexIn(it) }
+            if (index != null) {
+                prefs(context).edit()
+                    .putInt(KEY_AQI, index)
+                    .putLong(KEY_AQI_TIMESTAMP, System.currentTimeMillis())
+                    .putString(KEY_AQI_PLACE, place)
+                    .apply()
+            }
+            main.post { onDone() }
+        }.start()
+    }
+
+    /** The European index out of AirCare's list of measurements, if it is in there. */
+    private fun indexIn(response: String): Int? = try {
+        val measurements = JSONObject(response).getJSONArray("measurements")
+        (0 until measurements.length())
+            .map { measurements.getJSONObject(it) }
+            .firstOrNull { it.optInt("pid", -1) == AIRCARE_EU_INDEX }
+            ?.optInt("val", -1)
+            ?.takeIf { it >= 0 }
+    } catch (e: Exception) {
+        Log.w(TAG, "could not read the air quality answer", e)
+        null
+    }
+
+    /**
+     * Opens AirCare, or the store page for it when it is not installed.
+     *
+     * The reading is theirs, and a number with nothing behind it is a dead end: the app is
+     * where the pollutants behind the index, the map and the forecast for it live. Falling
+     * back to the web store page as well as the market one, because a phone without Play
+     * Services still has a browser.
+     */
+    fun openAirCare(context: Context): Boolean {
+        val launch = context.packageManager.getLaunchIntentForPackage(AIRCARE_PACKAGE)
+        val destinations = if (launch != null) listOf(launch) else listOf(
+            android.content.Intent(
+                android.content.Intent.ACTION_VIEW,
+                android.net.Uri.parse("market://details?id=$AIRCARE_PACKAGE")
+            ),
+            android.content.Intent(
+                android.content.Intent.ACTION_VIEW,
+                android.net.Uri.parse(
+                    "https://play.google.com/store/apps/details?id=$AIRCARE_PACKAGE")
+            )
+        )
+        for (intent in destinations) {
+            try {
+                intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(intent)
+                return true
+            } catch (e: Exception) {
+                Log.w(TAG, "could not open ${intent.data ?: AIRCARE_PACKAGE}", e)
+            }
+        }
+        return false
     }
 
     /**
@@ -933,6 +1082,17 @@ object WeatherStore {
     // ------------------------------------------------------------------ plumbing
 
     /** One request, with the retry left out: the caller is a background thread either way. */
+    /**
+     * Who a request was to, for the log.
+     *
+     * The host and nothing else: this fetches from two servers now and "the request
+     * failed" does not say which of them was silent, but the rest of the URL is a pair of
+     * coordinates and logcat is not the place for those. Cut out of the string rather than
+     * parsed, so it cannot itself throw from inside the handler for a throw.
+     */
+    private fun hostOf(url: String): String =
+        url.substringAfter("//").substringBefore('/')
+
     private fun read(url: String): String? {
         var connection: HttpURLConnection? = null
         return try {
@@ -941,13 +1101,13 @@ object WeatherStore {
             connection.connectTimeout = 10_000
             connection.readTimeout = 10_000
             if (connection.responseCode != 200) {
-                Log.w(TAG, "weather request answered ${connection.responseCode}")
+                Log.w(TAG, "${hostOf(url)} answered ${connection.responseCode}")
                 null
             } else {
                 connection.inputStream.bufferedReader().use { it.readText() }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "weather request failed", e)
+            Log.w(TAG, "${hostOf(url)} did not answer", e)
             null
         } finally {
             connection?.disconnect()

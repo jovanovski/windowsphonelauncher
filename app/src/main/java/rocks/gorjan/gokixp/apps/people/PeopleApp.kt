@@ -35,6 +35,7 @@ import rocks.gorjan.gokixp.wp81.WP81ContextMenu
 import rocks.gorjan.gokixp.wp81.WP81InputDialog
 import rocks.gorjan.gokixp.wp81.WP81Palette
 import rocks.gorjan.gokixp.wp81.WP81Program
+import rocks.gorjan.gokixp.wp81.WP81Searchable
 import rocks.gorjan.gokixp.wp81.applyToField
 import rocks.gorjan.gokixp.wp81.applyToPageText
 
@@ -81,7 +82,7 @@ class PeopleApp(
      */
     private val onBecomeMessenger: () -> Unit,
     private val onNotify: (String, String) -> Unit
-) : WP81Program {
+) : WP81Program, WP81Searchable {
 
     private lateinit var root: FrameLayout
     private lateinit var panorama: MetroPanorama
@@ -350,24 +351,54 @@ class PeopleApp(
     }
 
     /**
-     * The strip: the two things this app is for, and the rest behind the dots.
+     * Looking somebody up, from wherever in the hub the user is standing.
+     *
+     * To the page the search is of, and then into it. Searching contacts while standing on
+     * the call history would be a field with nothing under it.
+     *
+     * Reached from the shell's search key and from nowhere else in this app - see
+     * [searchAction], and [buildAppBar] for what used to be on the strip.
+     */
+    private fun searchContacts() {
+        panorama.goTo(PAGE_CONTACTS, animated = true)
+        allList.beginSearch()
+    }
+
+    override var onSearchOfferChanged: (() -> Unit)? = null
+
+    /**
+     * The shell's search key, while the hub itself is what is on screen.
+     *
+     * Claimed from every section rather than only from the book: the ring on the strip is
+     * offered from all four and does the same thing from all four, and a key that lit up
+     * on one page of a panorama and went out on the next would be a key nobody could trust
+     * without looking at it.
+     *
+     * Withdrawn under a page opened over the hub - a profile, a conversation, the keypad,
+     * the editor. Those are somewhere the user went into, none of them has a search, and a
+     * key that searched the contacts from inside a conversation would be an exit dressed
+     * as a filter. Cortana has it back until they come out. See [WP81Searchable].
+     */
+    override fun searchAction(): (() -> Unit)? =
+        if (overlays.isNotEmpty() || !::panorama.isInitialized) null else ({ searchContacts() })
+
+    /**
+     * The strip: the one thing this app is for that is not a person, and the rest behind
+     * the dots.
      *
      * A keypad and a new contact are the only commands that belong to the app rather than
      * to somebody in it - everything you can do *to* a person is on their own page or
      * behind a long press, which is where the phone put them.
+     *
+     * Search was the first ring here and is not any more: the shell's search key is lit
+     * for this app and opens the same field - see [searchAction]. A magnifier on the strip
+     * an inch above a magnifier on the key is the same command drawn twice, and the one
+     * that goes is the one the user has to look at the screen to find.
      */
     private fun buildAppBar(): MetroAppBar {
         val bar = MetroAppBar(context, palette)
-        // Search rather than new-contact on the ring, and first: looking somebody up is
-        // what this app is opened for, and adding somebody is what it is opened for once
-        // in a while. The keypad is second because it is the answer when the search has
-        // failed - the book first, the bare number after it.
-        bar.addCommand(SEARCH_ICON) {
-            // To the page the search is of, and then into it. Searching contacts while
-            // standing on the call history would be a field with nothing under it.
-            panorama.goTo(PAGE_CONTACTS, animated = true)
-            allList.beginSearch()
-        }
+        // The keypad: the answer when the search has failed, which is the only reason a
+        // phone book needs a number pad at all.
         bar.addCommand(KEYPAD_ICON) { showDialer() }
         bar.menu = {
             buildList {
@@ -726,18 +757,19 @@ class PeopleApp(
         // so that the rings beside it line up with the name and not with the gap under it.
         row.addView(text, LinearLayout.LayoutParams(0, WRAP, 1f).apply { gravity = Gravity.TOP })
 
-        // Ringing back and texting, on the name's own line: they are about the call the
+        // Texting and ringing back, on the name's own line: they are about the call the
         // title names, and set below it they would read as two more of the words in the
         // block underneath rather than as the two commands the row is mostly opened for.
         val rings = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             visibility = View.GONE
         }
-        rings.addView(reachKey(CALL_ICON) { place(entry.number) }, ring(first = true))
-        // The other thing you do about a call you have just looked at, and now that
-        // messages are a page in this app it goes to the conversation rather than out to
-        // somebody else's program. See message().
-        rings.addView(reachKey(MESSAGE_ICON) { message(entry.number) }, ring(first = false))
+        // Texting first, and now that messages are a page in this app it goes to the
+        // conversation rather than out to somebody else's program. See message(). Placing
+        // it before the ring puts the quieter of the two where a hand arrives first, and
+        // leaves the call - the one act that cannot be taken back - at the end of the row.
+        rings.addView(reachKey(MESSAGE_ICON) { message(entry.number) }, ring(first = true))
+        rings.addView(reachKey(CALL_ICON) { place(entry.number) }, ring(first = false))
         row.addView(rings, LinearLayout.LayoutParams(WRAP, WRAP).apply { gravity = Gravity.TOP })
         holder.addView(row, wide())
 
@@ -1357,8 +1389,8 @@ class PeopleApp(
         for (phone in detail.phones) {
             column.addView(
                 reachRow(phone, listOf(
-                    reachKey(CALL_ICON) { place(phone.value) },
-                    reachKey(MESSAGE_ICON) { showThread(phone.value, person) }
+                    reachKey(MESSAGE_ICON) { showThread(phone.value, person) },
+                    reachKey(CALL_ICON) { place(phone.value) }
                 )),
                 wide()
             )
@@ -2548,8 +2580,8 @@ class PeopleApp(
         showMenu(
             entry.title,
             buildList {
-                add(WP81ContextMenu.Item("call") { place(entry.number) })
                 add(WP81ContextMenu.Item("text") { message(entry.number) })
+                add(WP81ContextMenu.Item("call") { place(entry.number) })
                 val id = entry.contactId
                 if (id != null) add(WP81ContextMenu.Item("profile") { showProfile(id) })
                 else add(WP81ContextMenu.Item("save to contacts") {
@@ -2610,12 +2642,19 @@ class PeopleApp(
         overlays.add(view)
         root.addView(view, FrameLayout.LayoutParams(MATCH, MATCH))
         rocks.gorjan.gokixp.wp81.MetroPageTransition(view).playIn()
+        // The hub is no longer the screen in front, so the key it was lending the shell
+        // goes back to Cortana. See searchAction.
+        onSearchOfferChanged?.invoke()
     }
 
     private fun dismissOverlay(view: View) {
         overlays.remove(view)
         if (view === openThread) openThread = null
         rocks.gorjan.gokixp.wp81.MetroPageTransition(view).playOut { root.removeView(view) }
+        // Announced now rather than when the page has finished turning out: the key
+        // belongs to the screen the user is on their way to, which is the same reasoning
+        // the shell's own strip is set on, not the one leaving.
+        onSearchOfferChanged?.invoke()
     }
 
     /**
@@ -2710,7 +2749,6 @@ class PeopleApp(
         const val ICON_DIR = "custom_icons_8"
         const val KEYPAD_ICON = "$ICON_DIR/appbar.dial.svg"
         const val ADD_ICON = "$ICON_DIR/appbar.add.svg"
-        const val SEARCH_ICON = "$ICON_DIR/appbar.magnify.svg"
         const val EDIT_ICON = "$ICON_DIR/appbar.edit.svg"
         const val STAR_ICON = "$ICON_DIR/appbar.star.svg"
         const val SAVE_ICON = "$ICON_DIR/appbar.check.svg"

@@ -1,0 +1,139 @@
+Windows Phone Launcher
+Copyright (C) 2026 Gorjan Jovanovski
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE.  See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with
+this program.  If not, see <https://www.gnu.org/licenses/>.
+
+The full licence text is in LICENSE.
+
+
+================================================================================
+WHY GPL, WHEN THIS USED TO BE MIT
+================================================================================
+
+The song recogniser in the Cortana app is a Kotlin port of the fingerprinting
+half of SongRec, by marin-m, which is GPL-3.0. Shazam's signature format is
+only documented inside that project, and their server accepts nothing else, so
+there is no way to speak to it without building on that work. GPL-3.0 is the
+price of doing so, and it is a fair one: the whole reason the recogniser could
+be written at all is that somebody else published theirs.
+
+Nothing else changed. This is the same project it was, under a licence that
+asks the same of anyone forking it that its own dependency asked.
+
+
+================================================================================
+WHAT THE LICENCE COVERS
+================================================================================
+
+The source code written for this project: everything under `app/src/`, the
+build scripts in `tools/`, and the Gradle configuration.
+
+It does not cover the artwork, fonts or data files described below. Those are
+not mine to license, and including them here is not a claim that they are. They
+are in the repository because this is a nostalgia project that recreates a
+particular phone, and it cannot do that without them.
+
+If you fork this, the code is yours under the GPL. The rest is between you and
+whoever owns it.
+
+
+================================================================================
+SONG RECOGNITION
+================================================================================
+
+app/src/main/java/rocks/gorjan/gokixp/apps/cortana/shazam/
+
+    Ported from SongRec by marin-m, GPL-3.0.
+    https://github.com/marin-m/SongRec
+
+    Specifically `src/core/fingerprinting/` - the signature generator, the
+    binary signature format, and the shape of the request their server expects.
+    The Kotlin is written from scratch, including a real-input FFT that SongRec
+    takes from a crate and a Hann window it ships as a table; the algorithm,
+    its constants and the wire format are theirs.
+
+    SongRec's own README notes that the technique is covered by patents in some
+    jurisdictions outside the EU. Shazam's foundational patent (Wang et al.,
+    US 6,990,453, filed 2000) has since expired.
+
+    No audio leaves the phone. What is sent is the fingerprint - a list of
+    (time, frequency, magnitude) peaks - from which the recording cannot be
+    reconstructed and in which speech is not intelligible.
+
+
+================================================================================
+THIRD-PARTY MATERIAL IN THIS REPOSITORY
+================================================================================
+
+Fonts - app/src/main/res/font/
+    segoeui_*.ttf and tahoma.ttf are Microsoft typefaces. Microsoft owns them
+    and licenses them with Windows; they are neither mine to relicense nor
+    covered by the GPL grant above.
+
+Wallpapers - app/src/main/assets/wallpapers/
+    The Lumia wallpapers that shipped with Windows Phone. Microsoft's.
+
+Icons - app/src/main/assets/custom_icons_8/
+    1,261 Metro-style SVG icons. The `appbar.*` file naming is that of the
+    Modern UI Icons set by Austin Andrews (modernuiicons.com); this has not
+    been verified against that project's terms, and anybody redistributing
+    them should check rather than take this file's word for it.
+
+    The same set is the source of several vector drawables in
+    app/src/main/res/drawable/, which name their origin in a comment.
+
+Cortana's mark - app/src/main/res/drawable/wp81_glyph_cortana.xml
+    The ring-and-halo is Microsoft's Cortana logo, redrawn from its own
+    proportions. Microsoft's, like the rest of the artwork here.
+
+Emoji list - app/src/main/assets/keyboard/emoji.txt
+    Built by tools/emojibuild/build_emoji.py from Unicode's own
+    emoji-test.txt. Subject to the Unicode Terms of Use,
+    https://www.unicode.org/terms_of_use.html
+
+
+================================================================================
+THE WORD LISTS
+================================================================================
+
+Files:  app/src/main/assets/keyboard/en.trie
+        app/src/main/assets/keyboard/en.bigrams
+
+These are built by tools/dictbuild/ from word frequencies published by
+hermitdave/FrequencyWords, which are themselves counted from the OpenSubtitles
+corpus distributed through OPUS. Those frequency lists are licensed
+CC BY-SA 3.0, so these files are offered on the same terms:
+
+    Word frequencies from https://github.com/hermitdave/FrequencyWords
+    (OpenSubtitles, via OPUS), licensed CC BY-SA 3.0.
+    https://creativecommons.org/licenses/by-sa/3.0/
+
+English, the only list that currently ships, is additionally filtered against
+dwyl/english-words, which is public domain (Unlicense).
+
+tools/dictbuild/ can build the other twenty-one languages, and filters those
+against their Hunspell dictionaries from wooorm/dictionaries. Those dictionaries
+are read on the machine running the build and are never committed here or
+shipped in the app; their licences vary and six are GPL - Czech, German,
+Italian, Macedonian, Norwegian and Ukrainian. tools/dictbuild/build_dict.py
+names each one and its licence. Should those lists ever ship, they carry the
+same CC BY-SA 3.0 attribution as English does, for the same reason.
+
+
+================================================================================
+DOWNLOADED AT RUNTIME, NOT DISTRIBUTED HERE
+================================================================================
+
+Speech models for on-device dictation are fetched from alphacephei.com when a
+user first asks for offline dictation. They are Vosk's, under Apache 2.0, and
+are not part of this repository or of the APK.
