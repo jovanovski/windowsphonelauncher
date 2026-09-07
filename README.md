@@ -1,6 +1,9 @@
 # Windows Phone Launcher for Android
 [!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/jovanovski)
 
+
+![Windows Launcher Preview](https://i.imgur.com/cFgpsMM.jpeg)
+
 This is a Windows Phone 8.1 inspired launcher for Android 10+, which tries to faithfully recreate the Metro shell - the wall of live tiles, the app list, the three keys along the bottom - on modern phones. Feel free to grab a pre-compiled APK from the Releases tab or download and build the project yourself.
 
 It is the sibling of [Windows Launcher](https://github.com/jovanovski/windowslauncher), which does the desktop era - 95, 98, 2000/ME, XP and Vista. Windows Phone started life as a theme inside that app and is its own app now, with its own application id, so the two can be installed side by side. If the desktop launcher is still on the phone, this one imports your Start screen from it on first run - tiles and their order, sizes, colours, the accent, the background and any icons you picked by hand. Both builds have to be signed with the same key for that to work.
