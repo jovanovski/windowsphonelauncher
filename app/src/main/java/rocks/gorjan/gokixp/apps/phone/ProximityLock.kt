@@ -1,4 +1,4 @@
-package rocks.gorjan.gokixp.apps.people
+package rocks.gorjan.gokixp.apps.phone
 
 import android.content.Context
 import android.os.PowerManager
@@ -13,7 +13,7 @@ import android.util.Log
  * touchscreen is how a call ends up on hold, on speaker, or hung up.
  *
  * Held by [GokiInCallService] for the length of a call against somebody's ear, and by the
- * test command in [PeopleApp] for a minute at a time. Both go through here so the thing
+ * test command in [PhoneApp] for a minute at a time. Both go through here so the thing
  * being tested is the thing that runs during a call, rather than a second implementation
  * that happens to look like it.
  *

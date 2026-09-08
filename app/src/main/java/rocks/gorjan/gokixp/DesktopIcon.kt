@@ -25,7 +25,9 @@ data class DesktopIcon(
     // Windows Phone 8.1 Start screen placement. Null means "not placed yet", so existing
     // saved icons load unchanged and the desktop layout is preserved when switching back
     // to XP / Vista / Classic. See rocks.gorjan.gokixp.wp81.
-    var tileSize: String? = null,    // TileSize.name: SMALL | MEDIUM | WIDE
+    // TileSize.name: one of the named footprints - SMALL, MEDIUM, WIDE - or a pair of
+    // spans, "3x2", for a size the wall has no name for. See TileSize.fromName.
+    var tileSize: String? = null,
     var tileIndex: Int? = null,      // packing order on the Start screen
     // And the same two again for the phone on its side. The wall there is a different
     // shape - twice as wide and half as tall, packed into twice the columns - so it is a

@@ -177,6 +177,7 @@ internal class ClipboardPopup(
             isClickable = true
             setOnClickListener {
                 KeyboardHaptics.key(it)
+                KeyboardSounds.tap()
                 // Put away first, so that what happens next happens against the field and not
                 // underneath a window that is still on top of it.
                 dismiss()

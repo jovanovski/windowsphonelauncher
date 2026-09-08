@@ -267,5 +267,5 @@ object PhoneHistory {
      */
     private const val DEEP_LIMIT = 2000
 
-    private const val TAG = "WP81People"
+    private const val TAG = "WP81Phone"
 }

@@ -36,7 +36,34 @@ class WelcomeApp(
     private val versionName: String,
     private val onOpenLink: (String) -> Unit,
     private val loadReleaseNotes: ((String) -> Unit) -> Unit,
-    private val permissions: List<Permission> = emptyList()
+    private val permissions: List<Permission> = emptyList(),
+    /**
+     * Opens the download for a version waiting to be installed, or null when there is none.
+     *
+     * A var because the launcher looks for updates on its own clock and the answer often
+     * lands after this page is already up - see [setUpdateAvailable].
+     */
+    private var onDownloadUpdate: (() -> Unit)? = null,
+    /**
+     * Looks for a new version now, calling back on the main thread when the answer is in.
+     *
+     * The launcher looks on its own hourly clock; this is the same look, asked for by hand.
+     * Whatever it finds is the host's to announce - the band across the top, and the banner
+     * above if there is something to download - so all this page does is say it is asking.
+     */
+    private val onCheckForUpdates: ((() -> Unit) -> Unit)? = null,
+    /**
+     * Whether to open on the release notes instead of on the front page.
+     *
+     * True when the launcher has just been updated, which is the one time this program
+     * opens by itself with something specific to say: somebody who already knows what this
+     * is wants what changed, not the introduction they read a version ago. A first install
+     * still opens on the welcome, where the introduction is the point.
+     *
+     * A var because it is spent on the first build - see [createView]. A theme change
+     * rebuilds the whole program, and that is not an update.
+     */
+    private var startOnReleaseNotes: Boolean = false
 ) : WP81Program {
 
     /**
@@ -63,6 +90,16 @@ class WelcomeApp(
     private lateinit var root: FrameLayout
     private lateinit var notes: TextView
 
+    /** The version line, which doubles as the check-now button. See [checkForUpdates]. */
+    private lateinit var versionLabel: TextView
+
+    /** Whether a check asked for here is still out, so a second tap does not send another. */
+    private var checking = false
+
+    /** Everything under the banner, kept so the banner can be put in and taken out of it. */
+    private lateinit var pageColumn: LinearLayout
+    private var updateBanner: View? = null
+
     /** The switches, kept so [refresh] can put them back where the system actually is. */
     private val switches = mutableListOf<Pair<MetroToggle, Permission>>()
 
@@ -77,8 +114,9 @@ class WelcomeApp(
     fun createView(): View {
         root = FrameLayout(context).apply { setBackgroundColor(palette.background) }
 
-        val column = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-        column.addView(TextView(context).apply {
+        pageColumn = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        addUpdateBanner()
+        pageColumn.addView(TextView(context).apply {
             text = "welcome"
             typeface = font(R.font.segoeui_semilight)
             textSize = 30f
@@ -92,14 +130,64 @@ class WelcomeApp(
             clipToPadding = false
             clipChildren = false
         }
-        panorama.addPage("about", page(buildWelcome()))
-        panorama.addPage("tips & tricks", page(buildTips()))
-        if (permissions.isNotEmpty()) panorama.addPage("permissions", page(buildPermissions()))
-        panorama.addPage("release notes", page(buildNotes()))
-        column.addView(panorama, LinearLayout.LayoutParams(MATCH, 0, 1f))
+        // Gathered before they are added so the notes can be found by name below: which
+        // number that section is depends on whether there are permissions to show.
+        val sections = buildList {
+            add("about" to buildWelcome())
+            add("tips & tricks" to buildTips())
+            if (permissions.isNotEmpty()) add("permissions" to buildPermissions())
+            add(NOTES_SECTION to buildNotes())
+        }
+        for ((title, content) in sections) panorama.addPage(title, page(content))
+        // Straight to what changed, when the launcher has just been updated. Not animated:
+        // this is where the program opens, not somewhere it was swiped to.
+        if (startOnReleaseNotes) {
+            startOnReleaseNotes = false
+            panorama.goTo(sections.indexOfFirst { it.first == NOTES_SECTION }, animated = false)
+        }
+        pageColumn.addView(panorama, LinearLayout.LayoutParams(MATCH, 0, 1f))
 
-        root.addView(column, FrameLayout.LayoutParams(MATCH, MATCH))
+        root.addView(pageColumn, FrameLayout.LayoutParams(MATCH, MATCH))
         return root
+    }
+
+    /**
+     * Says a new version is waiting, or stops saying it.
+     *
+     * Called by the host when its hourly look answers, which is usually after this page has
+     * been built: on a fresh install the welcome opens a second after launch, well before
+     * GitHub has replied. So the banner arrives rather than being there from the start.
+     */
+    fun setUpdateAvailable(onDownload: (() -> Unit)?) {
+        onDownloadUpdate = onDownload
+        if (!::pageColumn.isInitialized) return
+        updateBanner?.let { pageColumn.removeView(it) }
+        updateBanner = null
+        addUpdateBanner()
+    }
+
+    /**
+     * The strip across the top of the page, when there is something to download.
+     *
+     * In the accent, which is what Windows Phone painted the thing it wanted looked at,
+     * and full width above the header rather than a line inside the about page: the person
+     * who came here for the release notes should not have to find it.
+     */
+    private fun addUpdateBanner() {
+        val onDownload = onDownloadUpdate ?: return
+        val banner = TextView(context).apply {
+            text = UPDATE_TEXT
+            typeface = font(R.font.segoeui_semibold)
+            textSize = 15f
+            setTextColor(palette.onAccent())
+            setBackgroundColor(palette.accent)
+            setPadding(dp(MARGIN_DP), dp(12), dp(MARGIN_DP), dp(12))
+            isClickable = true
+            setOnClickListener { onDownload() }
+            rocks.gorjan.gokixp.wp81.TiltEffect.apply(this)
+        }
+        pageColumn.addView(banner, 0, wide())
+        updateBanner = banner
     }
 
     private fun page(content: View): View = ScrollView(context).apply {
@@ -114,13 +202,22 @@ class WelcomeApp(
             setPadding(0, dp(4), dp(MARGIN_DP), dp(28))
         }
 
-        column.addView(TextView(context).apply {
-            text = "version $versionName"
+        versionLabel = TextView(context).apply {
+            text = versionText()
             typeface = font(R.font.segoeui_semibold)
             textSize = 12f
             setTextColor(palette.accent)
             setPadding(0, 0, 0, dp(10))
-        }, wide())
+        }
+        // Tapping the version asks for the update check now instead of waiting on the
+        // launcher's hourly one - unlabelled, the way the desktop about box hid the same
+        // thing behind its version number, and harmless to find by accident.
+        onCheckForUpdates?.let { check ->
+            versionLabel.isClickable = true
+            versionLabel.setOnClickListener { checkForUpdates(check) }
+            rocks.gorjan.gokixp.wp81.TiltEffect.apply(versionLabel)
+        }
+        column.addView(versionLabel, wide())
 
         column.addView(body(WELCOME_TEXT), wide())
 
@@ -219,6 +316,27 @@ class WelcomeApp(
         return column
     }
 
+    private fun versionText() = "version $versionName"
+
+    /**
+     * Asks the host to look for a new version, and says so while it looks.
+     *
+     * The answer arrives as the band across the top - a new version, or that there is none -
+     * because that is where this launcher says everything else about updates. The line
+     * itself only goes back to being the version number.
+     */
+    private fun checkForUpdates(check: ((() -> Unit) -> Unit)) {
+        if (checking) return
+        checking = true
+        versionLabel.text = CHECKING_TEXT
+        check {
+            checking = false
+            // A theme change between the tap and the answer rebuilds the page; the field
+            // points at the new line by then, which is the one to put back.
+            if (::versionLabel.isInitialized) versionLabel.text = versionText()
+        }
+    }
+
     /**
      * Puts every switch back where the system is.
      *
@@ -300,6 +418,15 @@ class WelcomeApp(
         const val WRAP = LinearLayout.LayoutParams.WRAP_CONTENT
 
         const val MARGIN_DP = 22
+
+        /** The section an update opens on. See the constructor's startOnReleaseNotes. */
+        const val NOTES_SECTION = "release notes"
+
+        /** What the banner says. See [addUpdateBanner]. */
+        const val UPDATE_TEXT = "New version available, tap to download"
+
+        /** What the version line says while a check is out. See [checkForUpdates]. */
+        const val CHECKING_TEXT = "checking for updates…"
 
         val GITHUB_URL = "https://github.com/${rocks.gorjan.gokixp.MainActivity.GITHUB_REPO}/"
         const val COFFEE_URL = "https://buymeacoffee.com/jovanovski"

@@ -1,4 +1,4 @@
-package rocks.gorjan.gokixp.apps.people
+package rocks.gorjan.gokixp.apps.messaging
 
 import android.app.Service
 import android.content.Intent
@@ -55,6 +55,6 @@ class RespondViaMessageService : Service() {
     }
 
     private companion object {
-        const val TAG = "WP81People"
+        const val TAG = "WP81Messaging"
     }
 }

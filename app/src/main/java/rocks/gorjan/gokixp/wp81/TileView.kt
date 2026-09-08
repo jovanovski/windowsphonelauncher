@@ -578,6 +578,9 @@ class TileView(
      */
     private val unpinHandle = ImageView(context)
 
+    /** Whether the handles are worn inside the corners. See [tuckHandles]. */
+    private var handlesTucked = false
+
     /** Tapping that handle. The host decides what unpinning this tile actually does. */
     var onUnpinTap: (() -> Unit)? = null
 
@@ -1206,42 +1209,32 @@ class TileView(
         mediaTitle.textSize = LIVE_TITLE_SP
         mediaArtist.textSize = LIVE_CAPTION_SP
 
-        when (tile.size) {
-            TileSize.WIDE -> {
-                // Only a wide tile has the width for a full transport.
-                mediaControls.visibility = if (showing) VISIBLE else GONE
-                mediaPrevious.visibility =
-                    if (media?.canSkipPrevious == true) VISIBLE else GONE
-                mediaNext.visibility = if (media?.canSkipNext == true) VISIBLE else GONE
-            }
-            TileSize.MEDIUM, TileSize.MEDIUM_TALL_3, TileSize.MEDIUM_TALL_4 -> {
-                // Full transport: three controls do fit across a medium tile once they are
-                // sized for it, and skipping a track is the thing most worth reaching for.
-                // The tall tiles are the same two cells across, so they take the same.
-                mediaControls.visibility = if (showing) VISIBLE else GONE
-                mediaPrevious.visibility =
-                    if (media?.canSkipPrevious == true) VISIBLE else GONE
-                mediaNext.visibility = if (media?.canSkipNext == true) VISIBLE else GONE
-            }
-            // Play/pause only. Three controls across two cells left the title with a
-            // third of the row, and skipping a track is a command you can afford to open
-            // the app for - stopping it is not.
-            TileSize.SMALL_WIDE -> {
-                mediaTitle.maxLines = 1
+        // A strip runs the text and the transport side by side rather than stacked, which
+        // is the only way a title and any controls at all share one row - so it gets one
+        // line whatever else it is given.
+        if (tile.size.isStrip) mediaTitle.maxLines = 1
+        when {
+            // One cell across has no room for a transport, whatever its height.
+            tile.size.cols <= 1 -> mediaControls.visibility = GONE
+
+            // Play/pause only on a two-cell strip. Three controls across two cells left
+            // the title with a third of the row, and skipping a track is a command you can
+            // afford to open the app for - stopping it is not.
+            tile.size.isStrip && tile.size.cols <= 2 -> {
                 mediaControls.visibility = if (showing) VISIBLE else GONE
                 mediaPrevious.visibility = GONE
                 mediaNext.visibility = GONE
             }
-            TileSize.SMALL_WIDE_3, TileSize.SMALL_WIDE_4 -> {
-                // A strip runs the text and the transport side by side rather than stacked,
-                // which is the only way three controls and a title share one row.
-                mediaTitle.maxLines = 1
+
+            // Full transport everywhere else: three controls do fit across two cells once
+            // they are sized for it - see applyMediaControlMetrics - and skipping a track
+            // is the thing most worth reaching for.
+            else -> {
                 mediaControls.visibility = if (showing) VISIBLE else GONE
                 mediaPrevious.visibility =
                     if (media?.canSkipPrevious == true) VISIBLE else GONE
                 mediaNext.visibility = if (media?.canSkipNext == true) VISIBLE else GONE
             }
-            TileSize.SMALL -> mediaControls.visibility = GONE
         }
         if (!tile.size.isStrip && tile.size != TileSize.SMALL) mediaTitle.maxLines = 2
         applyMediaControlMetrics()
@@ -1256,21 +1249,26 @@ class TileView(
      * deliberate rather than as a gap on one side.
      */
     private fun applyMediaControlMetrics() {
-        val edge = when (tile.size) {
-            TileSize.WIDE -> CONTROL_LARGE_DP
-            TileSize.SMALL_WIDE_4 -> CONTROL_MEDIUM_DP
-            // Sized down from the wide tile so all three fit across two cells.
-            TileSize.MEDIUM, TileSize.MEDIUM_TALL_3, TileSize.MEDIUM_TALL_4 ->
-                CONTROL_SMALL_DP
-            // One control now, so it takes the same edge as the medium tile's rather
-            // than the size it was squeezed to when three had to fit.
-            TileSize.SMALL_WIDE -> CONTROL_SMALL_DP
+        // Read off the footprint rather than off a list of names: the wall can be set wide
+        // enough that a tile is five or six cells across, and a size that only knew the
+        // 4x2 left every one of those with the smallest controls there are.
+        val wide = tile.size.cols >= 4
+        val edge = when {
+            // Four cells across and two deep: the transport has the whole lower half of a
+            // large tile and can be reached for without aiming.
+            wide && !tile.size.isStrip -> CONTROL_LARGE_DP
+            // The same width, one row: the controls share it with the title, so they take
+            // the middle size rather than the large one.
+            wide -> CONTROL_MEDIUM_DP
+            // Sized down from the wide tile so all three fit across two cells - and the
+            // two-cell strip takes the same, rather than the size it was squeezed to back
+            // when three controls had to fit on it.
             else -> CONTROL_SMALL_DP
         }
-        val gap = when (tile.size) {
-            TileSize.WIDE -> dp(16)
-            TileSize.SMALL_WIDE -> dp(2)
-            TileSize.MEDIUM, TileSize.MEDIUM_TALL_3, TileSize.MEDIUM_TALL_4 -> dp(6)
+        val gap = when {
+            wide && !tile.size.isStrip -> dp(16)
+            tile.size.cols == 2 && tile.size.isStrip -> dp(2)
+            tile.size.cols == 2 -> dp(6)
             else -> dp(8)
         }
         for (control in listOf(mediaPrevious, mediaPlayPause, mediaNext)) {
@@ -1640,18 +1638,7 @@ class TileView(
      */
     private fun applyPeopleGrid() {
         val mosaic = peopleMosaic ?: return
-        val grids = when (tile.size) {
-            TileSize.SMALL -> listOf(2 to 2, 1 to 1)
-            TileSize.SMALL_WIDE -> listOf(2 to 1, 1 to 1)
-            TileSize.SMALL_WIDE_3 -> listOf(3 to 1, 1 to 1)
-            TileSize.SMALL_WIDE_4 -> listOf(4 to 1, 2 to 1, 1 to 1)
-            TileSize.MEDIUM -> listOf(3 to 3, 2 to 2, 1 to 1)
-            // Two cells wide and three tall divides into neither three nor four rows
-            // squarely; four is the closer of the two, and the one with the larger faces.
-            TileSize.MEDIUM_TALL_3 -> listOf(3 to 4, 2 to 3, 1 to 1)
-            TileSize.MEDIUM_TALL_4 -> listOf(3 to 6, 2 to 4, 1 to 2)
-            TileSize.WIDE -> listOf(6 to 3, 4 to 2, 2 to 1)
-        }
+        val grids = peopleGrids()
         // The densest grid the people on hand fill, or the coarsest there is when even that
         // is more squares than people - one face is better than one face and a hole.
         val available = favourites.size + otherPeople.size
@@ -1660,6 +1647,37 @@ class TileView(
         // The grid decides how many people are wanted, so the wall is filled after it is
         // shaped rather than before.
         mosaic.setPeople(peopleForGrid(cols * rows))
+    }
+
+    /**
+     * The mosaics this footprint can be drawn as, densest first.
+     *
+     * Worked out from the spans rather than looked up by footprint, because there is no
+     * list of footprints any more: the wall can be set six or eight cells across and a tile
+     * stretched to any of them, and every one of those needs a grid.
+     *
+     * The rule is the one [applyPeopleGrid] describes - [FACES_ACROSS] along the shorter
+     * side, as many of that same square as fill the longer, then the same shape with fewer
+     * across for the fallbacks - with its two exceptions written out first.
+     */
+    private fun peopleGrids(): List<Pair<Int, Int>> {
+        val cols = tile.size.cols
+        val rows = tile.size.rows
+        // A square face is `across` of them along the short side; the long side takes as
+        // many of that same square as fit, rounded down so they are never cut off.
+        fun grid(across: Int): Pair<Int, Int> =
+            if (rows <= cols) across * cols / rows to across
+            else across to across * rows / cols
+
+        return when {
+            // One row of faces the full height of the strip, then halved, then one.
+            rows == 1 && cols > 1 ->
+                listOf(cols to 1, (cols / 2).coerceAtLeast(1) to 1, 1 to 1).distinct()
+            // Halves rather than thirds - see above - which for the 1x1 is the 2x2 it
+            // has always been drawn as.
+            cols == 1 -> listOf(2 to 2 * rows, 1 to rows).distinct()
+            else -> (FACES_ACROSS downTo 1).map { grid(it) }.distinct()
+        }
     }
 
     /**
@@ -2279,6 +2297,20 @@ class TileView(
             // clip is opening rather than the tile going black for a moment.
             view.isOpaque = false
             view.visibility = GONE
+            // Clipped to its own edge, because the crop in [applyVideoTransform]
+            // deliberately overruns it: the picture is scaled up until it covers the tile,
+            // and whatever hangs over the short side has to be cut off somewhere. Nothing
+            // above can do the cutting - the tile stopped clipping its children so an edit
+            // handle could hang off a corner, and the grid holding the tile did the same -
+            // so the surface carries its own clip. Without it a portrait clip on a square
+            // tile painted itself across the tiles beside it, worst inside an opened
+            // folder, where a tile has neighbours on every side of it.
+            view.outlineProvider = object : android.view.ViewOutlineProvider() {
+                override fun getOutline(v: View, outline: android.graphics.Outline) {
+                    outline.setRect(0, 0, v.width, v.height)
+                }
+            }
+            view.clipToOutline = true
             addView(view, 0, LayoutParams(
                 LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
             view.surfaceTextureListener =
@@ -2791,14 +2823,14 @@ class TileView(
 
     /** How many lines of headline the tile has room for under its own label. */
     private fun storyLines(): Int {
-        val room = when (tile.size) {
-            TileSize.WIDE -> 3
-            TileSize.MEDIUM -> 4
+        val room = when {
+            // A one-row tile, whatever its width: a title and two lines under it.
+            tile.size.rows <= 1 -> 2
             // Twice and three times the height buys lines, not larger type - see
-            // applyLiveTextSizes.
-            TileSize.MEDIUM_TALL_3 -> 7
-            TileSize.MEDIUM_TALL_4 -> 10
-            else -> 2
+            // applyLiveTextSizes - so every row past the second is worth the same again.
+            // Four cells across starts one lower, the wider measure needing fewer lines
+            // to carry the same headline.
+            else -> (if (tile.size.cols >= 4) 3 else 4) + STORY_LINES_PER_ROW * (tile.size.rows - 2)
         }
         // One of them goes to the app's name where the tile is deep enough to show it -
         // see applyLabelVisibility - since the name is drawn over the face rather than
@@ -3620,6 +3652,39 @@ class TileView(
     }
 
     /**
+     * Keeps the handles on the screen for a tile with nothing to its right.
+     *
+     * Both of them are centred on the tile's right-hand edge, which for a tile on the last
+     * column is the edge of the screen: half of each disc, and half of the mark inside it,
+     * would be off it - visible as nothing and tappable as nothing. So an edge tile wears
+     * them inside its corners instead. The wall runs to the edges of the screen, and the
+     * hairline it does hold back - see TileGridLayout.MARGIN_DP - is a third of what a
+     * handle needs: a handle that can be seen and pressed is worth more than one that sits
+     * prettily on a corner.
+     *
+     * Told to the tile by the grid, which is what knows the column. See
+     * TileGridLayout.onMeasure.
+     */
+    fun tuckHandles(tucked: Boolean) {
+        if (handlesTucked == tucked) return
+        handlesTucked = tucked
+        applyHandleTuck()
+    }
+
+    private fun applyHandleTuck() {
+        val overhang = if (handlesTucked) 0 else -dp(HANDLE_DP) / 2
+        for (handle in listOf(resizeHandle, unpinHandle)) {
+            val lp = handle.layoutParams as? LayoutParams ?: continue
+            if (lp.marginEnd == overhang) continue
+            lp.marginEnd = overhang
+            // Set back through the property rather than left mutated in place: the tile
+            // has to be measured again for a margin to move anything, and assigning is
+            // what asks for that.
+            handle.layoutParams = lp
+        }
+    }
+
+    /**
      * Whether a point in this tile's own coordinates lands on one of its edit handles.
      *
      * The handles straddle the corners, so half of each lies outside the tile - and a
@@ -3849,6 +3914,14 @@ class TileView(
         private const val BODY_LINES = 3
         private const val STRIP_BODY_LINES = 2
 
+        /**
+         * What a row of height past the second is worth to a headline, in lines.
+         *
+         * A story is set at the one size the wall shares, so a taller tile buys lines
+         * rather than larger type - see applyLiveTextSizes and storyLines.
+         */
+        private const val STORY_LINES_PER_ROW = 3
+
         // Transport control edges. Sized to the tile: a wide tile has room for real
         // buttons, and 26dp everywhere made them fiddly on exactly the tile with the most
         // space to give them.
@@ -3961,6 +4034,14 @@ class TileView(
          * turn one over: every face is already up, and there is nobody to turn over *to*.
          */
         private const val SPARE = 3
+
+        /**
+         * Faces along the People tile's shorter side.
+         *
+         * Three, which on the square tile is the nine-square mosaic Windows Phone drew.
+         * See peopleGrids, which works every other footprint out from this one.
+         */
+        private const val FACES_ACROSS = 3
 
         private const val TAG = "WP81Tile"
 

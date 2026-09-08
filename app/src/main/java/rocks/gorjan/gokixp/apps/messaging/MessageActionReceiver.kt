@@ -1,4 +1,4 @@
-package rocks.gorjan.gokixp.apps.people
+package rocks.gorjan.gokixp.apps.messaging
 
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
@@ -92,7 +92,7 @@ class MessageActionReceiver : BroadcastReceiver() {
     }
 
     companion object {
-        private const val TAG = "WP81People"
+        private const val TAG = "WP81Messaging"
 
         const val ACTION_REPLY = "rocks.gorjan.gokixp.message.REPLY"
         const val ACTION_MARK_READ = "rocks.gorjan.gokixp.message.MARK_READ"

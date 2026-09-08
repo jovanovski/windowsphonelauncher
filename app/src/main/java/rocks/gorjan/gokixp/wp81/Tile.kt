@@ -1,95 +1,132 @@
 package rocks.gorjan.gokixp.wp81
 
 /**
- * The three tile footprints Windows Phone 8.1 offered, measured in small-tile cells.
+ * A tile's footprint, measured in small-tile cells.
  *
- * The Start screen is a four-column grid of small cells, so a medium tile is a 2x2
- * block and a wide tile spans the full row. Long-pressing a tile and tapping the
- * resize chevron cycles through them in this order.
+ * Windows Phone drew Start on a four-column grid and offered three footprints on it: the
+ * 1x1, the 2x2, and the 4x2 that filled the row. This launcher grew a handful of sizes in
+ * between them, and then let the wall be set to anything from three cells across to
+ * twelve - at which point a fixed list of footprints stops being able to follow it. On a
+ * six-column wall there was no way to say "three across" or "the whole row", and the
+ * resize drag jumped from two cells straight to four because four was the next size the
+ * list had.
+ *
+ * So a size is any pair of spans rather than one of a list, and the drag moves a cell at a
+ * time whatever the wall is set to. The names below survive as the sizes the wall is built
+ * with and the ones the tiles are drawn for - a tile still reads its own footprint to
+ * decide what it has room for - but they are points on a range now rather than the whole
+ * of it.
  */
-enum class TileSize(val cols: Int, val rows: Int) {
-    SMALL(1, 1),
+data class TileSize(val cols: Int, val rows: Int) {
 
-    // One-row strips, two to four cells across. Wide enough for a line of text and a
-    // control beside it, without giving up a whole band of the grid to one tile.
-    SMALL_WIDE(2, 1),
-    SMALL_WIDE_3(3, 1),
-    SMALL_WIDE_4(4, 1),
+    /**
+     * What this footprint is written down as.
+     *
+     * The eight footprints that used to be the whole list keep the names they were stored
+     * under, so a wall arranged before sizes were free reads back exactly as it was left.
+     * Anything else is written as its spans - "3x2" - which [fromName] reads either way.
+     */
+    val name: String get() = LEGACY_NAMES[this] ?: "${cols}x$rows"
 
-    MEDIUM(2, 2),
-
-    // Two columns run down the page, three and four rows deep. The counterpart to the
-    // strips: those spend a whole band of the grid on one line, these spend half the
-    // width on a column of it, which is what a run of pictures or a list wants.
-    MEDIUM_TALL_3(2, 3),
-    MEDIUM_TALL_4(2, 4),
-
-    WIDE(4, 2);
-
-    fun next(): TileSize = when (this) {
-        SMALL -> SMALL_WIDE
-        SMALL_WIDE -> SMALL_WIDE_3
-        SMALL_WIDE_3 -> SMALL_WIDE_4
-        SMALL_WIDE_4 -> MEDIUM
-        MEDIUM -> MEDIUM_TALL_3
-        MEDIUM_TALL_3 -> MEDIUM_TALL_4
-        MEDIUM_TALL_4 -> WIDE
-        WIDE -> SMALL
+    /** The next footprint the resize chevron offers. */
+    fun next(): TileSize {
+        val at = CYCLE.indexOf(this)
+        return if (at < 0) SMALL else CYCLE[(at + 1) % CYCLE.size]
     }
 
     /**
      * Whether the tile has room for words as well as a glyph.
      *
-     * Only the 1x1 tile does not: everything else can carry at least a label, and a
+     * Only the 1x1 does not: everything else can carry at least a label, and a
      * notification or a track title cropped to one line.
      */
     val canShowText: Boolean
-        get() = this != SMALL
+        get() = cols > 1 || rows > 1
 
     /**
      * Whether there is room for a subtitle under the title.
      *
-     * True of everything but the 1x1 tile: a one-row strip is short, but two compact lines
+     * True of everything but the 1x1: a one-row strip is short, but two compact lines
      * still fit once the app-name label steps aside for them - see [isStrip].
      */
     val hasTwoTextLines: Boolean
-        get() = this != SMALL
+        get() = canShowText
 
     /**
-     * A one-row tile.
+     * A one-row tile that is more than one cell across.
      *
      * Its height is spoken for by the content, so the app-name label along the bottom
      * gives way whenever a notification or a track is being shown.
      */
     val isStrip: Boolean
-        get() = rows == 1 && this != SMALL
+        get() = rows == 1 && cols > 1
 
     companion object {
-        fun fromName(name: String?): TileSize =
-            entries.firstOrNull { it.name == name } ?: MEDIUM
+        val SMALL = TileSize(1, 1)
+
+        // One-row strips, two to four cells across. Wide enough for a line of text and a
+        // control beside it, without giving up a whole band of the grid to one tile.
+        val SMALL_WIDE = TileSize(2, 1)
+        val SMALL_WIDE_3 = TileSize(3, 1)
+        val SMALL_WIDE_4 = TileSize(4, 1)
+
+        val MEDIUM = TileSize(2, 2)
+
+        // Two columns run down the page, three and four rows deep. The counterpart to the
+        // strips: those spend a whole band of the grid on one line, these spend half the
+        // width on a column of it, which is what a run of pictures or a list wants.
+        val MEDIUM_TALL_3 = TileSize(2, 3)
+        val MEDIUM_TALL_4 = TileSize(2, 4)
+
+        val WIDE = TileSize(4, 2)
+
+        /**
+         * How tall a tile may be dragged.
+         *
+         * Width has a ceiling of its own - the wall is only so many cells across - but
+         * the grid grows rows on demand, so height needs one stated. Twice the tallest
+         * footprint the wall shipped with: past that a tile is not a tile, it is a page.
+         */
+        const val MAX_ROWS = 8
+
+        /** The order the resize chevron steps through. */
+        private val CYCLE = listOf(
+            SMALL, SMALL_WIDE, SMALL_WIDE_3, SMALL_WIDE_4,
+            MEDIUM, MEDIUM_TALL_3, MEDIUM_TALL_4, WIDE
+        )
+
+        /** The names the footprints that used to be an enum are stored under. */
+        private val LEGACY_NAMES = mapOf(
+            SMALL to "SMALL",
+            SMALL_WIDE to "SMALL_WIDE",
+            SMALL_WIDE_3 to "SMALL_WIDE_3",
+            SMALL_WIDE_4 to "SMALL_WIDE_4",
+            MEDIUM to "MEDIUM",
+            MEDIUM_TALL_3 to "MEDIUM_TALL_3",
+            MEDIUM_TALL_4 to "MEDIUM_TALL_4",
+            WIDE to "WIDE"
+        )
+
+        fun fromName(name: String?): TileSize {
+            if (name.isNullOrEmpty()) return MEDIUM
+            for ((size, stored) in LEGACY_NAMES) if (stored == name) return size
+            val parts = name.split('x')
+            if (parts.size != 2) return MEDIUM
+            val cols = parts[0].toIntOrNull() ?: return MEDIUM
+            val rows = parts[1].toIntOrNull() ?: return MEDIUM
+            return forSpan(cols, rows)
+        }
 
         /**
          * The size a resize drag of this many cells is asking for.
          *
-         * Width alone does not name a size - the banner and the medium tile are both two
-         * cells across - so the drag reads both. One row gives the strips, which differ
-         * only in width; two columns gives the square tile and the two tall ones, which
-         * differ only in height; anything wider is the wide tile.
+         * Both spans are taken as they come - a drag that has reached three cells across
+         * and two down wants a 3x2, whether or not that is a shape the wall was ever
+         * built with. Only the ceilings are applied here; the floor on width is the
+         * grid's, which knows how many columns it has. See [MAX_ROWS].
          */
-        fun forSpan(cols: Int, rows: Int): TileSize = when {
-            rows <= 1 -> when {
-                cols <= 1 -> SMALL
-                cols <= 2 -> SMALL_WIDE
-                cols <= 3 -> SMALL_WIDE_3
-                else -> SMALL_WIDE_4
-            }
-            cols <= 2 -> when {
-                rows <= 2 -> MEDIUM
-                rows <= 3 -> MEDIUM_TALL_3
-                else -> MEDIUM_TALL_4
-            }
-            else -> WIDE
-        }
+        fun forSpan(cols: Int, rows: Int): TileSize =
+            TileSize(cols.coerceAtLeast(1), rows.coerceIn(1, MAX_ROWS))
     }
 }
 

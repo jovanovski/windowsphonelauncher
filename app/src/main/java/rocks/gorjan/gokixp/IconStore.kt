@@ -29,11 +29,45 @@ class IconStore(
     private val context: Context,
     /** A package's own artwork, or null if this is not a program the shell draws itself. */
     private val systemIconFor: (String) -> Drawable?,
+    /**
+     * Whether a package is an installed app, and so something an icon pack may dress.
+     *
+     * A seam for the same reason [systemIconFor] is one: the shell's own programs, its
+     * folders and its recycle bin are not apps the phone has, they are pictures this
+     * launcher draws, and an icon pack has nothing to say about them. Without this a pack
+     * with a backplate would mount Zune's own mark on it. What counts as one of the
+     * shell's is the shell's to know.
+     */
+    private val isPackable: (String) -> Boolean = { true },
 ) {
 
-    /** packageName -> icon path, either an asset path or "imported_icons/<file>.png". */
-    private val customIcons = mutableMapOf<String, String>()
+    /**
+     * packageName -> icon path, either an asset path or "imported_icons/<file>.png".
+     *
+     * Concurrent because it is read from more than one thread: the app list resolves its
+     * rows' artwork on a worker so that typing in its search field is not stalled behind a
+     * package manager call, while everything else asks on the main thread - which is also
+     * where the writes happen, when an icon is picked or the mappings are reloaded.
+     */
+    private val customIcons = java.util.concurrent.ConcurrentHashMap<String, String>()
 
+    /**
+     * The icon pack dressing every app that has not been given an icon by hand, if any.
+     *
+     * Set by the shell from what is saved, and null for the phone's own artwork. Setting
+     * it empties the rendered-bitmap cache, because every entry in it that came from a
+     * package rather than from a hand-picked file was drawn under the previous answer.
+     */
+    var pack: IconPack? = null
+        set(value) {
+            // By identity, not by name. A pack that has just been updated comes back under
+            // the same package with a new [IconPack] holding the new artwork, and comparing
+            // names would keep the old one - and every bitmap already rendered from it.
+            // The caller is what decides when to re-open; see MainActivity.applyIconPack.
+            if (field === value) return
+            field = value
+            evictAll()
+        }
 
     private val prefs get() = context.getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE)
 
@@ -66,8 +100,12 @@ class IconStore(
     // ---------------------------------------------------------------- drawing
 
     /**
-     * The icon a package is shown with: the hand-picked one where there is one, otherwise
-     * whatever [systemIconFor] answers.
+     * The icon a package is shown with: the hand-picked one where there is one, then the
+     * icon pack's if one is on, and otherwise whatever [systemIconFor] answers.
+     *
+     * That order is the one the user set it in. An icon chosen for a single app is an
+     * answer about that app and outranks a pack chosen for all of them, which in turn
+     * outranks the artwork the app happened to ship with.
      */
     fun iconFor(packageName: String, skipCustom: Boolean = false): Drawable? {
         if (!skipCustom) {
@@ -82,10 +120,19 @@ class IconStore(
                 }
             }
         }
-        return systemIconFor(packageName)?.let { square(it, "app_$packageName") }
+        val system = systemIconFor(packageName)
+        pack?.takeIf { isPackable(packageName) }?.let { active ->
+            // Handed the system artwork so the pack can dress an app it has no icon for.
+            // Squared under a key of its own: the pack's answer and the app's own are two
+            // different pictures for one package and must not share a cache entry.
+            active.dressed(packageName, system)?.let {
+                return square(it, "pack_${active.packageName}_$packageName")
+            }
+        }
+        return system?.let { square(it, "app_$packageName") }
     }
 
-    /** Decodes an icon file or asset. */
+    /** Decodes an icon file, an asset, or one icon named out of an installed icon pack. */
     fun fromPath(iconPath: String): Drawable? = WP81TileHost.loadIconFromPath(context, iconPath)
 
     /**
@@ -128,7 +175,11 @@ class IconStore(
      */
     fun invalidate(packageName: String) {
         val stale = bitmaps.snapshot().keys.filter {
-            it == "app_$packageName" || it.startsWith("custom_${packageName}_")
+            it == "app_$packageName" ||
+                it.startsWith("custom_${packageName}_") ||
+                // The pack's key carries the pack's name in the middle, so it is the tail
+                // that identifies the app: "pack_<pack package>_<this package>".
+                (it.startsWith("pack_") && it.endsWith("_$packageName"))
         }
         stale.forEach { bitmaps.remove(it) }
         Log.d(TAG, "Invalidated ${stale.size} cached icons for $packageName")

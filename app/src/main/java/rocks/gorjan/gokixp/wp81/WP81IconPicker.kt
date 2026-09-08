@@ -39,9 +39,24 @@ class WP81IconPicker(
     var onBrowse: (() -> Unit)? = null
     var onResetToDefault: (() -> Unit)? = null
 
+    /**
+     * Tapping "icon pack", which refills the grid from the pack the user has on.
+     *
+     * A command rather than a few hundred more squares below the bundled set. The set this
+     * page offers is the phone's own - flat white glyphs, drawn for these tiles - and
+     * pouring a pack's full-colour artwork in after it would bury the one thing this page
+     * is for under the other thing. The command switches sources; it does not merge them.
+     * Hidden unless there is a pack on. See [setIconPackAvailable].
+     */
+    var onIconPack: ((Boolean) -> Unit)? = null
+
+    /** Which source the grid is filled from, so the command can go back the other way. */
+    private var showingPack = false
+
     private val heading = TextView(context)
     private val resetCommand = TextView(context)
     private val browseCommand = TextView(context)
+    private val packCommand = TextView(context)
     private val grid = RecyclerView(context)
     private val choices = mutableListOf<Choice>()
     private val adapter = Adapter()
@@ -56,7 +71,11 @@ class WP81IconPicker(
         heading.includeFontPadding = false
         heading.setPadding(dp(22), dp(20), dp(22), dp(12))
 
-        for ((command, label) in listOf(resetCommand to "use default", browseCommand to "browse")) {
+        for ((command, label) in listOf(
+            resetCommand to "use default",
+            browseCommand to "browse",
+            packCommand to "icon pack",
+        )) {
             command.text = label
             command.textSize = 15f
             command.typeface = ResourcesCompat.getFont(context, R.font.segoeui_regular)
@@ -66,6 +85,13 @@ class WP81IconPicker(
         }
         resetCommand.setOnClickListener { onResetToDefault?.invoke() }
         browseCommand.setOnClickListener { onBrowse?.invoke() }
+        packCommand.setOnClickListener {
+            // Flipped here rather than by the host, so the word on the command is never out
+            // of step with what the grid below it is showing.
+            setIconPackShowing(!showingPack)
+            onIconPack?.invoke(showingPack)
+        }
+        packCommand.visibility = GONE
 
         val commands = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -75,6 +101,10 @@ class WP81IconPicker(
             // one phrase - and the left of the two throws away what the right of them is
             // for, so a mis-tap costs the user their choice.
             addView(browseCommand, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { marginStart = dp(COMMAND_GAP_DP) })
+            addView(packCommand, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply { marginStart = dp(COMMAND_GAP_DP) })
@@ -100,6 +130,7 @@ class WP81IconPicker(
 
     fun show(forLabel: String) {
         heading.text = forLabel.lowercase().ifEmpty { "choose icon" }
+        setIconPackShowing(false)
         choices.clear()
         adapter.notifyDataSetChanged()
         visibility = VISIBLE
@@ -113,6 +144,36 @@ class WP81IconPicker(
 
     fun isShowing(): Boolean = visibility == VISIBLE
 
+    /** Offers the pack's own icons as a source, for as long as a pack is on. */
+    fun setIconPackAvailable(available: Boolean) {
+        packCommand.visibility = if (available) VISIBLE else GONE
+    }
+
+    /**
+     * Says which source the grid is showing, in the word on the command itself.
+     *
+     * The command is the only way between the two sets, so it has to name where it goes
+     * rather than what it is: a command still reading "icon pack" over a grid full of the
+     * pack's icons is a page with no way back to the phone's own.
+     */
+    private fun setIconPackShowing(showing: Boolean) {
+        showingPack = showing
+        packCommand.text = if (showing) "windows phone" else "icon pack"
+    }
+
+    /**
+     * Empties the grid so the host can refill it from somewhere else.
+     *
+     * [show] does this too, but only on the way in. Switching between the bundled set and
+     * an icon pack happens with the page already up, and appending the second source to
+     * the first is how a grid ends up holding both.
+     */
+    fun clearChoices() {
+        choices.clear()
+        adapter.notifyDataSetChanged()
+        grid.scrollToPosition(0)
+    }
+
     /** Appends a decoded batch. Called repeatedly as the host works through the set. */
     fun addChoices(batch: List<Choice>) {
         if (batch.isEmpty()) return
@@ -125,10 +186,10 @@ class WP81IconPicker(
         palette = p
         setBackgroundColor(p.background)
         heading.setTextColor(p.foreground)
-        resetCommand.setTextColor(p.foreground)
-        browseCommand.setTextColor(p.foreground)
-        resetCommand.setBackgroundColor(p.inactive)
-        browseCommand.setBackgroundColor(p.inactive)
+        for (command in listOf(resetCommand, browseCommand, packCommand)) {
+            command.setTextColor(p.foreground)
+            command.setBackgroundColor(p.inactive)
+        }
         adapter.notifyDataSetChanged()
     }
 

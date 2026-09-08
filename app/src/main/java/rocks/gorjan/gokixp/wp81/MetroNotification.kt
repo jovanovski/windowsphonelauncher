@@ -16,7 +16,7 @@ import androidx.core.app.NotificationCompat
  *
  * For an ordinary app that is an improvement - one recognisable mark instead of a white
  * blob. For this one it is not. A launcher is not one program, it is a shell full of them,
- * and its notifications come from Alarms, People, Messages and Zune. Under the new rule all
+ * and its notifications come from Alarms, Phone, Messaging and Zune. Under the new rule all
  * four arrived wearing the same Windows logo, which is the one thing they have in common
  * and the least useful thing about any of them.
  *

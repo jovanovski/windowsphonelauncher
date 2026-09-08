@@ -264,8 +264,8 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
         override fun onKeyDrag(view: KeyView, x: Float, y: Float) = Unit
         override fun onKeyRelease(view: KeyView) = Unit
 
-        /** No space bar on this panel, so no caret slide either. */
-        override fun onCursorSlide(view: KeyView, steps: Int) = Unit
+        /** No space bar and no joystick on this panel, so no caret drag either. */
+        override fun onCursorSlide(view: android.view.View, steps: Int) = 0
 
         /** Backspace repeats while held - [KeyView] already drives that; this just answers it. */
         override fun onKeyRepeat(view: KeyView) {
@@ -838,6 +838,7 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
                         if (cell != null && cell == downCell) {
                             emojiAt(cell)?.let {
                                 KeyboardHaptics.key(this)
+                                KeyboardSounds.tap()
                                 commitEmoji(it)
                             }
                         }

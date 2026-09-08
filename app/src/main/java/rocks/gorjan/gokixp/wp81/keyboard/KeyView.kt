@@ -84,17 +84,41 @@ class KeyView(
         fun onKeyRepeat(view: KeyView)
 
         /**
-         * The finger is sliding along the space bar to move the caret.
+         * A finger is dragging the caret: along the space bar, or on the joystick.
+         *
+         * A [View] rather than a [KeyView] because the two controls that do this are not both
+         * keys - see [JoystickView].
          *
          * @param steps characters to move, negative for left. A delta rather than a position,
          *   because the caret is the field's and where it ends up is the field's business -
          *   a line ending, a chip, an emoji that is two code units wide. The keyboard says
          *   "one to the left" and lets the field work out what that means.
+         * @return how many characters the caret **actually** moved, which is not always what
+         *   was asked for: the field runs out of text. The caller wants this because it is the
+         *   one that decides about feedback, and a keyboard still ticking against the end of
+         *   the text would be saying the caret was moving when it was not. The two callers
+         *   want different things from the same fact - the space bar ticks per character, the
+         *   joystick only while it is running slowly enough for a tick to mean something - so
+         *   the answer is returned rather than acted on here.
          */
-        fun onCursorSlide(view: KeyView, steps: Int)
+        fun onCursorSlide(view: View, steps: Int): Int
     }
 
     var listener: Listener? = null
+
+    /**
+     * Told whenever this key starts or stops looking pressed.
+     *
+     * The grid's, not the service's, and separate from [Listener] because it is a different
+     * kind of fact: [Listener] is about what a key *means* - a letter typed, a hold opened -
+     * where this is only about what it looks like. The preview flag hangs off the pressed
+     * fill and must hang off exactly that, because "lit" is the one state that is already
+     * correct in every case the touch handling has: a finger that slides off the key, a
+     * gesture cancelled under it, a grid hidden mid-press. Hooking the flag to [Listener]
+     * instead left a letter floating over the keyboard whenever a finger wandered off a key
+     * before lifting, which fires no callback at all.
+     */
+    var onPressedChanged: ((KeyView, Boolean) -> Unit)? = null
 
     /** Set by the grid on every measure pass; everything sizes itself off these. */
     private var keyW = 0f
@@ -109,6 +133,37 @@ class KeyView(
      * long and the symbol feels withheld.
      */
     var holdMillis: Long = DEFAULT_HOLD_MS
+
+    /**
+     * Whether a drag along the space bar moves the caret.
+     *
+     * Off when the joystick is on, which is the whole of that setting's second half. Two
+     * controls for one job is not twice as good: the space bar's version costs a slop test on
+     * every space typed, and a thumb rolling off the key still occasionally moves the caret
+     * when it meant to type one. Once there is a control that does nothing else, that cost
+     * buys nothing and is simply dropped. See [JoystickView].
+     */
+    var caretSlide: Boolean = true
+
+    /**
+     * Whether a hold on this key opens a page the finger then slides across.
+     *
+     * The setting, pushed down from the grid; [slides] is what decides whether *this* key is
+     * one of the two it applies to. It has to reach this far down because it changes when a
+     * hold is armed at all: shift already waited for one to lock itself, but `&123` did not
+     * wait for anything, and a key whose hold is never timed can never start a gesture.
+     */
+    var slideSelect: Boolean = false
+
+    /**
+     * Whether a hold on this key starts a slide across the keyboard.
+     *
+     * The two keys that bring up a different set of keys, and only those. A slide is worth
+     * having wherever the key you actually want is one the keyboard is not currently showing,
+     * which is exactly what these two are for and is not true of any other key.
+     */
+    fun slides(): Boolean =
+        slideSelect && (key.action == Action.SHIFT || key.action == Action.SYMBOLS)
 
     /** The glyph, for the keys that have one. Parsed once - see the note in the grid. */
     var glyph: Drawable? = null
@@ -211,7 +266,10 @@ class KeyView(
         longPressFired = false
         repeatCount = 0
         sliding = false
-        lit = false
+        if (lit) {
+            lit = false
+            onPressedChanged?.invoke(this, false)
+        }
         key = next
         face.color = fillFor(false)
         tintGlyph()
@@ -250,15 +308,14 @@ class KeyView(
      * accents behind `e` are a bonus, the `3` above it is the reason the row has hints at all.
      *
      * A key that does something rather than typing something has nothing to offer, whatever
-     * is written in its corner. `&123` wears an ellipsis and means by it "there is more
-     * behind this key than the page it takes you to" - which is a promise about the key, not
-     * a character to type. Without this line, holding it types an ellipsis.
+     * is written in its corner.
      */
     fun alternates(): String = when {
         key.action != null -> ""
         // A key whose hold does something has no characters behind it, whatever is drawn in
-        // its corner: the comma's smiley is a picture of what the hold opens, not a character
-        // to type.
+        // its corner: the comma's smiley is a picture of what the hold opens, and the full
+        // stop's ellipsis is a promise that something is behind the key. Neither is a
+        // character to type - without this line, holding the full stop types an ellipsis.
         key.holdAction != null -> ""
         else -> (key.hint ?: "") + key.alternates
     }
@@ -303,11 +360,12 @@ class KeyView(
                 // alternates it opened. Neither is a scroll somebody else should be claiming.
                 parent?.requestDisallowInterceptTouchEvent(true)
                 KeyboardHaptics.key(this)
+                KeyboardSounds.key(key.action)
                 listener?.onKeyPress(this)
                 if (key.action == Action.BACKSPACE) {
                     postDelayed(repeat, FIRST_REPEAT_MS)
                 } else if (alternates().isNotEmpty() || key.holdAction != null ||
-                    key.action == Action.SHIFT
+                    key.action == Action.SHIFT || slides()
                 ) {
                     postDelayed(holdCheck, holdMillis)
                 }
@@ -315,7 +373,7 @@ class KeyView(
             }
 
             MotionEvent.ACTION_MOVE -> {
-                if (key.action == Action.SPACE && slide(event)) return true
+                if (key.action == Action.SPACE && caretSlide && slide(event)) return true
                 if (longPressFired) {
                     // The hold is running, so the finger is allowed to leave the key - that
                     // is how you reach along the row it opened. The key stays lit as the
@@ -393,7 +451,11 @@ class KeyView(
         }
         val wanted = (travel / (SLIDE_STEP_DP * density)).toInt()
         if (wanted != slideSteps) {
-            listener?.onCursorSlide(this, wanted - slideSteps)
+            // One tick per character the caret actually passes, which is what makes the slide
+            // feel like it is moving over something - and none at all once it has run off the
+            // end of the text, which is what the returned count is for.
+            val moved = listener?.onCursorSlide(this, wanted - slideSteps) ?: 0
+            if (moved != 0) KeyboardHaptics.key(this)
             slideSteps = wanted
         }
         return true
@@ -429,9 +491,22 @@ class KeyView(
     private fun repeatDelay(): Long =
         if (repeatCount < REPEAT_RAMP) SLOW_REPEAT_MS else FAST_REPEAT_MS
 
+    /**
+     * Lit by the grid rather than by a finger of its own.
+     *
+     * For the key a slide is currently over. The finger is on shift or `&123` - Android
+     * delivers the whole gesture there, wherever it travels - so the key being pointed at is
+     * one that has never been touched and would otherwise have no way of showing it. It is
+     * the ordinary pressed fill and not a mark of its own, because the key *is* pressed as
+     * far as the person doing it is concerned; the only thing that is unusual is which view
+     * the touch is arriving at.
+     */
+    fun highlight(on: Boolean) = light(on)
+
     private fun light(on: Boolean) {
         if (on == lit) return
         lit = on
+        onPressedChanged?.invoke(this, on)
         face.color = fillFor(on)
         // The glyph is a Drawable and carries its own colour, so unlike the text it has to
         // be told; [onFace] has just changed answer underneath it.
@@ -512,12 +587,28 @@ class KeyView(
      * which is not what the phone did. These are the sizes that make the *drawn* glyphs come
      * out at the sizes measured off the phone.
      */
-    private fun glyphScale(): Float = when (key.action) {
+    private fun glyphScale(): Float = glyphFit ?: when (key.action) {
         Action.SHIFT -> SHIFT_GLYPH
         Action.BACKSPACE -> BACKSPACE_GLYPH
         Action.ENTER -> ENTER_GLYPH
         else -> ROUND_GLYPH
     }
+
+    /**
+     * The square to fit the glyph into, when the action's own answer is the wrong one.
+     *
+     * [glyphScale] decides by action because ordinarily the action decides the drawing. There
+     * is one key where it does not: enter, on a field that asked for a search, wears the
+     * magnifier - which is one of the appbar icons and fills its viewport like the rest of
+     * them, not like the return arrow it stands in for. Null for every other key on the
+     * board, which is the point: this is an exception and reads as one.
+     */
+    var glyphFit: Float? = null
+        set(value) {
+            if (field == value) return
+            field = value
+            invalidate()
+        }
 
     /**
      * What everything drawn on the key is sized against.
@@ -753,6 +844,20 @@ class KeyView(
 
         /** The emoji and globe keys, whose drawings do fill their own boxes. */
         const val ROUND_GLYPH = 0.56f
+
+        /**
+         * The magnifier and the arrow the enter key wears for a field's action.
+         *
+         * Half again the size of the other appbar drawings, and the exception is earned. Every
+         * other glyph on this keyboard shares its key with nothing, so it can be drawn at the
+         * weight of a letter and read as one mark among thirty. These two stand in for a
+         * *word* - they are where `search` and `go` used to be spelled out - and a picture the
+         * size of a letter where a word was reads as a smaller key, not as a shorter label.
+         * The enter key is also the widest key on the row, so there is room for it.
+         *
+         * See [glyphFit], which is how this reaches the one key that uses it.
+         */
+        const val ENTER_MARK_GLYPH = ROUND_GLYPH * 1.5f
 
         /** The caps-lock bar: how wide, how far below the middle, how thick. */
         const val UNDERLINE_W = 0.34f

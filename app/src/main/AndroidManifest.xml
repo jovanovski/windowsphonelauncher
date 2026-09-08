@@ -300,7 +300,7 @@
           lock screen - see InCallActivity for why each of those is needed.
         -->
         <activity
-            android:name=".apps.people.InCallActivity"
+            android:name=".apps.phone.InCallActivity"
             android:exported="false"
             android:theme="@style/Base.Theme.GokiXP"
             android:launchMode="singleInstance"
@@ -321,7 +321,7 @@
           only Telecom sends this action and it is sent to the default dialler by name.
         -->
         <receiver
-            android:name=".apps.people.MissedCallReceiver"
+            android:name=".apps.phone.MissedCallReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.telecom.action.SHOW_MISSED_CALLS_NOTIFICATION" />
@@ -330,12 +330,12 @@
 
         <!-- The buttons on the call notification. Not exported; see CallActionReceiver. -->
         <receiver
-            android:name=".apps.people.CallActionReceiver"
+            android:name=".apps.phone.CallActionReceiver"
             android:exported="false" />
 
         <!-- And on a message notification. Not exported, for the same reason. -->
         <receiver
-            android:name=".apps.people.MessageActionReceiver"
+            android:name=".apps.messaging.MessageActionReceiver"
             android:exported="false" />
 
         <!--
@@ -347,7 +347,7 @@
           by this app or it is lost. See SmsDeliverReceiver.
         -->
         <receiver
-            android:name=".apps.people.SmsDeliverReceiver"
+            android:name=".apps.messaging.SmsDeliverReceiver"
             android:exported="true"
             android:permission="android.permission.BROADCAST_SMS">
             <intent-filter>
@@ -359,12 +359,12 @@
           A picture message arriving, which this app does not do.
 
           Declared because the messaging role requires it, and because the push is consumed
-          by whichever app is handed it - so a picture message that arrives while People
+          by whichever app is handed it - so a picture message that arrives while Messaging
           holds the role reaches nothing else either. It says so rather than dropping it in
           silence. See MmsDeliverReceiver.
         -->
         <receiver
-            android:name=".apps.people.MmsDeliverReceiver"
+            android:name=".apps.messaging.MmsDeliverReceiver"
             android:exported="true"
             android:permission="android.permission.BROADCAST_WAP_PUSH">
             <intent-filter>
@@ -379,7 +379,7 @@
           this shell's own call screen. See RespondViaMessageService.
         -->
         <service
-            android:name=".apps.people.RespondViaMessageService"
+            android:name=".apps.messaging.RespondViaMessageService"
             android:exported="true"
             android:permission="android.permission.SEND_RESPOND_VIA_MESSAGE">
             <intent-filter>
@@ -393,7 +393,7 @@
         </service>
 
         <service
-            android:name=".apps.people.GokiInCallService"
+            android:name=".apps.phone.GokiInCallService"
             android:exported="true"
             android:permission="android.permission.BIND_INCALL_SERVICE">
             <meta-data
@@ -581,6 +581,7 @@
             android:name=".wp81.keyboard.KeyboardSettingsActivity"
             android:label="@string/keyboard_name"
             android:theme="@style/Base.Theme.GokiXP"
+            android:windowSoftInputMode="adjustResize"
             android:exported="true" />
 
         <service

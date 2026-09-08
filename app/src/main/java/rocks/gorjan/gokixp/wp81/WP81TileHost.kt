@@ -392,7 +392,9 @@ class WP81TileHost(
         // which is how a date is read, the number being what is looked for and the
         // weekday what places it. Capitalised where the rest of the shell is lower case:
         // a weekday is a name, and the calendar tile is the one place it stands alone.
-        val weekdayPattern = if (size == TileSize.WIDE) "EEEE" else "EEE"
+        // Spelled out wherever the tile is wide enough to carry it - four cells or more,
+        // which the wall can now reach at more than one footprint.
+        val weekdayPattern = if (size.cols >= 4 && !size.isStrip) "EEEE" else "EEE"
         val weekday = java.text.SimpleDateFormat(weekdayPattern, locale).format(now)
             // Not every locale hands back a capital - "dom.", "lun." - so it is done here
             // rather than left to the format.
@@ -463,7 +465,7 @@ class WP81TileHost(
         } catch (e: Exception) {
             null
         }
-        return iconProvider.glyphFor(tile.packageName, fallback)
+        return iconProvider.glyphFor(tile.packageName, fallback, isTile = true)
     }
 
     companion object {
@@ -480,12 +482,16 @@ class WP81TileHost(
         /**
          * Turns a stored icon path into something drawable.
          *
-         * Three kinds of path end up in the mappings: a file the user imported, which
+         * Four kinds of path end up in the mappings: a file the user imported, which
          * lives in the app's own storage; an SVG from the Windows Phone set, which nothing
-         * in the platform will decode but whose path data it will draw; and an ordinary
-         * image in the assets.
+         * in the platform will decode but whose path data it will draw; an ordinary image
+         * in the assets; and one icon named out of an installed icon pack, which lives in
+         * another package's resources and is not a file this app can open at all.
          */
         fun loadIconFromPath(context: Context, iconPath: String): android.graphics.drawable.Drawable? {
+            if (iconPath.startsWith(rocks.gorjan.gokixp.IconPack.PATH_PREFIX)) {
+                return rocks.gorjan.gokixp.IconPack.fromPath(context, iconPath)
+            }
             return if (iconPath.endsWith(".svg", ignoreCase = true) &&
                     !iconPath.startsWith("$IMPORTED_ICONS_DIR/")
             ) {

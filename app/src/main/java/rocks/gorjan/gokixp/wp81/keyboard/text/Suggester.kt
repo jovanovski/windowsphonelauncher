@@ -802,8 +802,15 @@ class Suggester(
         /** What a known pairing is worth on top of the word's own weight. */
         const val BIGRAM_BONUS = 120
 
-        /** The bar shows a handful; searching for more would be work thrown away. */
-        const val LIMIT = 8
+        /**
+         * The bar shows a handful; searching for more would be work thrown away.
+         *
+         * Nine, which with the literal in front of them is the ten the bar will hold. It was
+         * eight while the bar had three fixed columns and eight was already generous; now the
+         * row scrolls, every one of these can actually be reached, and the odd one out was
+         * the ninth-best word being computed and then dropped.
+         */
+        const val LIMIT = 9
 
         /**
          * How many candidates are held during a search.

@@ -96,7 +96,105 @@ class EmojiData private constructor(
         return all.filter { it.name.contains(needle) }
     }
 
+    /**
+     * Emoji whose name is *headed* by a word, ready to answer [headed].
+     *
+     * Built once, because the alternative is scanning three and a half thousand names on
+     * every keystroke - which is what [search] does, and is fine for a search box somebody
+     * has deliberately opened and wrong for the suggestion bar, where it would run under
+     * every letter of every word typed.
+     */
+    private val byHead: Map<String, List<Emoji>> by lazy {
+        val index = HashMap<String, MutableList<Emoji>>(2048)
+        for (emoji in all) {
+            if (isVariant(emoji.name)) continue
+            val words = nameWords(emoji.name)
+            if (words.isEmpty()) continue
+            index.getOrPut(words.first()) { mutableListOf() }.add(emoji)
+            // Both ends, and only the ends. See [headed] for why the middle is left out.
+            if (words.last() != words.first()) {
+                index.getOrPut(words.last()) { mutableListOf() }.add(emoji)
+            }
+        }
+        // Sorted once, here, so a lookup is a hash and a `take`.
+        //
+        // By how many words the name has, which is the whole ranking and needs no second
+        // clause: a bucket is keyed by a word that begins or ends every name in it, so a
+        // one-word name in it *is* the emoji that term names outright - `crown` before
+        // `person with crown`, `kiss` before `kiss mark`. `sortedBy` is stable, so the
+        // asset's own order - Unicode's, which puts the ordinary before the specialised -
+        // is what breaks the ties.
+        index.mapValues { (_, found) -> found.sortedBy { nameWords(it.name).size } }
+    }
+
+    /**
+     * Emoji the whole word [term] names, best first, or empty.
+     *
+     * **The term has to be the first or the last word of the name**, and that rule is the
+     * whole of making this usable rather than noise. Matching anywhere in the name is what
+     * [search] does and is right for a search box; on the suggestion bar it fires under
+     * ordinary typing, because the names are English sentences and English sentences are full
+     * of small words - `with` is in 273 of them, `and` in 43. First or last is a cheap stand-in
+     * for "the term is what this emoji *is*, not a preposition inside its description", and it
+     * costs almost nothing real: `red heart` is still found by `heart`, `kiss mark` by `kiss`,
+     * and `grinning face with big eyes` is no longer found by `with`.
+     *
+     * Skin tone and hair variants are left out. They are half the asset - 1875 of 3773 - and
+     * they are derived forms rather than different emoji: a bar offering five shades of the
+     * same couple kissing is a bar with nothing else on it. The picker still has them all.
+     *
+     * Ordered by how completely the term accounts for the name - an emoji *called* `crown`
+     * before one called `person with crown` - and then by the asset's own order, which is
+     * Unicode's, which puts the ordinary ones before the specialised.
+     */
+    fun headed(term: String, limit: Int): List<Emoji> {
+        val needle = term.trim().lowercase()
+        if (needle.length < MIN_TERM) return emptyList()
+        val found = byHead[needle] ?: return emptyList()
+        return if (found.size <= limit) found else found.subList(0, limit)
+    }
+
     companion object {
+
+        /**
+         * The shortest term that may name an emoji.
+         *
+         * Three. At two the bar starts answering `ox` and `pi` under the second letter of
+         * every word typed, which is both wrong most of the time and wrong at the moment the
+         * user has given the keyboard the least to go on.
+         */
+        const val MIN_TERM = 3
+
+        /**
+         * A name's words, lowercased, with the punctuation dropped.
+         *
+         * `flag: Puerto Rico` is three words and `man's shoe` is two - the apostrophe splits
+         * `man's`, which costs an `s` in the index that nothing will ever look up and saves
+         * having to decide what counts as part of a word.
+         */
+        fun nameWords(name: String): List<String> {
+            val words = ArrayList<String>(4)
+            val word = StringBuilder()
+            for (ch in name) {
+                if (ch.isLetterOrDigit()) {
+                    word.append(ch.lowercaseChar())
+                } else if (word.isNotEmpty()) {
+                    words.add(word.toString())
+                    word.clear()
+                }
+            }
+            if (word.isNotEmpty()) words.add(word.toString())
+            return words
+        }
+
+        /**
+         * Whether a name is a derived form rather than an emoji of its own.
+         *
+         * Skin tones and hair colours, which the asset spells as a suffix after a colon -
+         * `kiss: light skin tone`, `man: red hair`, `woman: dark skin tone, bald`.
+         */
+        fun isVariant(name: String): Boolean =
+            name.contains("skin tone") || name.endsWith(" hair") || name.endsWith(": bald")
 
         /**
          * Parses the asset's own tab-separated format: `glyph<TAB>categoryIndex<TAB>name`.

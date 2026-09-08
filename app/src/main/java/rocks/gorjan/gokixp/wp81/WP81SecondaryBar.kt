@@ -53,6 +53,9 @@ class WP81SecondaryBar(
     /** Inside a folder, nothing selected: put another app in it. */
     var onAddApp: (() -> Unit)? = null
 
+    /** Editing a tile: make a folder out of it, where it stands. */
+    var onNewFolder: (() -> Unit)? = null
+
     /**
      * What the bar is currently for. [Mode.NONE] is the usual case - navigating, with
      * nothing held - and takes the bar off the screen.
@@ -71,8 +74,8 @@ class WP81SecondaryBar(
         FOLDER
     }
 
-    // Made rather than added: which of the three is on the strip is the mode's business,
-    // and setMode puts them there. See MetroAppBar.makeCommand.
+    // Made rather than added: which of them are on the strip is the mode's business, and
+    // setMode puts them there. See MetroAppBar.makeCommand.
     private val colorButton = makeCommand(R.drawable.wp81_nav_color) { onTileColor?.invoke() }
     // The app bar image glyph, which the Photos tile also wears - it is the same picture
     // in both places, and this is the icon that set was drawn for.
@@ -80,6 +83,8 @@ class WP81SecondaryBar(
         makeCommand(R.drawable.wp81_glyph_photos) { onTilePicture?.invoke() }
     private val menuButton = makeCommand(R.drawable.wp81_handle_menu) { onTileMenu?.invoke() }
     private val addButton = makeCommand(R.drawable.wp81_nav_add) { onAddApp?.invoke() }
+    private val newFolderButton =
+        makeCommand(R.drawable.wp81_nav_new_folder) { onNewFolder?.invoke() }
 
     var mode: Mode = Mode.NONE
         private set
@@ -105,8 +110,18 @@ class WP81SecondaryBar(
      * whether it is currently showing it. Null takes the picture command off the strip
      * altogether - a tile with no photograph behind it has nothing to turn off, and a key
      * that does nothing is a key that looks broken.
+     *
+     * [canFolder] is the same kind of answer about the new-folder command: a folder, a
+     * built-in, or a tile already filed inside one cannot be made into a folder, and the
+     * key comes off the strip rather than standing there refusing. See
+     * StartScreenView.editingCanFolder.
      */
-    fun setMode(mode: Mode, hasSelection: Boolean, picture: Boolean? = null) {
+    fun setMode(
+        mode: Mode,
+        hasSelection: Boolean,
+        picture: Boolean? = null,
+        canFolder: Boolean = false
+    ) {
         // Alongside the colour rather than in the command list: both are the same kind of
         // thing - how the tile looks, tried and untried until it looks right - where the
         // list holds the once-only verbs. A key that is *on* says so by wearing the accent,
@@ -115,13 +130,22 @@ class WP81SecondaryBar(
         setCommandOn(pictureButton, picture == true)
         val shown = when (mode) {
             Mode.NONE -> emptyList()
-            // "New folder" is gone: folders are made by holding one tile over another,
-            // which is how the phone did it and needs no key. Unpinning and hiding live in
-            // the command list - each is a thing you do once, where recolouring is a thing
-            // you do repeatedly until it looks right.
+            // The folder key sits between the two looks-of-the-tile commands and the list,
+            // and the list stays last: the dots are the way out of the strip and move about
+            // as little as the keys under it. Unpinning and hiding are in that list - each
+            // is a thing you do once, where recolouring is a thing you do repeatedly until
+            // it looks right.
+            //
+            // The phone had no such key: folders there were made by holding one tile over
+            // another. That is still written and still works, but it is switched off - see
+            // StartScreenView.FOLD_ON_DRAG for what it cost the wall to keep.
             Mode.EDIT_START ->
-                if (hasSelection) listOfNotNull(colorButton, toggle, menuButton)
-                else emptyList()
+                if (hasSelection) listOfNotNull(
+                    colorButton,
+                    toggle,
+                    newFolderButton.takeIf { canFolder },
+                    menuButton
+                ) else emptyList()
             // Inside a folder the tile's own colour is the folder's business, not the
             // wall's, so only the command list is offered - and the picture, which is not:
             // a News tile filed away still turns through photographs, and where it is

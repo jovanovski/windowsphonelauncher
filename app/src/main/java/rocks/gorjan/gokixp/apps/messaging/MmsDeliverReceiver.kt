@@ -1,4 +1,4 @@
-package rocks.gorjan.gokixp.apps.people
+package rocks.gorjan.gokixp.apps.messaging
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -18,7 +18,7 @@ import rocks.gorjan.gokixp.wp81.metroLook
  * It has to exist. An app is only offered the messaging role if it declares a receiver for
  * this, alongside the one for text messages, an activity that answers `SENDTO` and a
  * service that answers `RESPOND_VIA_MESSAGE`; three of those four do real work and this is
- * the fourth. Without it People cannot be the phone's messaging app at all.
+ * the fourth. Without it Messaging cannot be the phone's messaging app at all.
  *
  * What arrives here is not the picture. It is a push saying one is waiting on the network,
  * and fetching it means decoding a binary PDU, opening a connection on the carrier's own
@@ -27,7 +27,7 @@ import rocks.gorjan.gokixp.wp81.metroLook
  *
  * So the message is not shown, and the notice says so. That is the point of this class:
  * the push is delivered to one app and consumed, so a picture message that arrived while
- * People held the role is a picture message nobody else will ever show either. Silence
+ * Messaging held the role is a picture message nobody else will ever show either. Silence
  * would make that look like nothing had happened - somebody sent something, and the phone
  * would simply never mention it. This at least tells the reader there is something they
  * are not seeing, and who to ask about it.
@@ -53,10 +53,10 @@ class MmsDeliverReceiver : BroadcastReceiver() {
                         .setSmallIcon(R.drawable.wp81_notify_message)
                         .metroLook(context)
                         .setContentTitle("Picture message")
-                        .setContentText("People does not show picture messages")
+                        .setContentText("Messaging does not show picture messages")
                         .setStyle(
                             NotificationCompat.BigTextStyle().bigText(
-                                "Somebody sent a picture or group message. People handles " +
+                                "Somebody sent a picture or group message. Messaging handles " +
                                     "text messages only, so this one cannot be opened here."
                             )
                         )
@@ -99,6 +99,6 @@ class MmsDeliverReceiver : BroadcastReceiver() {
         /** One at a time. Two unopenable messages are the same fact said twice. */
         const val NOTIFICATION_ID = 8103
 
-        const val TAG = "WP81People"
+        const val TAG = "WP81Messaging"
     }
 }

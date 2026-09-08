@@ -21,8 +21,8 @@ object Layouts {
     /**
      * The bottom row, which is the same on every layout including the symbol pages.
      *
-     * `&123` carries an ellipsis in its top-left corner on the phone, which is the same
-     * corner and the same grey the top row's numbers use - so it is set as a hint rather
+     * The ellipsis that marks the settings hold sits in a key's top-left corner, which is the
+     * same corner and the same grey the top row's numbers use - so it is set as a hint rather
      * than invented as a second kind of mark.
      */
     /**
@@ -93,12 +93,9 @@ object Layouts {
 
     private fun spaceRow(columns: Float) = Row(
         listOf(
-            // The ellipsis in this key's corner has meant "there is more behind this than the
-            // page it takes you to" since the phone, and this is what it means here: the
-            // keyboard's own settings are behind the hold.
             Key(
-                label = "&123", hint = "\u2026", span = SIDE_KEY, style = Style.FUNCTION,
-                action = Action.SYMBOLS, holdAction = Action.SETTINGS
+                label = "&123", span = SIDE_KEY, style = Style.FUNCTION,
+                action = Action.SYMBOLS
             ),
             // Comma and emoji on one key, marked with a smiley in the corner the way the
             // number row marks its digits. See [Key.holdAction].
@@ -109,8 +106,17 @@ object Layouts {
                 output = " ", span = columns - FIXED_BOTTOM, action = Action.SPACE,
                 overhangTop = SPACE_OVERHANG
             ),
-            Key(output = "."),
-            Key(span = ENTER_KEY, style = Style.ACCENT, action = Action.ENTER)
+            // The ellipsis in this key's corner has meant "there is more behind this than
+            // the thing the key does" since the phone, and this is what it means here: the
+            // keyboard's own settings are behind the hold.
+            //
+            // It sits on the full stop rather than on `&123`, where it used to, because
+            // `&123` changes the page on the way *down* - see the service's `onKeyPress` -
+            // so a hold on it had already thrown the letters away and swapped in a page
+            // nobody asked for before the settings ever opened. The full stop does nothing
+            // until the finger comes up, which is what a key carrying a hold has to do.
+            Key(output = ".", hint = "\u2026", holdAction = Action.SETTINGS),
+            Key(span = ENTER_KEY, style = Style.FUNCTION, action = Action.ENTER)
         ),
         heightScale = BOTTOM_ROW_SCALE
     )
@@ -458,7 +464,7 @@ object Layouts {
             Row(symbols("789,")),
             Row(
                 symbols("+0.") +
-                    listOf(Key(span = 1f, style = Style.ACCENT, action = Action.ENTER))
+                    listOf(Key(span = 1f, style = Style.FUNCTION, action = Action.ENTER))
             )
         )
     )
@@ -474,7 +480,7 @@ object Layouts {
             Row(symbols("789;")),
             Row(
                 symbols("*0#") +
-                    listOf(Key(span = 1f, style = Style.ACCENT, action = Action.ENTER))
+                    listOf(Key(span = 1f, style = Style.FUNCTION, action = Action.ENTER))
             )
         )
     )

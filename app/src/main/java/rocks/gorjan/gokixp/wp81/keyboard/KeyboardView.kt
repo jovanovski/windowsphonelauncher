@@ -154,6 +154,96 @@ class KeyboardView(
             grids.values.forEach { grid -> grid.forEach { it.holdMillis = value } }
         }
 
+    /**
+     * How tall the keys are against the height the phone's own were, as a multiplier.
+     *
+     * The one proportion in this keyboard somebody can move, and it earns the exception the
+     * same way the vibration strength does: [KEY_ASPECT] is a measurement off a 480-wide
+     * phone held by nobody in particular, and how much of a screen a keyboard should take is
+     * a trade between the size of a thumb and the size of what is being typed into - both of
+     * which vary by more than any single number can cover. A four-inch phone in one hand and
+     * a tablet-sized one in two are not the same keyboard.
+     *
+     * A multiplier rather than a height, so it means the same thing on every screen: the keys
+     * are still a fraction of the width, still in the phone's proportions, and this says how
+     * much of one. Only the *keys* answer to it - the gutters between them and the suggestion
+     * bar do not, because those are sized for a fingertip and a line of text respectively and
+     * neither of those changes when somebody wants taller keys.
+     */
+    var keyHeightScale: Float = 1f
+        set(value) {
+            val clamped = value.coerceIn(MIN_HEIGHT_SCALE, MAX_HEIGHT_SCALE)
+            if (field == clamped) return
+            field = clamped
+            // Every cached grid is holding bounds measured against the old height.
+            laidOutAt.clear()
+            requestLayout()
+        }
+
+    /**
+     * Whether the caret joystick is showing. See [JoystickView].
+     *
+     * Turning it on takes the caret slide off the space bar, which is not two settings folded
+     * into one but the same one said twice: the space bar's slide exists because there was
+     * nowhere else to put the gesture, and once there is somewhere, leaving it on the space
+     * bar only keeps the occasional wrong space it costs.
+     */
+    var joystick: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            grids.values.forEach { grid -> grid.forEach { it.caretSlide = !value } }
+            if (value) attachJoystick() else detachJoystick()
+        }
+
+    private var joystickView: JoystickView? = null
+
+    private fun attachJoystick() {
+        if (joystickView != null) return
+        val view = JoystickView(context, palette)
+        // Zero when there is no listener, which is the same answer the field gives when the
+        // caret has nowhere left to go: nothing moved.
+        view.onDrag = { steps -> listener?.onCursorSlide(view, steps) ?: 0 }
+        joystickView = view
+        addView(view)
+        requestLayout()
+    }
+
+    private fun detachJoystick() {
+        joystickView?.let { removeView(it) }
+        joystickView = null
+        requestLayout()
+    }
+
+    /**
+     * Whether a hold on shift or `&123` slides across the keys it brings up.
+     *
+     * Pushed down to every key, cached grids included, the way the hold time is: a grid that
+     * is not on screen is one tap from being so, and one that had missed the change would
+     * have keys whose hold did nothing until the next rebuild.
+     */
+    var slideKeys: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            grids.values.forEach { grid -> grid.forEach { it.slideSelect = value } }
+            if (!value) endSlide()
+        }
+
+    /**
+     * Whether a pressed key lifts its letter clear of the finger. See [KeyPreviewPopup].
+     *
+     * Turning it off does not merely stop showing the flag, it puts away one that is up: this
+     * can be switched from the settings page while the keyboard is on screen underneath it,
+     * which is the whole reason that page has a text box to type in.
+     */
+    var keyPreview: Boolean = true
+        set(value) {
+            if (field == value) return
+            field = value
+            if (!value) preview.dismiss()
+        }
+
     // ------------------------------------------------------------------ alternates
 
     /**
@@ -165,6 +255,9 @@ class KeyboardView(
      */
     private val popup = AlternatesPopup(context, palette)
 
+    /** The letter lifted clear of the finger, when the setting asks for it. */
+    private val preview = KeyPreviewPopup(context, palette)
+
     /** Which key's row is open, so a stray drag from another key cannot move the selection. */
     private var popupKey: KeyView? = null
 
@@ -173,6 +266,10 @@ class KeyboardView(
         val chars = key.alternates()
         if (chars.isEmpty() || keyW <= 0f) return
         popupKey = key
+        // Two things cannot float over the same key. The row is the more useful of them and
+        // it is what the finger is now steering, so the flag goes - at once rather than after
+        // its usual delay, which would leave the two overlapping for a visible moment.
+        preview.dismiss()
         popup.show(this, key, chars, keyW, keyH, gap)
     }
 
@@ -187,6 +284,120 @@ class KeyboardView(
     fun hideAlternates() {
         popupKey = null
         popup.dismiss()
+        // The flag too. Its own delay is there so that fast typing moves one window instead
+        // of flashing several, and none of the things that call this are fast typing - they
+        // are the keyboard being put away, a panel taking over, or a hold ending. A letter
+        // still hanging over the keys through any of those is a letter over nothing.
+        preview.dismiss()
+    }
+
+    // ------------------------------------------------------------------ sliding
+
+    /**
+     * The key a slide began on, or null when none is running.
+     *
+     * Kept for the same reason [popupKey] is: the gesture belongs to one key and every other
+     * key on the board is still free to be pressed by a second finger, whose drags must not
+     * steer this one.
+     */
+    private var slideFrom: KeyView? = null
+
+    /** The key the finger is over, lit and waiting to be taken. */
+    private var slideOver: KeyView? = null
+
+    /** A slide has begun on [key], which has just brought up the page being slid across. */
+    fun startSlide(key: KeyView) {
+        slideFrom = key
+        slideOver = null
+        // Two things cannot float over the same key, and the flag belongs to whichever key
+        // the finger is over rather than to the one it is still resting on.
+        preview.dismiss()
+    }
+
+    /**
+     * The finger has moved, in [key]'s own coordinates - which is how they arrive, because
+     * the whole gesture is delivered to the key it started on.
+     */
+    fun moveSlide(key: KeyView, x: Float, y: Float) {
+        if (slideFrom !== key) return
+        val next = keyAt(key.left + x, key.top + y)
+        if (next === slideOver) return
+        slideOver?.highlight(false)
+        slideOver = next
+        next?.highlight(true)
+        // One tick per key crossed. The finger is out on keys it cannot see - that is what
+        // the gesture is for - and the fill it lights is under the thumb doing the lighting,
+        // so the tick is the only part of this that reaches the person reliably. The same
+        // reasoning as the space bar's slide, which ticks per character for the same reason.
+        if (next != null) KeyboardHaptics.key(key)
+    }
+
+    /** What the finger was over, or null if it was over nothing. */
+    fun takeSlide(): KeyView? = slideOver
+
+    /** Puts out the light, whether or not anything was taken. */
+    fun endSlide() {
+        slideOver?.highlight(false)
+        slideFrom = null
+        slideOver = null
+    }
+
+    /**
+     * Which key is at a point in this view, or null for the gutter around the outside.
+     *
+     * Last match rather than first, because that is the one a finger landing there would have
+     * pressed: the views overlap where one claims ground above another - the space bar does,
+     * to catch the thumbs that aim low - and Android hands a touch to the topmost of them,
+     * which is the later of the two.
+     */
+    private fun keyAt(x: Float, y: Float): KeyView? {
+        for (i in keys.indices.reversed()) {
+            val view = keys[i]
+            if (view.visibility != VISIBLE) continue
+            if (x >= view.left && x < view.right && y >= view.top && y < view.bottom) return view
+        }
+        return null
+    }
+
+    /**
+     * A key has started or stopped looking pressed.
+     *
+     * Only keys that type something get a flag. Shift, backspace, the space bar and the rest
+     * say what they do by what they do, and a flag reading `\u2190` over the backspace key is
+     * an animation in the corner of the eye for no information at all - which is why every
+     * keyboard that has ever done this has done it for characters only.
+     */
+    private fun showPreview(key: KeyView, pressed: Boolean) {
+        if (!keyPreview) return
+        if (!pressed) {
+            preview.hide()
+            return
+        }
+        if (key.key.action != null) return
+        // The row of alternates is already up over this key, and has the finger.
+        if (popupKey != null) return
+        val text = key.output()
+        if (text.isBlank()) return
+        preview.show(this, key, text, keyH * scaleOf(rowOf(key)), gap)
+    }
+
+    /**
+     * Which row a key belongs to, so a flag over the shorter bottom row is the height of
+     * *that* row rather than of a letter row it is not in.
+     *
+     * Found by walking the layout rather than remembered on the key, because the key views
+     * are rebound as the layout changes and a remembered row would be the previous layout's.
+     * It is a scan of at most a few dozen entries and it runs once per keystroke, not per
+     * frame.
+     */
+    private fun rowOf(key: KeyView): Row {
+        var index = 0
+        val position = keys.indexOf(key)
+        for (row in layout.rows) {
+            if (position < index + row.keys.size) return row
+            index += row.keys.size
+        }
+        return layout.rows.last()
     }
 
     /**
@@ -198,6 +409,8 @@ class KeyboardView(
      */
     override fun onDetachedFromWindow() {
         hideAlternates()
+        endSlide()
+        preview.dismiss()
         super.onDetachedFromWindow()
     }
 
@@ -301,6 +514,9 @@ class KeyboardView(
         glyphs.clear()
         hintGlyphs.clear()
         popup.applyPalette(p)
+        preview.applyPalette(p)
+        joystickView?.applyPalette(p)
+        markGlyphs.clear()
         // Every grid, not just the one on screen: a hidden one is one tap from being shown
         // and would come back in the old colours.
         grids.values.forEach { grid ->
@@ -314,6 +530,9 @@ class KeyboardView(
                 }
             }
         }
+        // After the loop, which has just given the enter key the return arrow whatever the
+        // field had asked it to show. See [applyEnterFace].
+        applyEnterFace()
         invalidate()
     }
 
@@ -354,17 +573,63 @@ class KeyboardView(
     /**
      * Relabels the enter key for whatever the field being typed into has asked for.
      *
-     * A field that wants a search says so, one that wants to send says that, and a note gets
-     * the return arrow - the same key doing three jobs, which is the phone's behaviour as
-     * much as it is Android's. Only the word on it changes: the key is the accent throughout,
-     * declared that way by the layouts, so the key that finishes what you are typing looks
-     * the same in every app.
+     * A field that wants to send says `send`, one that wants a search gets the magnifier, one
+     * that wants to go gets an arrow, and a note gets the return arrow - the same key doing
+     * several jobs, which is the phone's behaviour as much as it is Android's.
+     *
+     * Two of them are marks where the rest are words - see [EnterMark], which says which and
+     * why. A mark, when there is one, is the whole of the key's face; [label] is what is left
+     * for the actions that have none.
      */
-    fun setEnterKey(label: String?) {
+    fun setEnterKey(label: String?, mark: EnterMark = EnterMark.NONE) {
+        enterLabel = label
+        enterMark = mark
+        applyEnterFace()
+    }
+
+    /** What the enter key was last told to show, so a repaint can put it back. */
+    private var enterLabel: String? = null
+    private var enterMark = EnterMark.NONE
+
+    /**
+     * Puts that on the key.
+     *
+     * Its own function because [applyPalette] hands every key the glyph its action calls for,
+     * which for enter is the return arrow - so a palette change on a field that wanted `send`
+     * used to swap the word out for an arrow and leave it there until the field was reopened.
+     * Re-applying the remembered face afterwards is what keeps the two from fighting.
+     */
+    private fun applyEnterFace() {
         val view = keys.firstOrNull { it.key.action == Action.ENTER } ?: return
-        view.key = view.key.copy(label = label ?: "")
-        view.glyph = if (label == null) glyphFor(Action.ENTER) else null
+        val marked = enterMark != EnterMark.NONE
+        view.key = view.key.copy(label = if (marked) "" else enterLabel.orEmpty())
+        view.glyph = when {
+            marked -> markGlyph(enterMark)
+            enterLabel == null -> glyphFor(Action.ENTER)
+            else -> null
+        }
+        // Neither mark is the return arrow, and neither is drawn at its size: they come out of
+        // the appbar set, and they are standing in for a word rather than labelling a key.
+        // See [KeyView.ENTER_MARK_GLYPH].
+        view.glyphFit = if (marked) KeyView.ENTER_MARK_GLYPH else null
         view.applyPalette(palette)
+    }
+
+    /**
+     * The marks the enter key can wear, held like the rest.
+     *
+     * A cache of their own rather than a corner of [glyphs], which is keyed by what a key
+     * *does* - and this key does enter whichever mark is on it. These belong to the field's
+     * request, not to an action. See [glyphs] for why nothing here parses per paint.
+     */
+    private val markGlyphs = mutableMapOf<EnterMark, Drawable?>()
+
+    private fun markGlyph(mark: EnterMark): Drawable? = markGlyphs.getOrPut(mark) {
+        when (mark) {
+            EnterMark.SEARCH -> SvgIcon.fromAsset(context, "$ICONS/appbar.magnify.svg")
+            EnterMark.GO -> SvgIcon.fromAsset(context, "$ICONS/appbar.arrow.right.svg")
+            EnterMark.NONE -> null
+        }?.mutate()
     }
 
     /**
@@ -377,12 +642,7 @@ class KeyboardView(
      */
     fun setSymbolsLabel(label: String) {
         val view = keys.firstOrNull { it.key.action == Action.SYMBOLS } ?: return
-        view.key = view.key.copy(
-            label = label,
-            // The ellipsis belongs to `&123`. On the way back it would be a mark with
-            // nothing behind it.
-            hint = if (label == "&123") "\u2026" else null
-        )
+        view.key = view.key.copy(label = label)
         view.invalidate()
     }
 
@@ -467,6 +727,9 @@ class KeyboardView(
                 KeyView(context, key, palette).also {
                     it.listener = listener
                     it.holdMillis = holdMillis
+                    it.caretSlide = !joystick
+                    it.slideSelect = slideKeys
+                    it.onPressedChanged = ::showPreview
                     addView(it)
                 }
             }
@@ -489,10 +752,21 @@ class KeyboardView(
 
         applySpaceLabel()
         applyShiftStyle()
+        applyEnterFace()
+
+        // A grid built just now went in above the dot, which has to stay on top of the keys
+        // it is painting a hole in. Only on the pass that built one: this is a re-add, and
+        // re-adding on every layout switch would ask for a layout pass that switch avoids.
+        if (fresh) joystickView?.let { removeView(it); addView(it) }
 
         // A grid coming back at the width it left at is already in the right place, and
-        // asking for a layout pass would be asking for the delay this exists to remove.
-        if (!fresh && laidOutAt[layout.id] == width) return
+        // asking for a layout pass would be asking for the delay this exists to remove. The
+        // dot is the one thing that still has to move: its corner belongs to *this* layout's
+        // bottom row, and the grid whose bounds are being reused is a different one.
+        if (!fresh && laidOutAt[layout.id] == width) {
+            placeJoystick()
+            return
+        }
 
         // Otherwise it needs laying out, and **now** rather than on the next frame. A view
         // that has just been added has no bounds until it is laid out, and a key with no
@@ -560,9 +834,9 @@ class KeyboardView(
         // keyboard shrink by a fifth: shorter keys, shorter rows, a shorter keyboard, and the
         // app above it reflowing every time the language changed. Only the width of a key
         // should answer to how many of them there are.
-        val reference = verticalUnit(resources, w, REFERENCE_COLUMNS)
+        val reference = verticalUnit(resources, w, REFERENCE_COLUMNS, keyHeightScale)
         gap = reference * GAP
-        keyH = reference * KEY_ASPECT
+        keyH = reference * KEY_ASPECT * keyHeightScale
         // The keys still fill the width, whatever the height was capped to. That is the whole
         // shape of a landscape keyboard: as wide as the screen, no taller than it needs.
         keyW = (w - layout.columns * gap) / layout.columns
@@ -595,6 +869,11 @@ class KeyboardView(
                 )
             }
         }
+        joystickView?.let { dot ->
+            dot.setMetrics(reference)
+            val side = MeasureSpec.makeMeasureSpec(dot.side(), MeasureSpec.EXACTLY)
+            dot.measure(side, side)
+        }
         setMeasuredDimension(w, h)
     }
 
@@ -625,9 +904,47 @@ class KeyboardView(
             }
             y += rowH + gap
         }
+        placeJoystick()
         // What lets the next switch back to this grid skip the layout pass entirely: these
         // bounds are good for as long as the keyboard is this wide. See [laidOutAt].
         laidOutAt[layout.id] = r - l
+    }
+
+    /**
+     * Puts the dot on the crossing of the two gutters around the bottom row's first key.
+     *
+     * Not a position of its own but a corner of the grid, so it lands in the same place on
+     * every layout and at every key height without anything having to be told twice. The one
+     * place on a full keyboard where nothing is.
+     *
+     * Worked out from the metrics rather than picked up while the rows are being laid out,
+     * which is what lets it be re-placed on the fast path in [rebuild]. That path skips the
+     * layout pass entirely for a grid coming back at the width it left at - which is the whole
+     * point of it - and a dot that could only be positioned during a pass would be left at the
+     * previous layout's corner. The letters and the symbol pages share a bottom row so it
+     * would never have shown there; the number pad has four columns and it would have shown
+     * every time.
+     */
+    private fun placeJoystick() {
+        val dot = joystickView ?: return
+        val row = layout.rows.lastOrNull() ?: return
+        val first = row.keys.firstOrNull() ?: return
+        if (keyW <= 0f || dot.measuredWidth <= 0) return
+
+        // Down to the top of the last row, which is where the rows above it end.
+        var top = gap / 2f
+        for (i in 0 until layout.rows.lastIndex) top += keyH * scaleOf(layout.rows[i]) + gap
+        // And across to the far side of that row's first key.
+        val after = gap / 2f + row.indentStart * (keyW + gap) + spanWidth(first.span) + gap
+
+        // The centre of each gutter, rather than an edge of either.
+        val centreX = after - gap / 2f
+        val centreY = top - gap / 2f
+
+        val half = dot.measuredWidth / 2
+        val left = (centreX - half).toInt()
+        val topLeft = (centreY - half).toInt()
+        dot.layout(left, topLeft, left + dot.measuredWidth, topLeft + dot.measuredHeight)
     }
 
     /**
@@ -727,7 +1044,7 @@ class KeyboardView(
          * merely too big; it did not fit, which is what "broken in landscape" was.
          *
          * So the unit is capped by what there is room for. The keyboard and its suggestion
-         * bar together come to roughly [TOTAL_UNITS] of them, and they may have
+         * bar together come to roughly [totalUnits] of them, and they may have
          * [MAX_HEIGHT_SHARE] of the screen, which fixes the largest unit that fits. In
          * portrait the width is far below that cap and nothing changes at all; in landscape
          * the cap decides, and the result is keys that are wide and short - which is what a
@@ -736,7 +1053,12 @@ class KeyboardView(
          * Taken by every part of the keyboard that has a height, including the suggestion bar
          * in [KeyboardHost], so that they agree.
          */
-        fun verticalUnit(resources: android.content.res.Resources, width: Int, columns: Float): Float {
+        fun verticalUnit(
+            resources: android.content.res.Resources,
+            width: Int,
+            columns: Float,
+            heightScale: Float = 1f
+        ): Float {
             val fromWidth = unitWidth(width, columns)
             // From the configuration rather than from `displayMetrics`. Both describe the
             // screen and only one of them is guaranteed to describe it *now*: the
@@ -746,7 +1068,7 @@ class KeyboardView(
             // wrong orientation is a keyboard built to the wrong height.
             val screen = resources.configuration.screenHeightDp * resources.displayMetrics.density
             if (screen <= 0f) return fromWidth
-            return minOf(fromWidth, screen * MAX_HEIGHT_SHARE / TOTAL_UNITS)
+            return minOf(fromWidth, screen * MAX_HEIGHT_SHARE / totalUnits(heightScale))
         }
 
         /**
@@ -773,8 +1095,28 @@ class KeyboardView(
          * tall case - four full rows, as though the shorter bottom row were switched off -
          * because the cap has to hold for the taller of the two and a keyboard that fits when
          * shortened is not a keyboard that fits.
+         *
+         * [heightScale] multiplies the rows and nothing else, which is what makes the cap
+         * still hold when somebody asks for taller keys in landscape: the keys grow, the
+         * total grows with them, and the unit the whole keyboard is built from shrinks to
+         * keep it inside the share of the screen it is allowed. The result is a keyboard that
+         * honours the setting as far as there is room for it and then stops, rather than one
+         * that runs off the top of the screen.
          */
-        const val TOTAL_UNITS = 4f * KEY_ASPECT + 4f * GAP + CandidateBar.HEIGHT
+        fun totalUnits(heightScale: Float): Float =
+            4f * KEY_ASPECT * heightScale + 4f * GAP + CandidateBar.HEIGHT
+
+        /**
+         * How far the key-height setting may be moved.
+         *
+         * Two thirds to half again. The floor is where a row of keys stops clearing Android's
+         * 48dp target on an ordinary phone, which is the point past which a shorter keyboard
+         * is not a preference but a keyboard that is hard to hit; the ceiling is where four
+         * rows and the bar start crowding out the thing being typed into even in portrait.
+         * Anything wanted outside that range is a request for a different keyboard.
+         */
+        const val MIN_HEIGHT_SCALE = 0.65f
+        const val MAX_HEIGHT_SCALE = 1.5f
 
         /** What a navigation bar is, and has been, when the system will not say. */
         private const val FALLBACK_BAR_DP = 48f

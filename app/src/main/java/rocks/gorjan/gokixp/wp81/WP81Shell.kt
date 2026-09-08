@@ -6,6 +6,7 @@ import android.content.Context
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import rocks.gorjan.gokixp.AppInfo
@@ -61,6 +62,22 @@ class WP81Shell(
     val toast = WP81Toast(context, palette)
 
     private val windowBackdrop = View(context)
+
+    /**
+     * Whether the three keys are on screen. See [setNavBarShown].
+     */
+    private var navBarShown = true
+
+    /**
+     * Everything laid out to stop above the keys, so that all of it can be let down onto
+     * the bottom edge when they are taken away.
+     *
+     * A list rather than a re-layout, because the margin is the only thing they have in
+     * common: the pages, the app bar that slides out from under the strip, the icon
+     * picker and the toast are added at four different points below for four different
+     * reasons, and each is added with its own gravity and size.
+     */
+    private val clearsNavBar = mutableListOf<View>()
 
     /** 0 = Start screen, 1 = app list. */
     private var pageProgress = 0f
@@ -164,6 +181,12 @@ class WP81Shell(
             bottomMargin = dp(WP81NavBar.HEIGHT_DP)
         })
 
+        // Everything above that was given the keys' height as a bottom margin, so that
+        // hiding them can hand it back. The navigation bar itself is not on the list - it
+        // is the thing being hidden - and neither are the context menu, the colour picker
+        // or the prompt, which deliberately cover the keys as well.
+        clearsNavBar += listOf(pages, settingsPage, folderPage, secondaryBar, iconPicker, toast)
+
         // The Start key means Start, wherever the user is not already: a key with a
         // Windows flag on it that took you *away* from the Start screen read as broken.
         // Only once there - with nothing to return from - does it take on its second job
@@ -186,6 +209,45 @@ class WP81Shell(
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    /**
+     * How much room the keys are taking at the foot of the shell, which is none when they
+     * are hidden.
+     *
+     * Read by the host for the two things it lays out itself against the same strip: the
+     * container windowed programs are drawn in, and the toast, which is lifted out of this
+     * view to sit beside that container. See `MainActivity.rebaseFloatingWindowsForWP81`.
+     */
+    val navBarInsetPx: Int
+        get() = if (navBarShown) dp(WP81NavBar.HEIGHT_DP) else 0
+
+    /**
+     * Draws the three keys, or takes them off the screen and gives the wall their height.
+     *
+     * Hiding them is not just a hidden view: the strip is space this shell reserves rather
+     * than space the system hands it, so everything that was laid out to stop above it - a
+     * page, the app bar, the toast - has to be let down onto the bottom edge with it, or
+     * the keys leave a black band behind where they were. See [clearsNavBar].
+     *
+     * The strip is the shell's only navigation, so what a user is left with when it goes
+     * is the phone's own: see `WP81Settings.getWP81HideNavBar`, which is where the switch
+     * for this lives and where that reasoning is.
+     */
+    fun setNavBarShown(shown: Boolean) {
+        if (navBarShown == shown) return
+        navBarShown = shown
+        navBar.visibility = if (shown) VISIBLE else GONE
+        val inset = navBarInsetPx
+        for (view in clearsNavBar) {
+            // MarginLayoutParams rather than this view's own: the toast is lifted out to
+            // the host's root once the shell is on screen and is laid out there by a
+            // RelativeLayout. See MainActivity.liftWP81Overlays.
+            val params = view.layoutParams as? ViewGroup.MarginLayoutParams ?: continue
+            if (params.bottomMargin == inset) continue
+            params.bottomMargin = inset
+            view.layoutParams = params
+        }
+    }
 
     // ---------------------------------------------------------------- paging
 
@@ -222,10 +284,14 @@ class WP81Shell(
                 startScreen.isEditMode -> WP81SecondaryBar.Mode.EDIT_START
                 else -> WP81SecondaryBar.Mode.NONE
             },
-            // Both editing commands act on the selected tile, so they are offered only
+            // Every editing command acts on the selected tile, so they are offered only
             // when there is one.
             hasSelection = selectedTile() != null,
-            picture = selectedTilePicture()
+            picture = selectedTilePicture(),
+            // Asked of the wall rather than worked out from the tile: whether a folder can
+            // be made out of the selection turns on which grid it is packed by as well as
+            // on what kind of tile it is. See StartScreenView.editingCanFolder.
+            canFolder = startScreen.editingCanFolder
         )
     }
 

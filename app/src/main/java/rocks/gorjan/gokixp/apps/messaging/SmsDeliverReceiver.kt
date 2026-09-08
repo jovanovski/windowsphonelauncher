@@ -1,4 +1,4 @@
-package rocks.gorjan.gokixp.apps.people
+package rocks.gorjan.gokixp.apps.messaging
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -73,6 +73,6 @@ class SmsDeliverReceiver : BroadcastReceiver() {
         /** What the SIM a message arrived on is carried under. Not a named constant anywhere. */
         const val SUBSCRIPTION = "subscription"
 
-        const val TAG = "WP81People"
+        const val TAG = "WP81Messaging"
     }
 }

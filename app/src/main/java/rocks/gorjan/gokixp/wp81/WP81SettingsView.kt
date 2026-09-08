@@ -79,8 +79,29 @@ class WP81SettingsView(
     /** Fired when the navigation bar is set to wear the accent, or the page's ground. */
     var onAccentNavBarChanged: ((Boolean) -> Unit)? = null
 
+    /** Fired when the navigation keys are taken off the screen, or given back. */
+    var onHideNavBarChanged: ((Boolean) -> Unit)? = null
+
+    /** Fired when the shell is set to take the whole display, or to leave the system bars. */
+    var onFullscreenChanged: ((Boolean) -> Unit)? = null
+
     /** Tapping the row that asks the phone to send its links to the launcher. */
     var onDefaultBrowser: (() -> Unit)? = null
+
+    /** Tapping the row that opens the keyboard's own settings. */
+    var onKeyboard: (() -> Unit)? = null
+
+    /**
+     * Tapping the icon pack row, with the row's bottom edge to hang the list of packs off.
+     *
+     * A command list rather than a page of its own, for the same reason the wallpaper's
+     * other walls are one: what is being offered is a short list of names, and a phone
+     * with two icon packs on it does not need a screen to itself to say so.
+     */
+    var onIconPack: ((Float) -> Unit)? = null
+
+    /** Fired when the pack is invited onto the Start tiles, or sent back off them. */
+    var onIconPackOnTilesChanged: ((Boolean) -> Unit)? = null
 
     /** Tapping the row that asks the phone for its app history. */
 
@@ -216,13 +237,81 @@ class WP81SettingsView(
         SwitchRow("color the navigation bar") { on -> onAccentNavBarChanged?.invoke(on) }
 
     /**
+     * Takes the three keys off the screen, and gives the wall the height they were on.
+     *
+     * The one setting on this page that removes something the user navigates with, so it
+     * is worth saying what is left: Android's back gesture, its home gesture - which on a
+     * launcher lands on Start - and the wall's own swipes, across to the app list and up
+     * into its search. What goes with the keys is Cortana's hold, and she has a tile.
+     *
+     * Turning it on takes the colour switch above away with the keys: it paints a strip
+     * that is no longer there, and a switch that visibly does nothing is worse than one
+     * that is missing. Its stored answer is untouched, so the keys come back wearing
+     * whatever they were. See [setScreenControls].
+     */
+    private val hideNavBarRow = SwitchRow("hide the navigation bar") { on ->
+        // From here rather than on the host's way back, for the same reason the dim
+        // slider appears with its own switch: the row it hides is directly above this
+        // one and should go as the switch is thrown.
+        accentNavBarRow.setVisible(!on)
+        onHideNavBarChanged?.invoke(on)
+    }
+
+    /**
+     * Hands the shell the whole display, with Android's status and navigation bars hidden.
+     *
+     * Separate from the switch above it and deliberately so: those keys are this shell's
+     * own and this is the phone's chrome - the clock, the signal, the battery, and the
+     * gesture bar at the foot of the screen. Either can be wanted without the other, and
+     * both together is a wall with nothing on it but tiles.
+     *
+     * The bars come back on a swipe from the edge and leave again by themselves, which is
+     * what Android does for anything running full screen.
+     */
+    private val fullscreenRow =
+        SwitchRow("full screen") { on -> onFullscreenChanged?.invoke(on) }
+
+    /**
      * Where the rest of the phone's links go.
      *
      * A command rather than a switch, because it is not this page's to set: Android asks
      * the user itself and can be told otherwise from its own settings at any time. So the
      * row says where things stand and opens the question - see [setDefaultBrowser].
      */
-    private val defaultBrowserRow = ActionRow("default browser") { onDefaultBrowser?.invoke() }
+    private val defaultBrowserRow = ActionRow("default browser") { _ -> onDefaultBrowser?.invoke() }
+
+    /**
+     * The way through to the keyboard's settings.
+     *
+     * They are a page of their own - a whole Activity, styled like this one - and until
+     * now the only ways to it were holding `&123` on the keyboard itself and Android's
+     * list of input methods. Both mean already having the keyboard up, which is no use to
+     * somebody who wants to turn its languages or its dictation on before they start
+     * typing. The phone kept keyboard under settings, and so does this.
+     */
+    private val keyboardRow = ActionRow("keyboard") { _ -> onKeyboard?.invoke() }
+
+    /**
+     * Which icon pack is dressing the apps, and the way to change it.
+     *
+     * An [ActionRow] rather than a set of markers because the answers are not known until
+     * the page is opened - they are whatever packs the phone happens to have - and a list
+     * that is empty on most phones would be a section of settings saying nothing at all.
+     * Its second line carries the answer, which is where this page puts every fact it has
+     * read off the phone rather than out of its own preferences. See [setIconPack].
+     */
+    private val iconPackRow = ActionRow("icon pack") { onIconPack?.invoke(anchorYOf(it)) }
+
+    /**
+     * Whether the pack reaches Start, offered only once there is a pack to reach it.
+     *
+     * The wall is flat white glyphs on accent squares and a pack is full-colour artwork,
+     * so this is a real choice about what Start looks like rather than a detail of the row
+     * above - but it is meaningless without a pack, which is why it comes and goes with
+     * one. See WP81Settings.getWP81IconPackOnTiles.
+     */
+    private val iconPackTilesRow =
+        SwitchRow("use it on start tiles") { on -> onIconPackOnTilesChanged?.invoke(on) }
 
     private var selectedAccent: Int = palette.accent
     private var selectedDark: Boolean = palette.isDark
@@ -256,6 +345,13 @@ class WP81SettingsView(
         column.addView(accentGrid, wide())
         column.addView(accentNavBarRow.view, wide())
 
+        // Its own section, under the colour switch it takes away: both are about the
+        // strip along the bottom, but one is a question of what colour it is and these
+        // two are questions of whether the shell is sharing the screen at all.
+        column.addView(sectionLabel("screen"), wide())
+        column.addView(hideNavBarRow.view, wide())
+        column.addView(fullscreenRow.view, wide())
+
         // The word the three answers share is said once, in the heading: at a third of the
         // width each there is no room to repeat "columns" beside every marker, and three
         // rows of one word would spend a screenful of height on one decision.
@@ -274,6 +370,13 @@ class WP81SettingsView(
         countsRow.addView(countsOption("numbers", true), share())
         countsRow.addView(countsOption("dots", false), share())
         column.addView(countsRow, wide())
+
+        // Under the tiles' own settings and above the wallpaper's, which is where it
+        // belongs on both counts: what the apps are wearing is a question about the wall,
+        // and the switch under it decides whether the wall is affected at all.
+        column.addView(sectionLabel("app icons"), wide())
+        column.addView(iconPackRow.view, wide())
+        column.addView(iconPackTilesRow.view, wide())
 
         column.addView(sectionLabel("start background"), wide())
         wallpaperStrip.orientation = LinearLayout.HORIZONTAL
@@ -312,6 +415,11 @@ class WP81SettingsView(
         column.addView(sectionLabel("links"), wide())
         column.addView(openLinksRow.view, wide())
         column.addView(defaultBrowserRow.view, wide())
+
+        // Its own section rather than a row under "links", because what is behind it is a
+        // page the size of this one: languages, autocorrect, the hold delay, dictation.
+        column.addView(sectionLabel("keyboard"), wide())
+        column.addView(keyboardRow.view, wide())
 
         // There is no "theme" section. This launcher is the Windows Phone shell and has
         // nothing to switch to - the desktop themes it once listed ship as a separate app
@@ -671,6 +779,21 @@ class WP81SettingsView(
     }
 
     /**
+     * Says which wallpaper Start is now wearing, without refilling the strip.
+     *
+     * A pick made through the browse square lands on the theme rather than on this page:
+     * no square was tapped, so the row went on standing the old choice out and the browse
+     * square went on believing it was bare. The picture only appeared once settings was
+     * closed and reopened and [setWallpapers] filled the strip afresh. Told the answer,
+     * the row moves the selection where it belongs there and then.
+     */
+    fun setSelectedBackground(path: String?) {
+        if (path == selectedBackground) return
+        selectedBackground = path
+        repaintWallpaperTiles()
+    }
+
+    /**
      * Hands the page the picture the user browsed for, and where it is kept.
      *
      * [preview] is a thumbnail of it, decoded by the host off the main thread the way the
@@ -722,11 +845,58 @@ class WP81SettingsView(
         accentNavBarRow.set(on)
     }
 
+    /**
+     * Seeds the two switches that decide how much of the screen the shell is given.
+     *
+     * And puts the colour switch where [hideNavBarRow] would have put it, so a page built
+     * with the keys already hidden opens without it rather than showing it until the
+     * switch beneath is touched.
+     */
+    fun setScreenControls(hideNavBar: Boolean, fullscreen: Boolean) {
+        hideNavBarRow.set(hideNavBar)
+        fullscreenRow.set(fullscreen)
+        accentNavBarRow.setVisible(!hideNavBar)
+    }
+
     /** Says whether the phone is sending its links here, in the row's second line. */
     fun setDefaultBrowser(held: Boolean) {
         defaultBrowserRow.setDetail(
             if (held) "links open in internet explorer" else "links open somewhere else"
         )
+    }
+
+    /**
+     * Says whether the phone's keyboard is this one, in the row's second line.
+     *
+     * The row goes to the keyboard's settings either way: they are worth setting before it
+     * is switched on, and the page says how to switch it on. This is only so that somebody
+     * who has never got as far as Android's input method list can see that they have not.
+     */
+    fun setKeyboardEnabled(on: Boolean) {
+        keyboardRow.setDetail(
+            if (on) "languages, suggestions, dictation"
+            else "not switched on in android's keyboard list yet"
+        )
+    }
+
+    /**
+     * Says which pack is on, in the row's second line, and offers the Start switch with it.
+     *
+     * [installed] is how many the phone has, and it is asked for so that a phone with none
+     * says so rather than offering a row that opens an empty list. That is the one case
+     * where the row is worth reading even though nothing is set: it is where somebody who
+     * has never heard of an icon pack finds out that they are a thing to go and get.
+     */
+    fun setIconPack(name: String?, onTiles: Boolean, installed: Int) {
+        iconPackRow.setDetail(
+            when {
+                name != null -> name
+                installed > 0 -> "using each app's own icons"
+                else -> "none installed - tap to find some"
+            }
+        )
+        iconPackTilesRow.set(onTiles)
+        iconPackTilesRow.setVisible(name != null)
     }
 
     /** Seeds the tile settings, which are not tied to whether a background is set. */
@@ -775,7 +945,7 @@ class WP81SettingsView(
      * somewhere else, or one the system has to be asked for. It has no marker, because
      * there is nothing here that is on or off.
      */
-    private inner class ActionRow(text: String, private val onTap: () -> Unit) {
+    private inner class ActionRow(text: String, private val onTap: (View) -> Unit) {
 
         val view = LinearLayout(context)
         private val label = TextView(context)
@@ -785,7 +955,7 @@ class WP81SettingsView(
             view.orientation = LinearLayout.VERTICAL
             view.setPadding(dp(24), dp(6), dp(24), dp(18))
             view.isClickable = true
-            view.setOnClickListener { onTap() }
+            view.setOnClickListener { onTap(view) }
             TiltEffect.apply(view)
 
             label.text = text
@@ -862,6 +1032,11 @@ class WP81SettingsView(
         /** Shows where the setting stands, without reporting it back as a change. */
         fun set(value: Boolean) {
             toggle.set(value, animated = false)
+        }
+
+        /** Takes the row off the page, for a setting that has stopped meaning anything. */
+        fun setVisible(visible: Boolean) {
+            view.visibility = if (visible) VISIBLE else GONE
         }
 
         fun repaint() {
@@ -1009,7 +1184,12 @@ class WP81SettingsView(
         dimAllRow.repaint()
         openLinksRow.repaint()
         accentNavBarRow.repaint()
+        hideNavBarRow.repaint()
+        fullscreenRow.repaint()
         defaultBrowserRow.repaint()
+        keyboardRow.repaint()
+        iconPackRow.repaint()
+        iconPackTilesRow.repaint()
         repaintCountRows()
         repaintColumnRows()
         blurSlider.applyPalette(p)

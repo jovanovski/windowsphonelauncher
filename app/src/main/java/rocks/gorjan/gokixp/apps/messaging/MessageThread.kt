@@ -1,4 +1,4 @@
-package rocks.gorjan.gokixp.apps.people
+package rocks.gorjan.gokixp.apps.messaging
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -32,6 +32,7 @@ import rocks.gorjan.gokixp.wp81.TiltEffect
 import rocks.gorjan.gokixp.wp81.WP81ContextMenu
 import rocks.gorjan.gokixp.wp81.WP81Palette
 import rocks.gorjan.gokixp.wp81.applyToField
+import rocks.gorjan.gokixp.apps.people.momentOf
 
 /**
  * One conversation: everything said to and from a number, and the box to say more in.
@@ -40,8 +41,9 @@ import rocks.gorjan.gokixp.wp81.applyToField
  * own grey, yours on the right in the accent - and put the text box at the foot with the
  * app bar under it. The bubbles are square, because everything on this platform is.
  *
- * A page rather than a view inside one: it is pushed over People like a profile or a
- * keypad, and is where back goes first. Unlike them it carries no command strip: a
+ * A page rather than a view inside one: it is pushed over the conversation list the way a
+ * profile is pushed over the address book, and is where back goes first. Unlike those it
+ * carries no command strip: a
  * conversation has exactly one thing you do to it, and that is say something - which is
  * the box at the foot and the button beside it. Everything else about the person is
  * reached through their name at the top.
@@ -66,12 +68,13 @@ class MessageThread(
     /**
      * Puts a command list up, anchored to a row.
      *
-     * Through the app rather than built here: People holds one context menu for the whole
+     * Through the app rather than built here: Messaging holds one context menu for the whole
      * program and brings it to the front as it is shown, and a second one made inside a
-     * page would go up behind the page that asked for it. See PeopleApp.showMenu.
+     * page would go up behind the page that asked for it. See HubApp.showMenu.
      */
     private val onMenu: (String?, List<WP81ContextMenu.Item>, View) -> Unit,
-    private val onNotify: (String, String) -> Unit
+    /** A band across the top of the shell, in the app's own name. */
+    private val onNotify: (String) -> Unit
 ) : LinearLayout(context) {
 
     private val header = MetroPageHeader(context, palette)
@@ -268,7 +271,7 @@ class MessageThread(
                 onRequestPermissions(MessageStore.sendPermissions())
                 return
             }
-            onNotify("Messages", "This app has not been allowed to send messages")
+            onNotify("This app has not been allowed to send messages")
             return
         }
         Haptics.tap(compose)
@@ -280,7 +283,7 @@ class MessageThread(
      * Sends a failed message again, and takes the failed one away.
      *
      * The old row is a record of an attempt, not of anything that was said - see
-     * [MessageStore.forget], which can only do this while People is the phone's messaging
+     * [MessageStore.forget], which can only do this while this app is the phone's messaging
      * app. Where it cannot, the attempt stays in the conversation and the new one appears
      * beneath it, which is the truthful version of the same events.
      */
@@ -296,7 +299,7 @@ class MessageThread(
         bind(toBottom = true)
         MessageStore.send(context, address, body) { problem ->
             mine.problem = problem
-            if (problem != null) onNotify("Messages", problem)
+            if (problem != null) onNotify(problem)
             // The store will have the message by now if it went; if it did not, the bubble
             // has to change to say so. Either way this is the moment to look again.
             reload()
@@ -612,13 +615,13 @@ class MessageThread(
             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
                 as? android.content.ClipboardManager
             if (clipboard == null) {
-                onNotify("Messages", "This phone has nowhere to copy to")
+                onNotify("This phone has nowhere to copy to")
                 return
             }
             clipboard.setPrimaryClip(android.content.ClipData.newPlainText("message", body))
         } catch (e: Exception) {
-            android.util.Log.w("WP81People", "Could not copy a message", e)
-            onNotify("Messages", "That could not be copied")
+            android.util.Log.w("WP81Messaging", "Could not copy a message", e)
+            onNotify("That could not be copied")
         }
     }
 

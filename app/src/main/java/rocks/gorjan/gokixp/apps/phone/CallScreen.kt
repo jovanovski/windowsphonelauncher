@@ -1,4 +1,4 @@
-package rocks.gorjan.gokixp.apps.people
+package rocks.gorjan.gokixp.apps.phone
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -19,22 +19,38 @@ import rocks.gorjan.gokixp.wp81.PeopleStore
 import rocks.gorjan.gokixp.wp81.SvgIcon
 import rocks.gorjan.gokixp.wp81.TiltEffect
 import rocks.gorjan.gokixp.wp81.WP81Palette
+import rocks.gorjan.gokixp.apps.people.ContactFace
 
 /**
  * The green a call button is, whatever the phone's accent is.
  *
- * The two places in this shell where a colour is not the user's choice, and they are the
- * same place twice: the button that takes a call, and the button that places one. Every
- * other button in here says "this is the command in force" and takes the accent to say
- * it. These two say "this is the one that starts the call", each of them next to a button
- * an inch away that does the opposite - ends it, or saves the number instead - and green
- * has meant this on a telephone for longer than any of this has existed. A phone whose
- * accent happened to be red would otherwise put a red button under "answer".
+ * One of the two colours in this shell that are not the user's choice. It marks the button
+ * that takes a call and the button that places one - every other button in here says "this
+ * is the command in force" and takes the accent to say it, where these say "this is the one
+ * that starts the call". Green has meant that on a telephone for longer than any of this
+ * has existed, and a phone whose accent happened to be red would otherwise put a red button
+ * under "answer".
  *
  * Windows Phone's own Green, from the twenty the theme picker offered, so it still belongs
  * to the palette even where it is not the palette's choice. See WP81Settings.WP81_ACCENTS.
  */
 internal const val CALL_GREEN = 0xFF60A917.toInt()
+
+/**
+ * The red a call is ended or turned away in, whatever the phone's accent is.
+ *
+ * The other half of [CALL_GREEN], and it exists for the same reason twice over. "Hang up"
+ * used to take the accent, which meant that on a Green phone the button that ends a call
+ * was the same colour as the button that answers one - the two most consequential presses
+ * on the device, drawn identically, on a screen people use without looking properly. And
+ * "decline" was drawn in the plain grey fill, so a ringing phone offered one coloured
+ * button and one that read as furniture.
+ *
+ * Now the pair always reads the same way round: red turns the call away or ends it, green
+ * takes it. Windows Phone's own Red, so it too still belongs to the palette even where it
+ * is not the palette's choice. See WP81Settings.WP81_ACCENTS.
+ */
+internal const val CALL_RED = 0xFFE51400.toInt()
 
 /**
  * The screen a call is on.
@@ -303,7 +319,7 @@ class CallScreen(
 
         val answers = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
         answers.addView(
-            wideButton("decline", HANGUP_ICON, fill()) { CallCentre.reject() },
+            wideButton("decline", HANGUP_ICON, CALL_RED) { CallCentre.reject() },
             LinearLayout.LayoutParams(0, dp(ACTION_DP), 1f)
         )
         answers.addView(
@@ -489,7 +505,7 @@ class CallScreen(
         liveColumn.addView(row, wide())
 
         liveColumn.addView(
-            wideButton("end call", HANGUP_ICON, palette.accent) { CallCentre.hangUp() },
+            wideButton("end call", HANGUP_ICON, CALL_RED) { CallCentre.hangUp() },
             LinearLayout.LayoutParams(MATCH, dp(ACTION_DP)).apply { topMargin = dp(GAP_DP) }
         )
     }

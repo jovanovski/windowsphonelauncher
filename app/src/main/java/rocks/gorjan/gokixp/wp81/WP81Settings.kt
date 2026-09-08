@@ -76,6 +76,47 @@ class WP81Settings(private val context: Context) {
         prefs.edit { putString(KEY_WP81_HIDDEN_TILES, ids.joinToString(",")) }
     }
 
+    // ========== Icon pack ==========
+
+    /**
+     * The package of the icon pack dressing the apps, or null for their own artwork.
+     *
+     * Stored as a package name rather than as a copy of anything: a pack is an installed
+     * app, its art is read out of it every time, and the day it is uninstalled the right
+     * behaviour is for the phone's own icons to come back - which is what an unresolvable
+     * package name gets for free. See IconPack.open.
+     */
+    fun getWP81IconPack(): String? =
+        prefs.getString(KEY_WP81_ICON_PACK, null)?.takeIf { it.isNotBlank() }
+
+    fun setWP81IconPack(packageName: String?) {
+        prefs.edit {
+            if (packageName.isNullOrBlank()) remove(KEY_WP81_ICON_PACK)
+            else putString(KEY_WP81_ICON_PACK, packageName)
+        }
+    }
+
+    /**
+     * Whether the pack's artwork reaches the Start screen, and not only the app list.
+     *
+     * Off by default, and that is the shell's opinion rather than an arbitrary one: a
+     * Windows Phone tile is a flat white glyph on an accent square, and an icon pack is a
+     * wall of full-colour rounded rectangles - the two are different designs, not two
+     * settings of one.
+     *
+     * The app list is not asked, and takes the pack whatever this says. Its rows are a
+     * name with a mark beside it, at a size where a pack's artwork reads as artwork rather
+     * than as a hole in a grid - the same reason a row shows a full-colour icon plainly
+     * today while a tile puts every mark it can on the accent. See AppListView, and
+     * MonochromeIconProvider.packOnTiles for where the two part company.
+     */
+    fun getWP81IconPackOnTiles(): Boolean =
+        prefs.getBoolean(KEY_WP81_ICON_PACK_TILES, false)
+
+    fun setWP81IconPackOnTiles(enabled: Boolean) {
+        prefs.edit { putBoolean(KEY_WP81_ICON_PACK_TILES, enabled) }
+    }
+
     // ========== Windows Phone 8.1 accent + background ==========
 
     /** The accent colour driving tiles, headers and controls in the WP8.1 shell. */
@@ -179,6 +220,47 @@ class WP81Settings(private val context: Context) {
 
     fun setWP81AccentNavBar(enabled: Boolean) {
         prefs.edit { putBoolean(KEY_WP81_ACCENT_NAV_BAR, enabled) }
+    }
+
+    /**
+     * Whether the three keys along the bottom are drawn at all.
+     *
+     * Off by default: they are the shell's only navigation, and a phone that arrived
+     * without them would be one where nothing on screen says how to get back to Start.
+     *
+     * On, the strip and the band under it go back to the wall, and everything the shell
+     * draws grows into the height they were taking - which is most of what somebody
+     * turning this on is after. What the keys did is not lost: Android's own back gesture
+     * still goes back, the home gesture still lands on Start, and the wall's own swipes
+     * still reach the app list and its search. Cortana is the one thing that was only on
+     * the strip, and she has a tile. See `WP81Shell.setNavBarShown`.
+     */
+    fun getWP81HideNavBar(): Boolean =
+        prefs.getBoolean(KEY_WP81_HIDE_NAV_BAR, false)
+
+    fun setWP81HideNavBar(hidden: Boolean) {
+        prefs.edit { putBoolean(KEY_WP81_HIDE_NAV_BAR, hidden) }
+    }
+
+    /**
+     * Whether the shell takes the whole display, with Android's own bars hidden.
+     *
+     * Off by default, and not because the wall would not look better without them: the
+     * status bar is where the clock, the signal and the battery are, and a launcher that
+     * hid all three the moment it was installed would be one the user has to go looking
+     * through settings to explain. Windows Phone itself made the same call - the bar was
+     * hidden by a swipe, not by default.
+     *
+     * On, the bars leave and come back on a swipe from the edge, the way Android returns
+     * a transient bar to anything running full screen. The shell needs no layout of its
+     * own for it: the top padding and the band at the bottom are taken from the insets the
+     * bars report, and a hidden bar reports none. See `MainActivity.applyWP81Fullscreen`.
+     */
+    fun getWP81Fullscreen(): Boolean =
+        prefs.getBoolean(KEY_WP81_FULLSCREEN, false)
+
+    fun setWP81Fullscreen(enabled: Boolean) {
+        prefs.edit { putBoolean(KEY_WP81_FULLSCREEN, enabled) }
     }
 
     /**
@@ -405,6 +487,111 @@ class WP81Settings(private val context: Context) {
     }
 
     /**
+     * How tall the keys are against the height the phone's own were, as a percentage.
+     *
+     * A hundred is the phone's own proportions, which is where it starts and what every
+     * measurement in the keyboard was taken at. It is the one piece of that geometry worth
+     * making adjustable: how much of a screen a keyboard should take is a trade between the
+     * size of a thumb and the size of what is being typed into, and neither of those is the
+     * same on a four-inch phone in one hand as on a six-and-a-half-inch one in two.
+     *
+     * A percentage rather than a height in dp, so it means the same thing on every screen -
+     * the keys stay a fraction of the width and in the phone's proportions, and this says how
+     * much of one. See `KeyboardView.keyHeightScale`.
+     */
+    fun getWP81KeyboardKeyHeight(): Int =
+        prefs.getSafeInt(KEY_WP81_KB_KEY_HEIGHT, WP81_KB_KEY_HEIGHT_DEFAULT)
+            .coerceIn(WP81_KB_KEY_HEIGHT_MIN, WP81_KB_KEY_HEIGHT_MAX)
+
+    fun setWP81KeyboardKeyHeight(percent: Int) {
+        prefs.edit {
+            putInt(
+                KEY_WP81_KB_KEY_HEIGHT,
+                percent.coerceIn(WP81_KB_KEY_HEIGHT_MIN, WP81_KB_KEY_HEIGHT_MAX)
+            )
+        }
+    }
+
+    /**
+     * Whether a keystroke clicks.
+     *
+     * **Off unless asked for.** A vibration is felt by the person holding the phone; a sound
+     * is heard by everybody in the room, and Android has defaulted keypress sounds to off for
+     * long enough that a keyboard which arrives clicking reads as broken rather than as
+     * faithful. Windows Phone shipped with one, and this is the switch that gives it back.
+     *
+     * There is no loudness to go with it, deliberately - one switch, and the volume keys do
+     * the rest. It plays on the media stream, which is what makes it survive silent mode and
+     * is also why it is mixed at half gain: a keypress sound written for the system stream's
+     * own modest level is louder than intended anywhere else. See `KeyboardSounds`, which has
+     * the whole of that trade written down.
+     */
+    fun getWP81KeyboardSound(): Boolean =
+        prefs.getBoolean(KEY_WP81_KB_SOUND, false)
+
+    fun setWP81KeyboardSound(enabled: Boolean) {
+        prefs.edit { putBoolean(KEY_WP81_KB_SOUND, enabled) }
+    }
+
+    /**
+     * Whether a pressed key lifts its letter clear of the finger.
+     *
+     * **On**, which is the opposite way round from the two settings above and for a reason. A
+     * thumb covers the key it is pressing, so the one thing you cannot see while typing on a
+     * phone is what you have just typed - which is why every keyboard on every platform shows
+     * this, and why somebody who has never opened these settings is better served with it
+     * than without. It is also silent and invisible to anybody but the person typing, which
+     * is what disqualified the click from the same treatment.
+     *
+     * See `KeyPreviewPopup`.
+     */
+    fun getWP81KeyboardKeyPreview(): Boolean =
+        prefs.getBoolean(KEY_WP81_KB_KEY_PREVIEW, true)
+
+    fun setWP81KeyboardKeyPreview(enabled: Boolean) {
+        prefs.edit { putBoolean(KEY_WP81_KB_KEY_PREVIEW, enabled) }
+    }
+
+    /**
+     * Whether the caret joystick is showing, and the space bar has therefore stopped sliding.
+     *
+     * **Off unless asked for**, because it is a control the phone did not have and it takes
+     * room on a keyboard that is otherwise exactly the phone's. Somebody who turns it on has
+     * decided that placing the caret is worth a dot in the gutter, which is a decision only
+     * they can make.
+     *
+     * One setting rather than two, and the second half is not a hidden extra: the space bar's
+     * slide exists because there was nowhere else to put the gesture, and it costs a slop test
+     * on every space typed. Once there is a control that does nothing but this, leaving the
+     * slide on the space bar keeps only the occasional wrong space. See `JoystickView`.
+     */
+    fun getWP81KeyboardJoystick(): Boolean =
+        prefs.getBoolean(KEY_WP81_KB_JOYSTICK, false)
+
+    fun setWP81KeyboardJoystick(enabled: Boolean) {
+        prefs.edit { putBoolean(KEY_WP81_KB_JOYSTICK, enabled) }
+    }
+
+    /**
+     * Whether a hold on shift or `&123` slides across the keys it brings up.
+     *
+     * On unless turned off, because it takes nothing away. Both keys keep every meaning they
+     * had - a tap still switches, and a hold that ends where it started still locks shift or
+     * stays on the symbol page - and the gesture is only what a finger that carries on moving
+     * now does instead of nothing.
+     *
+     * A setting all the same, because it is a hold on two keys that are pressed more than any
+     * others, and anybody whose hand rests on shift while they think would rather it did
+     * nothing at all. See `KeyboardView.slideKeys`.
+     */
+    fun getWP81KeyboardSlideKeys(): Boolean =
+        prefs.getBoolean(KEY_WP81_KB_SLIDE_KEYS, true)
+
+    fun setWP81KeyboardSlideKeys(enabled: Boolean) {
+        prefs.edit { putBoolean(KEY_WP81_KB_SLIDE_KEYS, enabled) }
+    }
+
+    /**
      * The GIPHY key the keyboard's GIF panel searches with, or empty for none.
      *
      * A setting rather than a constant in the source, because GIPHY issues these per person
@@ -481,6 +668,11 @@ class WP81Settings(private val context: Context) {
         const val WP81_KB_DEFAULT_LANGUAGE = "en_qwerty"
         const val KEY_WP81_KB_HOLD_MS = "wp81_kb_hold_ms"
         const val KEY_WP81_KB_VIBRATION = "wp81_kb_vibration"
+        const val KEY_WP81_KB_KEY_HEIGHT = "wp81_kb_key_height"
+        const val KEY_WP81_KB_SOUND = "wp81_kb_sound"
+        const val KEY_WP81_KB_KEY_PREVIEW = "wp81_kb_key_preview"
+        const val KEY_WP81_KB_JOYSTICK = "wp81_kb_joystick"
+        const val KEY_WP81_KB_SLIDE_KEYS = "wp81_kb_slide_keys"
 
         /**
          * Keystroke vibration: the phone's own, silent, or a strength in between.
@@ -498,6 +690,18 @@ class WP81Settings(private val context: Context) {
         const val WP81_KB_HOLD_DEFAULT = 350
         const val WP81_KB_HOLD_MIN = 150
         const val WP81_KB_HOLD_MAX = 900
+
+        /**
+         * The key height, as a percentage of the phone's own.
+         *
+         * The ends match `KeyboardView.MIN_HEIGHT_SCALE` and `MAX_HEIGHT_SCALE`, which is
+         * where the reasoning for them lives: below the floor a row stops clearing Android's
+         * minimum touch target, and above the ceiling the keyboard starts crowding out the
+         * thing being typed into.
+         */
+        const val WP81_KB_KEY_HEIGHT_DEFAULT = 100
+        const val WP81_KB_KEY_HEIGHT_MIN = 65
+        const val WP81_KB_KEY_HEIGHT_MAX = 150
         const val KEY_WP81_DARK = "wp81_background_dark"
         const val KEY_WP81_START_BACKGROUND = "wp81_start_background"
         const val KEY_WP81_START_BACKGROUND_FOCUS_X = "wp81_start_background_focus_x"
@@ -510,9 +714,13 @@ class WP81Settings(private val context: Context) {
         const val KEY_WP81_DIM_ALL_TILES = "wp81_dim_all_tiles"
         const val KEY_WP81_DIM_AMOUNT = "wp81_dim_amount"
         const val KEY_WP81_ACCENT_NAV_BAR = "wp81_accent_nav_bar"
+        const val KEY_WP81_HIDE_NAV_BAR = "wp81_hide_nav_bar"
+        const val KEY_WP81_FULLSCREEN = "wp81_fullscreen"
         const val KEY_WP81_TILE_COUNTS = "wp81_tile_counts"
         const val KEY_WP81_COLUMNS = "wp81_columns"
         const val KEY_WP81_HIDDEN_TILES = "wp81_hidden_tiles"
+        const val KEY_WP81_ICON_PACK = "wp81_icon_pack"
+        const val KEY_WP81_ICON_PACK_TILES = "wp81_icon_pack_tiles"
 
         /**
          * The accent a fresh install starts in: Red, from the palette below.

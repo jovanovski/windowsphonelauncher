@@ -275,6 +275,7 @@ internal class GifGrid(context: Context, private var palette: WP81Palette) : Vie
                     val cell = cellAt(event.x, event.y + scrollOffset)
                     if (cell != null && cell === downCell) {
                         KeyboardHaptics.key(this)
+                        KeyboardSounds.tap()
                         onPicked?.invoke(cell.gif)
                     }
                 }

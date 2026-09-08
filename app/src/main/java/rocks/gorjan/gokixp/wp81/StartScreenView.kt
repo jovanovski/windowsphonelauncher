@@ -7,6 +7,7 @@ import android.graphics.Rect
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.AnimationUtils
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -263,9 +264,19 @@ class StartScreenView(
     }
     private var lastReorderAt = 0L
 
-    /** The slot the finger has been asking for, and since when. See [reorderUnder]. */
-    private var pendingReorderAt = -1
+    /** The part of the wall the drag has been resting on, and since when. See [reorderUnder]. */
+    private var pendingReorderCell = TileGridLayout.NO_CELL
     private var pendingReorderSince = 0L
+
+    /**
+     * The question the packer has already answered with "leave it where it is".
+     *
+     * Working out where a drop goes costs a packing of the wall per tile on it - see
+     * TileGridLayout.dropIndexFor - so the same question is not put twice. Any actual move
+     * forgets it, because the wall it was answered about no longer exists.
+     */
+    private var settledCell = TileGridLayout.NO_CELL
+    private var settledFrom = -1
     private val touchSlop = android.view.ViewConfiguration.get(context).scaledTouchSlop
 
     // Edge-swipe state: pull down at the top, push up at the bottom.
@@ -539,10 +550,21 @@ class StartScreenView(
      *
      * For the live widget that steps aside for a notification and has to say *which kind*
      * it stepped aside for. Every other tile's icon is settled when the wall is built and
-     * never moves; this one changes with the shade. See MainActivity.refreshWP81People.
+     * never moves; this one changes with the shade. See MainActivity.refreshWP81Notifications.
      */
     fun setGlyph(kind: Tile.Kind, glyph: MonochromeIconProvider.Glyph?) {
         forEachTileView { if (it.tile.kind == kind) it.setGlyph(glyph) }
+    }
+
+    /**
+     * The same, for a tile named by the program it opens rather than by its kind.
+     *
+     * Phone and Messaging both step aside for what is waiting - a handset with an arrow, a
+     * speech bubble - and both are plain SYSTEM_APP tiles, so there is no kind to pick
+     * them out by. See MainActivity.wp81WaitingMarkFor.
+     */
+    fun setGlyph(packageName: String, glyph: MonochromeIconProvider.Glyph?) {
+        forEachTileView { if (it.tile.packageName == packageName) it.setGlyph(glyph) }
     }
 
     private fun buildTileView(
@@ -692,7 +714,9 @@ class StartScreenView(
             ?: kotlin.math.min(metrics.widthPixels, metrics.heightPixels)
         grid.metricBasis = basis
         bandGrid?.metricBasis = basis
-        val across = if (autoColumns) TileGridLayout.columnsFor(width, basis, columns) else columns
+        val across = if (autoColumns) {
+            TileGridLayout.columnsFor(width, basis, columns, metrics.density)
+        } else columns
         if (grid.columns == across) return false
         grid.columns = across
         bandGrid?.columns = across
@@ -767,6 +791,23 @@ class StartScreenView(
      */
     val editingPicture: Boolean?
         get() = editingView?.takeIf { it.hasPicture }?.showsBackdrop
+
+    /**
+     * Whether a folder could be made out of the selected tile.
+     *
+     * The same three rules the drag answered with - see [foldKindFor] - asked of a
+     * selection rather than of a drop: a folder does not go inside a folder, a built-in is
+     * rebuilt on every refresh and would come straight back out of one, and a tile already
+     * inside an opened folder is being arranged rather than filed. Answered here because
+     * which grid a tile is packed by is the wall's own business; the strip only knows there
+     * is a selection. See WP81SecondaryBar.setMode.
+     */
+    val editingCanFolder: Boolean
+        get() = editingView?.let {
+            gridOf(it) === grid &&
+                it.tile.kind != Tile.Kind.FOLDER &&
+                !it.tile.kind.isBuiltIn
+        } == true
 
     /**
      * The arrow under the wall, on the right, where the app list is.
@@ -944,6 +985,8 @@ class StartScreenView(
             bandAnimator?.cancel()
             grid.setBand(null, null)
             grid.bandProgress = 1f
+            bandGrid = null
+            bandColumn = null
             bandRules = emptyList()
             return
         }
@@ -1108,7 +1151,7 @@ class StartScreenView(
     ): View {
         val density = resources.displayMetrics.density
         val bar = (BAND_BAR_DP * density).toInt()
-        val margin = (width * TileGridLayout.MARGIN_FRACTION).toInt()
+        val margin = TileGridLayout.marginPxFor(density)
 
         val overhang = (TileView.HANDLE_OVERHANG_DP * density).toInt()
         // The rules fence off a folder, so they show whatever the folder's own tile shows:
@@ -1398,7 +1441,8 @@ class StartScreenView(
         if (tiles.any { it.id == tile.id }) return
         tile.index = tiles.size
         tiles.add(tile)
-        grid.addView(buildTileView(tile) { glyph })
+        // Ahead of the band, so the wall's child order still matches its tile list.
+        grid.addTile(buildTileView(tile) { glyph })
         grid.requestLayout()
         commit()
     }
@@ -1596,18 +1640,20 @@ class StartScreenView(
 
     /** Swaps the dragged tile with whichever one its centre is now over. */
     /**
-     * Which grid the finger is currently over: the wall's, or an opened folder's.
+     * Which grid the tile in hand is currently over: the wall's, or an opened folder's.
      *
      * The wall and the folder open in it are one surface to drag on. They are two packers
      * underneath, which is an implementation detail the finger should never be able to
      * feel: crossing the folder's top edge moves the tile from one to the other, and
      * everything after that is an ordinary reorder in whichever one it landed in.
      */
-    private fun gridUnderFinger(): TileGridLayout {
+    private fun gridUnderTile(view: TileView): TileGridLayout {
         val band = grid.bandView ?: return grid
         val inner = bandGrid ?: return grid
-        getLocationOnScreen(screenOrigin)
-        val y = lastMoveRawY - screenOrigin[1] + scrollY - content.translationY
+        // The tile's own middle, not the finger's - the same point everything else about
+        // the drag is decided by, or a tile could be filed into the folder while the eye
+        // still had it on the wall above.
+        val (_, y) = dragProbe(view)
         return if (y >= band.top && y <= band.bottom) inner else grid
     }
 
@@ -1653,6 +1699,23 @@ class StartScreenView(
     }
 
     /**
+     * The point on the wall a drag is asking about: the middle of the tile in hand.
+     *
+     * Not the finger. A tile is carried by whatever part of it was grabbed, so on anything
+     * bigger than a small one the finger and the tile are in two different places - and it
+     * is the tile that has to be somewhere, because what a drag means is "this goes here".
+     * Aiming with the finger meant a wide tile picked up by its left end was placed by a
+     * point most of a tile away from what the eye was lining up.
+     *
+     * Worked out from the finger rather than read off the view, because on the frame a
+     * reorder happens the view has not been laid out in its new slot yet.
+     */
+    private fun dragProbe(view: TileView): Pair<Float, Float> {
+        val (x, y) = fingerInGrid()
+        return (x - grabOffsetX + view.width / 2f) to (y - grabOffsetY + view.height / 2f)
+    }
+
+    /**
      * What resting the tile in hand on [under] would do, or null for nothing.
      *
      * A folder takes tiles but never another folder, and nothing the shell provides goes
@@ -1661,6 +1724,7 @@ class StartScreenView(
      * nesting to offer there, only arranging.
      */
     private fun foldKindFor(view: TileView, under: TileView): FoldKind? {
+        if (!FOLD_ON_DRAG) return null
         if (gridOf(view) !== grid || gridOf(under) !== grid) return null
         if (view.tile.kind == Tile.Kind.FOLDER || view.tile.kind.isBuiltIn) return null
         return when {
@@ -1743,9 +1807,11 @@ class StartScreenView(
         foldArmed = false
     }
 
-    /** Forgets the slot the finger was asking for, so the dwell starts again. */
+    /** Forgets where the drag was resting, so the dwell starts again. */
     private fun forgetPendingReorder() {
-        pendingReorderAt = -1
+        pendingReorderCell = TileGridLayout.NO_CELL
+        settledCell = TileGridLayout.NO_CELL
+        settledFrom = -1
     }
 
 
@@ -1753,25 +1819,31 @@ class StartScreenView(
      * Decides what a drag hovering somewhere means, and does it.
      *
      * One drag has to do two jobs - move a tile about, and put two tiles together - and
-     * they are told apart by *where* on the tile underneath the finger is and by *how
-     * long* it has been there. Neither on its own is enough. Where alone gives a border so
-     * thin it cannot be aimed at; how long alone means the tile being aimed at slides out
-     * from under the finger before the hold is up.
+     * they are told apart by *where* the tile in hand has got to and by *how long* it has
+     * been there. Neither on its own is enough. Where alone gives a border so thin it
+     * cannot be aimed at; how long alone means the tile being aimed at slides out from
+     * under the aim before the hold is up.
      *
-     *  - In the **middle** of a tile the two are being offered to each other. After a
-     *    beat the tile underneath shows what it would hold - the pair as a new folder, or
+     *  - Over the **middle of another tile** the two are being offered to each other. After
+     *    a beat the tile underneath shows what it would hold - the pair as a new folder, or
      *    its own contents with the arrival added - and letting go takes the offer.
-     *  - **Anywhere else** on it the wall is being asked for that slot, and it opens it
-     *    once the finger has stayed long enough to mean it.
+     *  - **Everywhere else** the wall is being asked to take the tile there, and it opens
+     *    once the drag has stayed long enough to mean it. Everywhere: the outer part of a
+     *    tile, the gutter between two, the empty end of a row, a gap left beside a tall
+     *    one, the room below the last row. No point on the wall means nothing, and where
+     *    the tile would actually *land* is asked of the packer rather than read off the
+     *    geometry - see TileGridLayout.dropIndexFor for why those are not the same
+     *    question and why only the first of them can reach an empty space.
      *
-     * That the slot has to be asked for is what makes the middle reachable: a tile crossed
+     * That the place has to be asked for is what keeps the middle reachable: a tile crossed
      * on the way to somewhere is crossed in well under the dwell, so it stays where it is
-     * and can still be aimed at. It also stops the wall shuffling under a tile being
-     * dragged across it, which is what the reflow animations were forever restarting on.
+     * and can still be aimed at. The dwell is a beat and not a pause, though - see
+     * [REORDER_DWELL_MS] - because a wall that only moves for a hand that has stopped is a
+     * wall that looks like it is refusing to get out of the way.
      */
     private fun reorderUnder(view: TileView) {
         // One surface: crossing into the folder, or out of it, before anything else.
-        val over = gridUnderFinger()
+        val over = gridUnderTile(view)
         if (over !== gridOf(view)) {
             val now = android.os.SystemClock.uptimeMillis()
             if (now - lastReorderAt < REORDER_COOLDOWN_MS) return
@@ -1782,31 +1854,17 @@ class StartScreenView(
 
         val home = gridOf(view)
         val from = home.indexOfChild(view)
-        val (fingerX, fingerY) = fingerInGrid()
-        val localX = fingerX - placedLeftOf(home)
-        val localY = fingerY - placedTopOf(home)
+        if (from < 0) return
+        val (probeX, probeY) = dragProbe(view)
+        val localX = probeX - placedLeftOf(home)
+        val localY = probeY - placedTopOf(home)
 
-        // Past the last row means "put it last", which is otherwise unreachable. Last among
-        // the *tiles*: the band is a child too, and it is not a position a tile can be
-        // moved to.
-        val below = localY > home.height
-        val target = if (below) home.tileCount - 1 else home.indexAt(localX, localY)
-        // In the gap between two tiles: over nothing in particular. The slot the finger was
-        // asking for is left standing, so a hand wavering on a boundary still gets there.
-        if (target < 0) {
-            clearFold()
-            return
-        }
-        if (target == from) {
-            clearFold()
-            forgetPendingReorder()
-            return
-        }
-
-        val under = home.getChildAt(target) as? TileView
-        if (under != null && !below && inFoldZone(under, fingerX, fingerY)) {
-            // In the middle of a tile: either the two are being put together, or this one
-            // has said it will not - and while they are, the wall stands still.
+        // The middle of another tile first: there the two are being offered to each other
+        // rather than a slot being asked for, and while the offer stands the wall holds
+        // still so that what is being aimed at does not slide out from under the aim.
+        val under = (home.getChildAt(home.indexAt(localX, localY)) as? TileView)
+            ?.takeIf { it !== view }
+        if (under != null && inFoldZone(under, probeX, probeY)) {
             if (trackFold(view, under)) {
                 forgetPendingReorder()
                 return
@@ -1815,10 +1873,20 @@ class StartScreenView(
             clearFold()
         }
 
-        // The slot has to be asked for rather than passed through.
+        // Everywhere else is somewhere the tile could go, and every part of the wall
+        // counts: the gutters, the empty end of a row, a gap left beside a tall tile, the
+        // room below the last row. Which are asked for is decided by where the tile would
+        // *land*, not by the geometry under it - see TileGridLayout.dropIndexFor.
+        //
+        // The resting place has to be asked for rather than passed through, so a tile
+        // flicked across the wall leaves what it crosses where it is. A beat only - long
+        // enough to tell a crossing from an arrival, short enough that the wall opens under
+        // a hand still in motion, which is what makes the tiles look like they are getting
+        // out of the way rather than rearranging themselves once it stops.
+        val cell = home.probeCell(localX, localY)
         val now = android.os.SystemClock.uptimeMillis()
-        if (target != pendingReorderAt) {
-            pendingReorderAt = target
+        if (cell != pendingReorderCell) {
+            pendingReorderCell = cell
             pendingReorderSince = now
             return
         }
@@ -1827,17 +1895,58 @@ class StartScreenView(
         // frame, and the reflow animations restart faster than they can finish - which is
         // the shuffling that shows up as rows twitching.
         if (now - lastReorderAt < REORDER_COOLDOWN_MS) return
+        // Already asked about this spot, from this index, and told the tile is where it
+        // belongs. Asking again would pack the wall out once per tile for the same answer.
+        if (cell == settledCell && from == settledFrom) return
+
+        val to = home.dropIndexFor(view, localX, localY)
+        if (to < 0) {
+            settledCell = cell
+            settledFrom = from
+            return
+        }
         lastReorderAt = now
         forgetPendingReorder()
+        place(view, home, from, to)
+    }
 
+    /** Moves a tile within whichever grid holds it, sliding what it displaces. */
+    private fun place(view: TileView, home: TileGridLayout, from: Int, to: Int) {
         if (home !== grid) {
             reflow(home) {
                 home.removeViewAt(from)
-                home.addView(view, target)
+                home.addView(view, to)
             }
             return
         }
-        moveTile(from, target)
+        moveTile(from, to)
+    }
+
+    /**
+     * Puts the tile where it was let go, whatever the drag's own pacing had got round to.
+     *
+     * The dwell and the cooldown keep the wall still while a tile is being carried over it;
+     * neither has any business deciding where it comes to rest. Without this the last move
+     * of a drag - the one the hand actually aimed - was thrown away whenever the finger
+     * lifted inside the beat, and the tile sprang back to a slot it had already left. That
+     * is a drop that does nothing, which is what a tile refusing to be dropped looked like.
+     *
+     * Returns whether the wall moved it, which is whether the spring home has to be re-based.
+     */
+    private fun dropInPlace(view: TileView): Boolean {
+        val home = gridOf(view)
+        val from = home.indexOfChild(view)
+        if (from < 0) return false
+        val (probeX, probeY) = dragProbe(view)
+        val to = home.dropIndexFor(
+            view,
+            probeX - placedLeftOf(home),
+            probeY - placedTopOf(home)
+        )
+        if (to < 0) return false
+        lastReorderAt = android.os.SystemClock.uptimeMillis()
+        place(view, home, from, to)
+        return true
     }
 
     /**
@@ -1846,11 +1955,19 @@ class StartScreenView(
      * A ScrollView already at offset zero does nothing with a downward drag, so that
      * gesture is free to mean something else - here, the notification shade, matching the
      * pull-down every other Android surface has.
+     *
+     * Only the deciding is done here. The wall following the finger while the gesture is
+     * under way is the over-pull's doing - see [overScrollBy] - so a swipe that begins at
+     * an end and one that merely arrives at one give exactly the same way.
      */
     private fun trackPullDown(ev: MotionEvent) {
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 edgeSwipeStartY = ev.rawY
+                pullBlocked = false
+                // A hand on a bouncing wall stops it dead, where it is. Letting go springs
+                // it home from there - see [releaseOverscroll] below.
+                stopSpring()
                 // Armed against whichever end of the scroll the gesture starts at. Both
                 // are free to mean something else, because a ScrollView already at an end
                 // does nothing with a drag that would take it further.
@@ -1873,11 +1990,10 @@ class StartScreenView(
                     } else if (travelled > edgeGiveThreshold) {
                         pullDownArmed = false
                         pushUpArmed = false
+                        pullBlocked = true
                         releaseOverscroll()
                         onSwipeDownAtTop?.invoke()
                         return
-                    } else if (travelled > 0f) {
-                        overscrollBy(travelled)
                     }
                 }
 
@@ -1891,10 +2007,9 @@ class StartScreenView(
                     } else if (-travelled > edgeGiveThreshold) {
                         pushUpArmed = false
                         pullDownArmed = false
+                        pullBlocked = true
                         releaseOverscroll()
                         onSwipeUpAtBottom?.invoke()
-                    } else if (travelled < 0f) {
-                        overscrollBy(travelled)
                     }
                 }
             }
@@ -1906,47 +2021,271 @@ class StartScreenView(
         }
     }
 
+    // ---------------------------------------------------------------- over-pull
+
     /**
-     * Drags the wall under the finger, short of opening anything. Signed: down at the top
-     * of Start, up at the bottom of it.
+     * How far past its end the wall has been taken, in pixels of raw travel: positive
+     * when it has come down off the top of Start, negative when it has come up off the
+     * bottom.
      *
-     * An edge swipe used to do nothing at all until it crossed the threshold, at which
-     * point the shade or the app list appeared - so the gesture had no beginning, only an
-     * outcome, and one that fell short looked like a tap that had been ignored. Following
-     * the finger first makes what arrives something the user pulled out rather than
-     * something that happened to them.
-     *
-     * Damped, and hard-limited: the wall gives less the further it is pushed, which is
-     * what makes it feel attached to something. Real stretch - Android's overscroll
-     * distortion - needs a render effect this shell cannot use below the version it
-     * supports, and a tile wall bending is not what Windows Phone did anyway.
+     * Raw, meaning the distance asked for rather than the distance shown. What is drawn is
+     * [givenBy] of this, a share that shrinks the further the wall is taken - so the wall
+     * gives less and less and never leaves the screen, while the number the spring works
+     * on stays linear and can be integrated honestly.
      */
-    private fun overscrollBy(travelled: Float) {
-        content.animate().cancel()
+    private var pull = 0f
+
+    /** How fast [pull] is changing, in pixels a second, signed the same way. */
+    private var pullVelocity = 0f
+
+    /** When [pull] last moved, which is what the speed above is measured against. */
+    private var pullAt = 0L
+
+    private var springAt = 0L
+    private var springing = false
+
+    /** The last fling frame that actually moved the scroll, and how fast it was going. */
+    private var flingFrameAt = 0L
+    private var flingSpeed = 0f
+
+    /**
+     * Set once a gesture that began as an over-pull has handed over to what it opens.
+     *
+     * The shade and the app list are pulled out of the ends of Start, and the wall
+     * following the finger is the first part of that gesture - but only the first part.
+     * Once the thing being pulled out has arrived, the finger belongs to it, and a wall
+     * still stretching behind it is the launcher arguing with what it just opened. So the
+     * band springs home and stays home until the next touch.
+     */
+    private var pullBlocked = false
+
+    /**
+     * The offset a raw over-pull is actually drawn at.
+     *
+     * Asymptotic: an infinite pull approaches the limit and never passes it. Taken on the
+     * distance with the sign put back afterwards, so a push up gives exactly as much as a
+     * pull down and no more. The whole wall moves as one piece, which is what Windows
+     * Phone did - the per-tile stretch Android's own overscroll draws needs a render
+     * effect this shell cannot use below the version it supports, and a tile wall bending
+     * is not what the phone looked like anyway.
+     */
+    private fun givenBy(raw: Float): Float {
         val limit = OVERSCROLL_LIMIT_DP * resources.displayMetrics.density
-        // Asymptotic: an infinite pull approaches the limit and never passes it. Taken on
-        // the distance and the sign put back afterwards, so a push up gives exactly as
-        // much as a pull down and no more.
-        val given = limit * (1f - kotlin.math.exp(-kotlin.math.abs(travelled) / limit))
-        content.translationY = if (travelled < 0f) -given else given
+        val given = limit * (1f - kotlin.math.exp(-kotlin.math.abs(raw) / limit))
+        return if (raw < 0f) -given else given
+    }
+
+    /** Puts the wall at a raw over-pull without touching the speed it is moving at. */
+    private fun applyPull(raw: Float) {
+        pull = raw
+        pullAt = AnimationUtils.currentAnimationTimeMillis()
+        content.translationY = givenBy(raw)
         // The pull is a scroll as far as the photo is concerned, so it drifts behind the
         // tiles at the same rate an ordinary scroll moves it at. Left out, the wall came
         // away from a picture that stayed nailed to the screen.
         updateTileOffsets()
     }
 
-    /** Lets the wall back up, whether the pull opened anything or not. */
-    private fun releaseOverscroll() {
-        if (content.translationY == 0f) return
-        content.animate()
-            .translationY(0f)
-            .setDuration(OVERSCROLL_RETURN_MS)
-            .setInterpolator(android.view.animation.OvershootInterpolator(OVERSCROLL_SPRING))
-            // The photo comes back with it rather than snapping back at the end: the spring
-            // is the part of the gesture the user actually watches.
-            .setUpdateListener { updateTileOffsets() }
-            .start()
+    /**
+     * Moves the wall to a raw over-pull, remembering how fast it got there.
+     *
+     * That speed is what the spring is launched with when the finger lets go, so a wall
+     * flicked into the give carries on for a moment rather than stopping with the hand.
+     */
+    private fun setPull(raw: Float) {
+        val now = AnimationUtils.currentAnimationTimeMillis()
+        val dt = (now - pullAt).coerceIn(MIN_FRAME_MS, MAX_FRAME_MS).toFloat()
+        pullVelocity = if (raw == pull) 0f else (raw - pull) * 1000f / dt
+        applyPull(raw)
     }
+
+    /** How far past either end of the scroll [y] falls, signed. Zero when it is inside. */
+    private fun pastEnd(y: Int, range: Int): Int = when {
+        y < 0 -> y
+        y > range -> y - range
+        else -> 0
+    }
+
+    /**
+     * Takes what a dragging finger owes the over-pull out of its move, and hands back
+     * whatever is left for the scroll to have.
+     *
+     * Two things to settle, and in this order. A wall already off its end is picked up
+     * first: the drag has to put it back before it counts as scrolling again, which is
+     * what makes the band feel attached rather than making the wall jump home the moment
+     * the finger turns round. Then whatever of the move runs off the end goes into the
+     * pull instead of being thrown away, which is the band stretching.
+     */
+    private fun pullThrough(deltaY: Int, scrollY: Int, range: Int): Int {
+        var left = deltaY
+        var raw = pull
+        if (raw != 0f) {
+            val after = raw - left
+            if (after * raw > 0f) {
+                // Still off the end: the whole move goes into the give.
+                setPull(after)
+                return 0
+            }
+            // The give is used up part-way through the move; the rest is an ordinary scroll.
+            raw = 0f
+            left = (-after).toInt()
+        }
+        val past = pastEnd(scrollY + left, range)
+        if (past != 0) raw -= past.toFloat()
+        if (raw != pull) setPull(raw)
+        return left
+    }
+
+    /**
+     * Everything that would take the scroll past either end of the wall.
+     *
+     * The scroll is not allowed past - the wall is as far as it goes - so what is left
+     * over is put into the over-pull instead, and that is the whole of the rubber band.
+     * A finger dragging into the end takes the wall with it; a fling arriving at the end
+     * hands the spring the speed it still had, which is what stops a flick at the top of
+     * Start simply ceasing to move on arrival.
+     */
+    override fun overScrollBy(
+        deltaX: Int,
+        deltaY: Int,
+        scrollX: Int,
+        scrollY: Int,
+        scrollRangeX: Int,
+        scrollRangeY: Int,
+        maxOverScrollX: Int,
+        maxOverScrollY: Int,
+        isTouchEvent: Boolean
+    ): Boolean {
+        if (!isTouchEvent) {
+            watchFlingIntoEnd(deltaY, scrollY, scrollRangeY)
+            return super.overScrollBy(
+                deltaX, deltaY, scrollX, scrollY, scrollRangeX, scrollRangeY,
+                maxOverScrollX, maxOverScrollY, false
+            )
+        }
+        // The wall has already given what it was going to for this gesture: it is on its
+        // way home and the rest of the drag is the shade's or the app list's. See
+        // [pullBlocked].
+        if (pullBlocked) {
+            return super.overScrollBy(
+                deltaX, deltaY, scrollX, scrollY, scrollRangeX, scrollRangeY,
+                maxOverScrollX, maxOverScrollY, true
+            )
+        }
+        // A hand on the wall owns it, so whatever the spring was doing to it stops here.
+        stopSpring()
+        val left = pullThrough(deltaY, scrollY, scrollRangeY)
+        val clamped = super.overScrollBy(
+            deltaX, left, scrollX, scrollY, scrollRangeX, scrollRangeY,
+            maxOverScrollX, maxOverScrollY, true
+        )
+        // Reported as clamped whenever the give took any of the move, so the ScrollView
+        // drops the velocity it was gathering: a drag that only stretched the band is not
+        // a flick, and flinging on it threw the wall at an end it was already resting on.
+        return clamped || left != deltaY
+    }
+
+    /**
+     * The start of a fling, noted so its frames can be timed. See [watchFlingIntoEnd].
+     */
+    override fun fling(velocityY: Int) {
+        flingFrameAt = AnimationUtils.currentAnimationTimeMillis()
+        flingSpeed = 0f
+        super.fling(velocityY)
+    }
+
+    /**
+     * Follows a fling frame by frame and catches the one that runs out of wall.
+     *
+     * The scroller is allowed to travel past the end - that is where the speed a fling has
+     * left over shows up at all - but the scroll is not, so the first frame that would go
+     * past is where the fling ends and the bounce begins. The speed handed over is the one
+     * measured on the frame *before* that: the frame that crosses the end has already
+     * spent part of itself arriving, so on its own it reads slow.
+     */
+    private fun watchFlingIntoEnd(deltaY: Int, scrollY: Int, range: Int) {
+        val now = AnimationUtils.currentAnimationTimeMillis()
+        val dt = (now - flingFrameAt).coerceIn(MIN_FRAME_MS, MAX_FRAME_MS).toFloat()
+        flingFrameAt = now
+        // In over-pull terms: a scroll up towards the top of Start takes the wall down.
+        val speed = -deltaY * 1000f / dt
+        if (pastEnd(scrollY + deltaY, range) == 0) {
+            flingSpeed = speed
+            return
+        }
+        // Already off the end under a finger, or already bouncing: nothing to hand over.
+        if (springing || pull != 0f) return
+        val launch = if (flingSpeed * speed > 0f &&
+            kotlin.math.abs(flingSpeed) > kotlin.math.abs(speed)
+        ) flingSpeed else speed
+        flingSpeed = 0f
+        if (kotlin.math.abs(launch) < BOUNCE_MIN_DPS * resources.displayMetrics.density) return
+        pullVelocity = launch
+        startSpring()
+    }
+
+    /**
+     * The rubber band: everything the wall was pulled or thrown into the give with, given
+     * back.
+     *
+     * A spring rather than an animation of a fixed length, because what starts it is not
+     * always a hand letting go - a fling that runs out of wall hands over whatever speed
+     * it still had, and a spring is the one shape that takes a speed as its opening
+     * condition rather than only a distance. It is also why a hard flick bounces deeper
+     * than a soft one without bouncing for any longer: a spring's period does not depend
+     * on how far it is stretched.
+     */
+    private val spring = object : Runnable {
+        override fun run() {
+            if (!springing) return
+            val now = AnimationUtils.currentAnimationTimeMillis()
+            var left = ((now - springAt) / 1000f).coerceIn(0f, MAX_SPRING_FRAME)
+            springAt = now
+            var x = pull
+            var v = pullVelocity
+            // Integrated in short steps rather than one per frame: a dropped frame is a
+            // long step, and a long step through a stiff spring does not slow the wall
+            // down, it throws it.
+            while (left > 0f) {
+                val step = kotlin.math.min(left, SPRING_STEP)
+                left -= step
+                v += (-BOUNCE_STIFFNESS * x - BOUNCE_DAMPING * v) * step
+                x += v * step
+            }
+            pullVelocity = v
+            if (kotlin.math.abs(x) < SPRING_REST_PX && kotlin.math.abs(v) < SPRING_REST_SPEED) {
+                springing = false
+                pullVelocity = 0f
+                applyPull(0f)
+                return
+            }
+            applyPull(x)
+            postOnAnimation(this)
+        }
+    }
+
+    /** Sets the spring going, if there is anything left for it to do. */
+    private fun startSpring() {
+        if (springing) return
+        if (pull == 0f && kotlin.math.abs(pullVelocity) < SPRING_REST_SPEED) {
+            pullVelocity = 0f
+            return
+        }
+        springing = true
+        springAt = AnimationUtils.currentAnimationTimeMillis()
+        postOnAnimation(spring)
+    }
+
+    /** Stops the band where it is, leaving the wall wherever the spring had got it to. */
+    private fun stopSpring() {
+        if (!springing) return
+        springing = false
+        removeCallbacks(spring)
+        pullVelocity = 0f
+    }
+
+    /** Lets the wall back up, whether the pull opened anything or not. */
+    private fun releaseOverscroll() = startSpring()
 
     /**
      * True when there is no further to scroll.
@@ -1999,9 +2338,13 @@ class StartScreenView(
         rearrange()
         home.requestLayout()
 
+        // Read now rather than when the animation is set up. A drop rearranges the wall and
+        // then lets go, so by the time the post runs the drag is already over - and the tile
+        // in hand, which has a spring home of its own, would be animated back twice.
+        val dragging = dragView
         home.post {
             for ((child, old) in before) {
-                if (child === dragView) continue
+                if (child === dragging) continue
                 val dx = old.first - child.left
                 val dy = old.second - child.top
                 child.animate().cancel()
@@ -2051,8 +2394,6 @@ class StartScreenView(
 
     private fun endDrag(view: TileView) {
         stopEdgeScroll()
-        dragView = null
-        forgetPendingReorder()
         // Let go on an offer that was already showing: the pair becomes a folder where the
         // lower one stands, or the folder underneath takes the tile in.
         val folding = foldTarget?.takeIf { foldArmed }
@@ -2061,6 +2402,8 @@ class StartScreenView(
         // become, and what it actually becomes is built from the lists, not from that.
         clearFold()
         if (folding != null && kind != null) {
+            dragView = null
+            forgetPendingReorder()
             when (kind) {
                 FoldKind.CREATE -> onTilesFoldered?.invoke(view.tile, folding.tile)
                 FoldKind.INTO -> absorbIntoFolder(view, folding, folding.tile.id)
@@ -2070,20 +2413,42 @@ class StartScreenView(
         // Decided before the tile is sent home, not after. Springing it back to a slot it
         // is about to leave is a beat of animation that exists only to be thrown away -
         // which is the pause, and the rebuild landing on top of it is the snap.
-        if (fileOnDrop(view)) return
+        if (fileOnDrop(view)) {
+            dragView = null
+            forgetPendingReorder()
+            return
+        }
 
-        view.animate()
-            .translationX(0f).translationY(0f)
-            .scaleX(view.restingScale())
-            .scaleY(view.restingScale())
-            .setDuration(180)
-            .setInterpolator(DecelerateInterpolator())
-            // Back to the edit lift rather than to nothing: the tile is still selected
-            // after a drag, and its handles still hang over its neighbours.
-            .withEndAction {
-                view.elevation = if (view === editingView) TileView.EDIT_ELEVATION else 0f
-            }
-            .start()
+        // Where the hand left it has the last word. Taken while the drag is still on, so
+        // the reflow leaves the tile alone and the spring below is the only thing moving it.
+        val fromX = view.left + view.translationX
+        val fromY = view.top + view.translationY
+        val moved = dropInPlace(view)
+        dragView = null
+        forgetPendingReorder()
+
+        val settle = Runnable {
+            // Re-based on the slot it has actually landed in: the drop may have moved the
+            // tile's layout position out from under the translation carrying it, and
+            // animating what is left to zero would then start the spring somewhere else.
+            view.translationX = fromX - view.left
+            view.translationY = fromY - view.top
+            view.animate()
+                .translationX(0f).translationY(0f)
+                .scaleX(view.restingScale())
+                .scaleY(view.restingScale())
+                .setDuration(180)
+                .setInterpolator(DecelerateInterpolator())
+                // Back to the edit lift rather than to nothing: the tile is still selected
+                // after a drag, and its handles still hang over its neighbours.
+                .withEndAction {
+                    view.elevation = if (view === editingView) TileView.EDIT_ELEVATION else 0f
+                }
+                .start()
+        }
+        // A drop that moved the tile has to wait for the wall to be laid out again before
+        // it knows where it is springing from.
+        if (moved) view.post(settle) else settle.run()
         commit()
     }
 
@@ -2353,6 +2718,8 @@ class StartScreenView(
 
     /** Jumps to the top without animating, for a return-to-home. */
     fun scrollToTop() {
+        stopSpring()
+        applyPull(0f)
         scrollTo(0, 0)
         updateTileOffsets()
     }
@@ -2373,8 +2740,8 @@ class StartScreenView(
         // that was still springing back leaves the whole column shifted - which is a wall
         // that looks scrolled and cannot be scrolled back, because the offset is a
         // translation and not a scroll position.
-        content.animate().cancel()
-        content.translationY = 0f
+        stopSpring()
+        applyPull(0f)
         forEachTileView { it.resetAnimationState() }
 
         val slide = ENTRANCE_OFFSET_DP * resources.displayMetrics.density
@@ -2572,6 +2939,23 @@ class StartScreenView(
     }
 
     companion object {
+        /**
+         * Whether holding one tile over another offers to put the two in a folder.
+         *
+         * Off, for now. The offer costs the whole middle of every tile: while one could be
+         * made the wall had to stand still, or what was being aimed at slid out from under
+         * the aim - so the only part of a tile that could be *asked for its slot* was the
+         * ring round its edge, and arranging the wall fought the folders the whole way
+         * across it.
+         *
+         * Folders are made from the app bar instead, out of the tile that is selected - see
+         * WP81SecondaryBar.Mode.EDIT_START - and a tile is put into one by opening it and
+         * dragging the tile into the band, which is a target the size of a row rather than
+         * the middle of one square. Everything the offer needs is still here and still
+         * wired; this is the switch.
+         */
+        private const val FOLD_ON_DRAG = false
+
         private const val DRAG_ELEVATION = 24f
         private const val DRAG_SCALE = 1.06f
         // The arrow under the wall: its disc, and the air kept round it.
@@ -2636,21 +3020,54 @@ class StartScreenView(
         private const val CAMERA_DISTANCE = 8000f
 
         /**
-         * How far the wall can be dragged down before the shade takes over.
+         * How far off either end the wall can ever be, however hard it is pulled or thrown.
          *
-         * Shorter than the threshold that opens it, deliberately: the wall should be
-         * visibly at the end of its travel by the time the gesture completes, so the shade
-         * arriving reads as the next thing rather than as an interruption.
+         * The ceiling on the whole band: the give under a finger, and the depth a fling
+         * bounces to. Shorter than the threshold that opens the shade, deliberately - the
+         * wall should be visibly at the end of its travel by the time that gesture
+         * completes, so what arrives reads as the next thing rather than an interruption.
+         * The photograph behind the tiles is cropped with this much room at each end for
+         * the same reason - see [overscrollSlack].
          */
         private const val OVERSCROLL_LIMIT_DP = 68f
 
         /** The pull down is this many times the plain edge swipe. */
         private const val PULL_DOWN_FACTOR = 3.2f
 
-        private const val OVERSCROLL_RETURN_MS = 260L
+        /**
+         * The rubber band, as a spring: how hard it pulls the wall back, and how much of
+         * that it takes out again on the way.
+         *
+         * Stiffness is in units of 1/second squared and damping in 1/second, so neither
+         * needs scaling for density - a spring's rate does not depend on how far it is
+         * stretched, which is the property the whole bounce is built on. The damping is a
+         * shade under critical, at about 0.68 of it, so the wall comes back past flat by a
+         * few per cent and settles rather than stopping - the same overshoot the fixed
+         * animation this replaced was given, arrived at honestly.
+         */
+        private const val BOUNCE_STIFFNESS = 260f
+        private const val BOUNCE_DAMPING = 22f
 
-        /** A little past flat on the way back, so the wall settles rather than stops. */
-        private const val OVERSCROLL_SPRING = 1.6f
+        /** Below this, a fling arriving at the end is simply a fling that stopped there. */
+        private const val BOUNCE_MIN_DPS = 120f
+
+        /** Integration step for the spring, and the longest frame it will swallow whole. */
+        private const val SPRING_STEP = 0.004f
+        private const val MAX_SPRING_FRAME = 0.064f
+
+        /** Close enough to home, and slow enough, to call it arrived. */
+        private const val SPRING_REST_PX = 0.5f
+        private const val SPRING_REST_SPEED = 32f
+
+        /**
+         * The window a frame time is believed within, in milliseconds.
+         *
+         * Speed is measured by dividing a frame's travel by a frame's length, and both
+         * ends of that need a floor: a clock that has barely moved reports an impossible
+         * speed, and one that has been away for a second reports a stall as a crawl.
+         */
+        private const val MIN_FRAME_MS = 8L
+        private const val MAX_FRAME_MS = 64L
 
         /** How far to drag past either end of Start before the gesture fires. */
         private const val EDGE_SWIPE_DP = 48f
@@ -2669,21 +3086,19 @@ class StartScreenView(
         /** How long a displaced tile takes to slide into its new slot. */
         private const val REFLOW_MS = 160L
 
-        /** Shrinks a tile's hit area while dragging, so boundaries do not flip-flop. */
-        private const val REORDER_HYSTERESIS = 0.22f
-
         /** Minimum gap between reorders, so the grid settles before it moves again. */
         private const val REORDER_COOLDOWN_MS = 180L
 
         /**
-         * How long the finger has to stay on a slot before the wall opens it.
+         * How long a drag has to stay on a slot before the wall opens it.
          *
-         * Asking rather than passing through. Short enough that arranging still feels
-         * immediate, long enough that a tile carried across the wall leaves the tiles it
-         * crosses where they are - which is what makes the one being aimed at still there
-         * when the finger arrives.
+         * Asking rather than passing through - but a beat, not a pause. At a quarter of a
+         * second the wall only ever moved for a hand that had stopped, so tiles appeared to
+         * refuse to get out of the way and the arranging all happened after the fact. This
+         * is short enough that the wall opens under a hand still in motion and long enough
+         * that a tile flicked across it leaves the ones it crosses alone.
          */
-        private const val REORDER_DWELL_MS = 260L
+        private const val REORDER_DWELL_MS = 100L
 
 
         /**

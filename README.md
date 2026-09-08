@@ -30,7 +30,9 @@ It is the sibling of [Windows Launcher](https://github.com/jovanovski/windowslau
 - A photo behind the tiles: 32 Lumia wallpapers are bundled, or pick your own, with optional blur and a slow drift that follows how the phone is being held.
 
 ### Apps, all written from scratch on the shell's own furniture
-- **People** - the hub and the Phone app as one panorama: favourites, call history, everybody, and text conversations. Make it the phone's default dialler and messaging app and it gets the in-call screen (over the lock screen, with hold, audio routing and "can't talk now" replies), missed calls and incoming texts too. Everything is read from and written back to the phone's own address book and call log, so nothing lives only inside the launcher.
+- **People** - the address book: everybody, their cards, and the editor that writes one. Read from and written back to the phone's own contacts, so nothing lives only inside the launcher.
+- **Phone** - favourites, the call history and the keypad. Make it the phone's default dialler and it gets the in-call screen too - over the lock screen, with hold, audio routing and "can't talk now" replies - and reports its own missed calls.
+- **Messaging** - the text conversations, drawn as the two columns of bubbles the phone had. Make it the default messaging app and every text on the device is delivered, written down and announced here.
 - **Music** - Zune, laid out as the six-section panorama the phone had. Plays whatever MediaStore knows about, keeps playlists, and shows up as a browsable source in Android Auto.
 - **Internet Explorer** - the phone's browser: the page gets the whole screen and everything else is on one dark strip at the bottom. Tabs restored between sessions, favourites, downloads, history. Can be made the phone's default browser so links open here.
 - **Weather** - current conditions, the day, the week and other places, on one panorama. Fed by [Open-Meteo](https://open-meteo.com/); the Start tile, the app and the forecast panel all read the same fetch.
@@ -58,7 +60,7 @@ Most of what the launcher does needs nothing special. A few things do, and Andro
 
 - **Notification access** - the counts and lines on the tiles.
 - **All files access** - the Files app.
-- **Default phone / messaging app** - the People app's call screen and conversations. Offered as a prompt when you first open them; declining leaves People a perfectly good address book.
+- **Default phone / messaging app** - Phone's call screen, and Messaging's conversations. Offered as a prompt inside each of them; declining leaves the call history and the read-only side of your texts working, and leaves People a perfectly good address book either way.
 - **Default browser** - links opening in Internet Explorer instead of leaving the launcher.
 
 Notification access is the one Android hides behind Restricted Settings on a side-loaded build. Two ways around it:

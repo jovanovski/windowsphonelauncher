@@ -28,7 +28,7 @@ import rocks.gorjan.gokixp.wp81.WP81Settings
  * The keyboard's settings, as a page of the phone's own Settings.
  *
  * A whole screen rather than a panel inside the keyboard. The first attempt put these on a
- * page that replaced the keys, reached by holding `&123`, on the reasoning that a setting you
+ * page that replaced the keys, reached by holding a key, on the reasoning that a setting you
  * notice while typing should be adjustable without leaving what you are typing in. That is
  * true and it was still wrong: Windows Phone's settings were pages - a big lowercase title, a
  * column of rows, the back key to leave - and a settings screen that is a keyboard-shaped
@@ -36,7 +36,7 @@ import rocks.gorjan.gokixp.wp81.WP81Settings
  * there will be more of these.
  *
  * So it is an Activity, styled like every other page in the shell, and reached two ways: by
- * holding `&123` on the keyboard, and from Android's own keyboard settings, because it is
+ * holding the full stop on the keyboard, and from Android's own keyboard settings, because it is
  * declared as this input method's `settingsActivity` in `res/xml/method.xml`.
  *
  * Built from the shell's own furniture - [MetroPageHeader], [MetroToggle], [MetroSlider] -
@@ -50,6 +50,7 @@ class KeyboardSettingsActivity : Activity() {
 
     private lateinit var holdValue: TextView
     private lateinit var vibrationValue: TextView
+    private lateinit var keyHeightValue: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -82,8 +83,14 @@ class KeyboardSettingsActivity : Activity() {
         column.addView(autocorrectRow())
         column.addView(autoCapsRow())
         column.addView(holdRow())
+        column.addView(slideKeysRow())
         column.addView(vibrationRow())
+        column.addView(soundRow())
+        column.addView(keyPreviewRow())
+        column.addView(joystickRow())
         column.addView(shortBottomRow())
+        column.addView(keyHeightRow())
+        column.addView(testBox())
         column.addView(section("gifs"))
         column.addView(giphyRow())
         column.addView(section("dictation"))
@@ -100,8 +107,16 @@ class KeyboardSettingsActivity : Activity() {
         // draws its title underneath the clock. The colours behind both bars are already the
         // page's own, set above, so this only has to move the content - which is why it is
         // padding on the page rather than a window flag.
+        // The keyboard is part of that. This page is the one place in the shell that expects
+        // to be looked at *while* the keyboard is up - that is what the test box is for - so
+        // the bottom padding follows whichever is taller, the navigation bar or the keyboard
+        // over it. Without it the page keeps its full height, the scroller believes it has
+        // room it does not have, and the key-height slider ends up underneath the very keys
+        // it is resizing.
         ViewCompat.setOnApplyWindowInsetsListener(page) { view, insets ->
-            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime()
+            )
             view.setPadding(0, bars.top, 0, bars.bottom)
             insets
         }
@@ -386,6 +401,220 @@ class KeyboardSettingsActivity : Activity() {
         return ((raw / STEP_PERCENT) * STEP_PERCENT).coerceAtLeast(STEP_PERCENT)
     }
 
+    /** Whether a keystroke clicks. */
+    private fun soundRow(): View {
+        val toggle = MetroToggle(this, palette).apply {
+            set(themeManager.getWP81KeyboardSound(), animated = false)
+            onChanged = { on ->
+                themeManager.setWP81KeyboardSound(on)
+                KeyboardSounds.refresh(this@KeyboardSettingsActivity, themeManager)
+                // Heard once as it is switched on, which is the only way to know what has
+                // been agreed to without going and typing something. After a moment, not at
+                // once: switching it on is what opens the sound pool, and a file is not
+                // playable the instant it is handed over to be loaded - a preview fired on
+                // the same frame would be the one click nobody hears.
+                if (on) postDelayed({ KeyboardSounds.tap() }, PREVIEW_DELAY_MS)
+            }
+        }
+        return row(
+            "sound on every key",
+            "the phone's own keypress click. it plays on silent too, and follows the " +
+                "volume keys rather than the touch sounds setting.",
+            toggle
+        )
+    }
+
+    /**
+     * Whether a hold on shift or `&123` can be slid across the keys it brings up.
+     *
+     * Under the hold slider rather than beside the other gestures, because it is the other
+     * thing a hold does and its whole feel depends on the number above it: a long hold makes
+     * the slide something you have to wait for, and a short one makes it something an ordinary
+     * press falls into.
+     */
+    private fun slideKeysRow(): View {
+        val toggle = MetroToggle(this, palette).apply {
+            set(themeManager.getWP81KeyboardSlideKeys(), animated = false)
+            onChanged = { themeManager.setWP81KeyboardSlideKeys(it) }
+        }
+        return row(
+            "slide from shift and &123",
+            "hold either key to bring up the capitals or the symbols, slide onto the one " +
+                "you want and let go. it is typed, and the keyboard goes back to where it " +
+                "was. letting go without moving still locks shift, or stays on the symbols.",
+            toggle
+        )
+    }
+
+    /** Whether a pressed key lifts its letter clear of the finger. */
+    private fun keyPreviewRow(): View {
+        val toggle = MetroToggle(this, palette).apply {
+            set(themeManager.getWP81KeyboardKeyPreview(), animated = false)
+            onChanged = { themeManager.setWP81KeyboardKeyPreview(it) }
+        }
+        return row(
+            "show the letter above the key",
+            "a thumb covers the key it is pressing, so the letter appears just above it " +
+                "while the key is held. the key itself lights up either way.",
+            toggle
+        )
+    }
+
+    /**
+     * Whether the caret joystick is showing.
+     *
+     * The note says the second half out loud, because it is a thing being taken away as well
+     * as one being added, and somebody who has learned to slide the space bar is entitled to
+     * know why it stopped rather than to find out by pressing space and getting a caret.
+     */
+    private fun joystickRow(): View {
+        val toggle = MetroToggle(this, palette).apply {
+            set(themeManager.getWP81KeyboardJoystick(), animated = false)
+            onChanged = { themeManager.setWP81KeyboardJoystick(it) }
+        }
+        return row(
+            "cursor joystick",
+            "a dot in the gap above the bottom row. hold it and drag to move the cursor " +
+                "through the text. while it is on, sliding the space bar types a space " +
+                "instead of moving the cursor.",
+            toggle
+        )
+    }
+
+    /**
+     * How tall the keys are.
+     *
+     * The only setting on this page whose effect is invisible from the page, which is why it
+     * is the only one with something to type into underneath it - see [testBox]. The two are
+     * next to each other on purpose: the slider is useless without somewhere to watch it
+     * work, and a test box three sections away is a test box nobody finds.
+     *
+     * Written on every step of the drag rather than when the finger lifts. That is a
+     * preference write and a whole keyboard re-measured several times a second, which would
+     * be indefensible for a setting nobody was watching - and is exactly right for this one,
+     * because the keyboard is on screen underneath and the point is to see the keys move
+     * under the finger. Stepping in fives keeps it to a couple of dozen writes for a full
+     * sweep of the slider, and the guard below drops the rest.
+     */
+    private fun keyHeightRow(): View {
+        val start = themeManager.getWP81KeyboardKeyHeight()
+        keyHeightValue = detail(keyHeightText(start))
+        var applied = start
+
+        val slider = MetroSlider(this).apply {
+            applyPalette(palette)
+            value = keyHeightFractionOf(start)
+            onValueChanged = { fraction ->
+                val percent = keyHeightOf(fraction)
+                if (percent != applied) {
+                    applied = percent
+                    keyHeightValue.text = keyHeightText(percent)
+                    themeManager.setWP81KeyboardKeyHeight(percent)
+                }
+            }
+        }
+
+        val text = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(label("key height"), wide())
+            addView(keyHeightValue, wide())
+        }
+        val reset = TextView(this).apply {
+            this.text = "reset"
+            textSize = DETAIL_SP
+            typeface = ResourcesCompat.getFont(
+                this@KeyboardSettingsActivity, R.font.segoeui_regular
+            )
+            setTextColor(palette.accent)
+            isClickable = true
+            setOnClickListener {
+                applied = WP81Settings.WP81_KB_KEY_HEIGHT_DEFAULT
+                slider.value = keyHeightFractionOf(applied)
+                keyHeightValue.text = keyHeightText(applied)
+                themeManager.setWP81KeyboardKeyHeight(applied)
+            }
+        }
+        val top = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(text, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(
+                reset,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { marginStart = pad() }
+            )
+        }
+
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad(), pad() / 2, pad(), 0)
+            addView(top, wide())
+            addView(slider, wide())
+        }
+    }
+
+    /**
+     * Somewhere to type, so the settings above can be seen doing something.
+     *
+     * A settings page for a keyboard has an odd problem: every other page on the phone can
+     * show you what a switch did, and this one cannot, because the thing it configures is not
+     * on screen while you are reading about it. So the page carries a field of its own. Tap
+     * it and the keyboard being configured comes up underneath, and the key height, the click,
+     * the letter flag and the suggestion bar are all right there to be tried against the
+     * controls that set them.
+     *
+     * It goes under the key-height slider rather than at the top or the bottom of the page,
+     * because that is the setting that needs it: the page scrolls, and with the keyboard up
+     * the slider and the field are the two things that have to be on screen together.
+     *
+     * Nothing is done with what is typed into it, and nothing is kept.
+     */
+    private fun testBox(): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(pad(), 0, pad(), pad())
+        addView(
+            detail("tap here to try the keyboard while you change these."),
+            wide().apply { bottomMargin = pad() / 2 }
+        )
+        addView(
+            EditText(this@KeyboardSettingsActivity).apply {
+                hint = "type something"
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                setLines(TEST_BOX_LINES)
+                gravity = Gravity.TOP or Gravity.START
+                textSize = LABEL_SP
+                typeface = ResourcesCompat.getFont(
+                    this@KeyboardSettingsActivity, R.font.segoeui_regular
+                )
+                includeFontPadding = false
+                setPadding(pad() / 2, pad() / 2, pad() / 2, pad() / 2)
+                palette.applyToField(this)
+            },
+            wide()
+        )
+    }
+
+    /** What the current setting says under the heading. */
+    private fun keyHeightText(percent: Int): String =
+        if (percent == WP81Settings.WP81_KB_KEY_HEIGHT_DEFAULT) "the phone's own"
+        else "$percent%"
+
+    private fun keyHeightFractionOf(percent: Int): Float {
+        val span = WP81Settings.WP81_KB_KEY_HEIGHT_MAX - WP81Settings.WP81_KB_KEY_HEIGHT_MIN
+        return (percent - WP81Settings.WP81_KB_KEY_HEIGHT_MIN).toFloat() / span
+    }
+
+    private fun keyHeightOf(fraction: Float): Int {
+        val span = WP81Settings.WP81_KB_KEY_HEIGHT_MAX - WP81Settings.WP81_KB_KEY_HEIGHT_MIN
+        val raw = WP81Settings.WP81_KB_KEY_HEIGHT_MIN + (fraction * span).toInt()
+        // In fives, so dragging gives 115 rather than 113 - and so a full sweep of the
+        // slider is a couple of dozen writes rather than one per pixel of travel.
+        return (raw / STEP_PERCENT * STEP_PERCENT)
+            .coerceIn(WP81Settings.WP81_KB_KEY_HEIGHT_MIN, WP81Settings.WP81_KB_KEY_HEIGHT_MAX)
+    }
+
     /** Whether the bottom row is shorter than the letters above it. */
     private fun shortBottomRow(): View {
         val toggle = MetroToggle(this, palette).apply {
@@ -601,6 +830,12 @@ class KeyboardSettingsActivity : Activity() {
         const val LABEL_SP = 17f
         const val DETAIL_SP = 13f
         const val STEP_MS = 25
+
+        /** Tall enough to type a sentence into and watch it wrap, short enough to spare. */
+        const val TEST_BOX_LINES = 3
+
+        /** Long enough for the click to have loaded, short enough to still be an answer. */
+        const val PREVIEW_DELAY_MS = 250L
 
         /** The strength slider moves in fives, for the same reason the hold moves in steps. */
         const val STEP_PERCENT = 5

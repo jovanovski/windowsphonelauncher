@@ -23,7 +23,7 @@ import java.util.concurrent.Executors
  *
  * The same bargain [PeopleStore] and [PhoneHistory] make: nothing here is this app's own.
  * Messages are read out of the platform's message store and sent through the platform's
- * own [SmsManager], so a conversation held in People is the same conversation the phone's
+ * own [SmsManager], so a conversation held in Messaging is the same conversation the phone's
  * messaging app is showing, and it survives this launcher being uninstalled.
  *
  * SMS only. Multimedia messages and RCS are a different protocol carried by a different
@@ -121,8 +121,8 @@ object MessageStore {
     /**
      * Whether this app is the phone's messaging app.
      *
-     * Asked of `RoleManager`, the same way [rocks.gorjan.gokixp.apps.people.PeopleApp]
-     * asks whether it is the phone, and *not* of `Telephony.Sms.getDefaultSmsPackage` -
+     * Asked of `RoleManager`, the same way `HubApp.isThePhone` asks whether this launcher
+     * is the phone, and *not* of `Telephony.Sms.getDefaultSmsPackage` -
      * which is the obvious call to make here and is wrong from an ordinary app's process.
      * It ends up in `SmsApplication`, which asks the role service for the holder through a
      * system-only call and hands back null when an unprivileged app asks; so an app that
@@ -625,7 +625,7 @@ object MessageStore {
      *
      * Only the phone's messaging app may write this, so it works when this app is that and
      * is quietly refused when it is not - which is the honest shape for it: on a phone
-     * where People holds the role, reading a message here clears its mark everywhere; on
+     * where this launcher holds the role, reading a message here clears its mark everywhere; on
      * one where it does not, the mark stays until it is read where it was delivered.
      * Neither is worth interrupting somebody who is reading to explain.
      */
@@ -713,5 +713,5 @@ object MessageStore {
      */
     private const val SHORT_CODE_DIGITS = 4
 
-    private const val TAG = "WP81People"
+    private const val TAG = "WP81Messaging"
 }

@@ -60,7 +60,7 @@ class NotificationListenerService : NotificationListenerService() {
          * Read off the shade rather than off the call log, which is the difference between
          * "you have missed calls" and "you missed some calls at some point": the log keeps
          * every one of them forever, and the notification is the one that goes away when
-         * the user has seen it. Which is what the People tile is asking about.
+         * the user has seen it. Which is what the Phone tile is asking about.
          *
          * Found by category rather than by package, because who posts these depends on
          * which app is the phone - the default dialler if it handles them, and Telecom
@@ -71,12 +71,13 @@ class NotificationListenerService : NotificationListenerService() {
         fun missedCalls(): List<NotificationLine> = missedCallLines
 
         /**
-         * Text messages waiting, for the same tile and on the same terms.
+         * Text messages waiting, for the Messaging tile and on the same terms.
          *
-         * This app's own, and only its own. Once People holds the messaging role it is the
-         * one thing on the phone that announces an arriving text, so its notifications are
-         * the whole of the answer - and matching by anything broader would put every chat
-         * app on the phone onto a tile that is about this one. See MessageNotifier.
+         * This app's own, and only its own. Once this launcher holds the messaging role it
+         * is the one thing on the phone that announces an arriving text, so its
+         * notifications are the whole of the answer - and matching by anything broader
+         * would put every chat app on the phone onto a tile that is about this one. See
+         * MessageNotifier.
          */
         private var messageLines: List<NotificationLine> = emptyList()
 
@@ -85,6 +86,25 @@ class NotificationListenerService : NotificationListenerService() {
         /** Notification lines for [packageName], newest first, or empty. */
         fun getNotificationLines(packageName: String): List<NotificationLine> =
             notificationText[packageName].orEmpty()
+
+        /**
+         * What one program has waiting, by the package its tile is filed under.
+         *
+         * Everything installed answers with its own notifications, which is what the
+         * listener has them by. The shell's two telephone programs cannot: nothing on this
+         * phone posts under "system.phone", and what they are about was left by somebody
+         * else - so they are gathered by what they are rather than by who sent them.
+         *
+         * Both of these used to stand on the People tile, because People was the address
+         * book, the dialler and the messaging app all at once, and one tile with two
+         * unrelated numbers on it had to pick which of them to show. Two tiles each show
+         * their own.
+         */
+        fun linesFor(packageName: String): List<NotificationLine> = when (packageName) {
+            "system.phone" -> missedCallLines
+            "system.messaging" -> messageLines
+            else -> getNotificationLines(packageName)
+        }
 
         /** Every package that currently has text worth showing on a tile. */
         fun packagesWithText(): Set<String> = notificationText.keys.toSet()

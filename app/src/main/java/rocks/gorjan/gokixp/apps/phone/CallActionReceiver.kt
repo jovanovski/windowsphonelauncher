@@ -1,4 +1,4 @@
-package rocks.gorjan.gokixp.apps.people
+package rocks.gorjan.gokixp.apps.phone
 
 import android.content.BroadcastReceiver
 import android.content.Context

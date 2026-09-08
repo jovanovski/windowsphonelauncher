@@ -15,15 +15,23 @@ import android.view.ViewGroup
  *
  * ### Metrics
  * Taken from the WVGA (480x800) reference layout, where a small tile is 99px, medium
- * 210, wide 432x210, the gap 12 and the outer margin 24. Those numbers are internally
- * exact - `2*99 + 12 = 210` and `4*99 + 3*12 = 432`, with `432 + 2*24 = 480` - so they
- * are re-expressed here as fractions of the available width and scale to any screen:
+ * 210, wide 432x210 and the gap 12. Those numbers are internally exact - `2*99 + 12 =
+ * 210` and `4*99 + 3*12 = 432` - so they are re-expressed here as fractions of the
+ * available width and scale to any screen:
  *
  * ```
- *   outer margin = 5.0%  of width
+ *   outer margin = 5dp, flat
  *   gap          = 2.5%  of width
- *   small cell   = (width - 2*margin - 3*gap) / 4  ~= 20.6% of width
+ *   small cell   = (width - 2*5dp - 3*gap) / 4  ~= 22.5% of width
  * ```
+ *
+ * The reference layout also kept a 24px margin down each side - a twentieth of the
+ * screen - and that is the one number here that is not honoured. A tile is a share of
+ * the width, so that margin was never air around the wall: it was width taken off every
+ * tile on the row. What is left is five flat pixels' worth at each end, enough that the
+ * wall is not welded to the bezel and little enough that it reads as running to the
+ * edges. It is the one metric here that does not scale, because a hairline is a
+ * hairline on any screen. See [MARGIN_DP].
  */
 class TileGridLayout @JvmOverloads constructor(
     context: Context,
@@ -288,14 +296,52 @@ class TileGridLayout @JvmOverloads constructor(
     private fun tileSizeOf(child: View): TileSize =
         (child as? TileView)?.tile?.size ?: TileSize.MEDIUM
 
+    // ---------------------------------------------------------------- the packer
+
     /**
-     * Packs children into the grid, first-fit in child order.
+     * Occupancy, kept between packings rather than made for each.
      *
-     * Rows grow on demand, so the occupancy map is a list of row bitmasks rather than a
-     * fixed rectangle. Returns the number of rows used.
+     * A drag packs the whole wall out once per candidate index on every move it makes -
+     * see [dropIndexFor] - and a fresh row of booleans for each of those is a great deal of
+     * rubbish for an answer that is thrown away a frame later.
+     */
+    private val occupancy = ArrayList<BooleanArray>()
+
+    /** How many rows [packSpans] actually reached, which is the wall's height in rows. */
+    private var occupiedRows = 0
+
+    /** Footprints and results, parallel to child index. Grown on demand, never shrunk. */
+    private var spanW = IntArray(0)
+    private var spanH = IntArray(0)
+    private var packedCol = IntArray(0)
+    private var packedRow = IntArray(0)
+    private var tryW = IntArray(0)
+    private var tryH = IntArray(0)
+
+    private fun ensureScratch(n: Int) {
+        if (spanW.size >= n) return
+        spanW = IntArray(n)
+        spanH = IntArray(n)
+        packedCol = IntArray(n)
+        packedRow = IntArray(n)
+        tryW = IntArray(n)
+        tryH = IntArray(n)
+    }
+
+    /**
+     * Places [count] footprints in order, first-fit, writing where each landed into
+     * [packedCol] and [packedRow]. Returns the number of rows used.
      *
-     * The scan starts from the row the *previous* tile landed on rather than from the top.
-     * That keeps the two behaviours that matter and which pull against each other:
+     * The packer proper, and the only copy of it. [pack] runs it over the children as they
+     * stand; a drag runs it over an order it is merely *thinking* of trying. A hypothetical
+     * has to be packed by exactly the same rules as the real thing, or the wall a drag
+     * shows is not the wall it hands over.
+     *
+     * A footprint of no cells - a hidden child, the band - is stepped over and left at the
+     * origin, which keeps the answers parallel to the questions.
+     *
+     * The scan starts from the row the *previous* footprint landed on rather than from the
+     * top. That keeps the two behaviours that matter and which pull against each other:
      *
      *  - a small tile can still backfill a gap beside the tile before it, which is what
      *    lets a row of small tiles sit next to a medium one;
@@ -305,13 +351,17 @@ class TileGridLayout @JvmOverloads constructor(
      * would find the hole it had just vacated near the top and snap straight back into it,
      * so small tiles appeared to be stuck in the first row.
      */
-    private fun pack(): Int {
-        placements.clear()
-        val occupied = mutableListOf<BooleanArray>()
+    private fun packSpans(widths: IntArray, heights: IntArray, count: Int): Int {
+        // A wall that has been set to a different number of columns has rows of the wrong
+        // length lying about in it.
+        if (occupancy.isNotEmpty() && occupancy[0].size != columns) occupancy.clear()
+        for (row in occupancy) java.util.Arrays.fill(row, false)
+        occupiedRows = 0
 
         fun rowAt(r: Int): BooleanArray {
-            while (occupied.size <= r) occupied.add(BooleanArray(columns))
-            return occupied[r]
+            while (occupancy.size <= r) occupancy.add(BooleanArray(columns))
+            if (r >= occupiedRows) occupiedRows = r + 1
+            return occupancy[r]
         }
 
         fun fits(col: Int, row: Int, w: Int, h: Int): Boolean {
@@ -330,28 +380,25 @@ class TileGridLayout @JvmOverloads constructor(
             }
         }
 
-        // The earliest row any subsequent tile may occupy. Never moves backwards.
+        // The earliest row any subsequent footprint may occupy. Never moves backwards.
         var frontier = 0
 
-        for (i in 0 until childCount) {
-            val child = getChildAt(i)
-            // The band lives between rows rather than in them, so the packer steps over it
-            // exactly as it steps over a hidden tile.
-            if (child.visibility == GONE || child === bandView) {
-                placements.add(Placement(0, 0, 0, 0))
+        for (i in 0 until count) {
+            val w = widths[i]
+            val h = heights[i]
+            if (w <= 0 || h <= 0) {
+                packedCol[i] = 0
+                packedRow[i] = 0
                 continue
             }
-            val size = tileSizeOf(child)
-            val w = size.cols.coerceAtMost(columns)
-            val h = size.rows
-
             var placed = false
             var row = frontier
             while (!placed) {
                 for (col in 0..(columns - w)) {
                     if (fits(col, row, w, h)) {
                         occupy(col, row, w, h)
-                        placements.add(Placement(col, row, w, h))
+                        packedCol[i] = col
+                        packedRow[i] = row
                         // Left at this tile's own row, not the row after it, so the next
                         // tile can still share the band beside it.
                         frontier = row
@@ -362,20 +409,149 @@ class TileGridLayout @JvmOverloads constructor(
                 if (!placed) row++
             }
         }
-        return occupied.size
+        return occupiedRows
+    }
+
+    /** Reads each child's footprint into [spanW]/[spanH]. Zero for anything not packed. */
+    private fun readSpans(count: Int) {
+        ensureScratch(count.coerceAtLeast(1))
+        for (i in 0 until count) {
+            val child = getChildAt(i)
+            // The band lives between rows rather than in them, so the packer steps over it
+            // exactly as it steps over a hidden tile.
+            if (child.visibility == GONE || child === bandView) {
+                spanW[i] = 0
+                spanH[i] = 0
+            } else {
+                val size = tileSizeOf(child)
+                spanW[i] = size.cols.coerceAtMost(columns)
+                spanH[i] = size.rows
+            }
+        }
+    }
+
+    /** Packs the children as they stand into [placements]. Returns the rows used. */
+    private fun pack(): Int {
+        val n = childCount
+        readSpans(n)
+        val rows = packSpans(spanW, spanH, n)
+        placements.clear()
+        for (i in 0 until n) {
+            placements.add(Placement(packedCol[i], packedRow[i], spanW[i], spanH[i]))
+        }
+        return rows
+    }
+
+    // ---------------------------------------------------------------- where a drop goes
+
+    private fun centreX(col: Int, cols: Int): Float =
+        marginPx + col * (cellPx + gapPx) + spanPx(cols) / 2f
+
+    private fun centreY(row: Int, rows: Int): Float =
+        topReservePx + row * (cellPx + gapPx) +
+            (if (row >= bandRow) bandHeight else 0) + spanPx(rows) / 2f
+
+    /**
+     * The index [child] has to move to for it to land where [x],[y] is asking, or -1 for
+     * "leave it where it is".
+     *
+     * Answered by trying it. Every index the tile could be moved to is packed out in full,
+     * and the one that puts the tile nearest the point wins - so the wall a drop makes is
+     * the wall the drag was already showing, and a gap can be dropped into whenever any
+     * order at all reaches it.
+     *
+     * It has to be this way round, because a tile's place on the wall is not stored, it is
+     * *derived*: a tile has an index, and where it sits is whatever the packer makes of the
+     * whole order. Reading the answer off the geometry instead - which slot the point falls
+     * between, in reading order - gets the ordinary cases right and then quietly misses the
+     * ones that matter, because the index reading order names need not be the index that
+     * lands the tile there. The empty space beside a tall tile is exactly such a case: the
+     * tile went somewhere else, or nowhere, and the space could not be dropped into at all.
+     *
+     * [x] and [y] are this layout's own coordinates, and want to be the middle of the tile
+     * being dragged rather than the finger - it is the tile that is being put somewhere.
+     * See StartScreenView.dragProbe.
+     *
+     * Costs a packing of the wall per tile on it, so it is asked once a drag has settled on
+     * somewhere rather than on every move - see StartScreenView.reorderUnder and
+     * [probeCell].
+     */
+    fun dropIndexFor(child: View, x: Float, y: Float): Int {
+        val n = tileCount
+        if (n < 2 || cellPx <= 0) return -1
+        readSpans(n)
+
+        var from = -1
+        for (i in 0 until n) if (getChildAt(i) === child) { from = i; break }
+        if (from < 0) return -1
+
+        var best = from
+        var bestScore = Float.MAX_VALUE
+        for (to in 0 until n) {
+            for (i in 0 until n) {
+                // Where the i-th footprint of the reordered wall comes from: the tile
+                // itself at its new index, and everything else closing up behind the hole
+                // it left.
+                val src = when {
+                    i == to -> from
+                    i < to -> if (i < from) i else i + 1
+                    else -> if (i - 1 < from) i - 1 else i
+                }
+                tryW[i] = spanW[src]
+                tryH[i] = spanH[src]
+            }
+            packSpans(tryW, tryH, n)
+            val dx = centreX(packedCol[to], tryW[to]) - x
+            val dy = centreY(packedRow[to], tryH[to]) - y
+            val score = dx * dx + dy * dy
+            // Ties go to the smallest move. Whole runs of indices pack to the very same
+            // wall - a tile put before or after one that ends up on another row - and
+            // choosing between those by anything other than "leave it alone" is a wall
+            // that shuffles under a hand holding still.
+            val nearer = score < bestScore - TIE
+            val level = score <= bestScore + TIE &&
+                kotlin.math.abs(to - from) < kotlin.math.abs(best - from)
+            if (nearer || level) {
+                bestScore = kotlin.math.min(score, bestScore)
+                best = to
+            }
+        }
+        return if (best == from) -1 else best
+    }
+
+    /**
+     * A cheap name for the part of the wall a point is on, or [NO_CELL].
+     *
+     * Nothing is looked up with it: it exists so a drag can tell whether it is still asking
+     * the same question as last time, because the answer - [dropIndexFor] - costs a packing
+     * of the wall per tile and is not worth asking twice over.
+     */
+    fun probeCell(x: Float, y: Float): Int {
+        if (cellPx <= 0) return NO_CELL
+        val pitch = cellPx + gapPx
+        val col = Math.floorDiv((x - marginPx).toInt(), pitch).coerceIn(-1, MAX_COLUMNS)
+        val row = Math.floorDiv((y - topReservePx).toInt(), pitch)
+        return row * (MAX_COLUMNS + 2) + col
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val width = MeasureSpec.getSize(widthMeasureSpec)
 
         // Measured against the phone's shorter side rather than against this wall's width.
-        // The margin and the gap are a share of the screen, and on a screen held sideways -
-        // twice as wide and no taller - a share of the width is a chasm: the air between
-        // tiles would double while the tiles themselves stayed the same size.
+        // The gap is a share of the screen, and on a screen held sideways - twice as wide
+        // and no taller - a share of the width is a chasm: the air between tiles would
+        // double while the tiles themselves stayed the same size. The outer margin is flat
+        // and so has no such trouble.
         val basis = if (metricBasis > 0) metricBasis else width
-        marginPx = (basis * MARGIN_FRACTION).toInt()
         gapPx = (basis * GAP_FRACTION).toInt()
-        cellPx = ((width - 2 * marginPx - (columns - 1) * gapPx) / columns.toFloat()).toInt()
+        val outer = marginPxFor(resources.displayMetrics.density)
+        cellPx = ((width - 2 * outer - (columns - 1) * gapPx) / columns.toFloat()).toInt()
+        // What the row does not use, split between the two ends: the margin asked for,
+        // plus whatever would otherwise be left over. A cell is a whole number of pixels
+        // and a row of them rarely divides the screen exactly, so there is always a little
+        // spare - and left where it fell, all of it piled up on the right and the wall sat
+        // a pixel or two off centre.
+        marginPx = (width - (columns * cellPx + (columns - 1) * gapPx)) / 2
 
         val rows = pack()
         resolveBandRow()
@@ -384,6 +560,11 @@ class TileGridLayout @JvmOverloads constructor(
             val child = getChildAt(i)
             if (child.visibility == GONE || child === bandView) continue
             val p = placements[i]
+            // A tile on the last column has the screen's edge for a right-hand neighbour,
+            // and its handles are centred on that edge. Told here rather than worked out
+            // by the tile, because which column a tile is on is the grid's business and
+            // it has just this moment decided it. See TileView.tuckHandles.
+            (child as? TileView)?.tuckHandles(p.col + p.cols >= columns)
             child.measure(
                 MeasureSpec.makeMeasureSpec(spanPx(p.cols), MeasureSpec.EXACTLY),
                 MeasureSpec.makeMeasureSpec(spanPx(p.rows), MeasureSpec.EXACTLY)
@@ -475,39 +656,48 @@ class TileGridLayout @JvmOverloads constructor(
     }
 
     /**
-     * How many rows a pixel height spans.
+     * How many rows a pixel height spans, rounded to the nearest whole row.
      *
-     * Needed alongside [columnsForWidth] because width alone no longer identifies a size:
+     * Needed alongside [columnsForWidth] because width alone does not identify a size:
      * the banner and the medium tile are both two cells across and differ only in height.
+     * The wall has a width to clamp against and no height, so the ceiling here is the one
+     * a tile carries with it - see [TileSize.MAX_ROWS].
      */
     fun rowsForHeight(px: Float): Int {
         if (cellPx <= 0) return 1
         val span = ((px + gapPx) / (cellPx + gapPx)).let { Math.round(it) }
-        return span.coerceAtLeast(1)
+        return span.coerceIn(1, TileSize.MAX_ROWS)
     }
 
     /**
-     * The child index whose cell contains the given point, or -1.
+     * The child index of the tile the given point is on, or -1 if it is on none.
      *
-     * [insetFraction] shrinks each cell before testing, which is what stops a drag hovering
-     * on a boundary from reordering back and forth every frame: the finger has to commit to
-     * being over a tile, not merely touching its edge.
+     * A tile and only a tile: the gutters, the empty end of a row and the holes the packer
+     * leaves all answer -1, because there is nothing there to be on. Asking where a tile
+     * *belongs* is a different question and a question every point has an answer to - see
+     * [dropIndexFor].
      */
-    fun indexAt(x: Float, y: Float, insetFraction: Float = 0f): Int {
+    fun indexAt(x: Float, y: Float): Int {
         for (i in 0 until childCount) {
-            if (getChildAt(i).visibility == GONE) continue
-            val bounds = boundsOf(placements[i])
-            if (insetFraction > 0f) {
-                val dx = (bounds.width() * insetFraction).toInt()
-                val dy = (bounds.height() * insetFraction).toInt()
-                bounds.inset(dx, dy)
-            }
-            if (bounds.contains(x.toInt(), y.toInt())) return i
+            val child = getChildAt(i)
+            if (child.visibility == GONE || child === bandView) continue
+            if (boundsOf(placements[i]).contains(x.toInt(), y.toInt())) return i
         }
         return -1
     }
 
     companion object {
+        /** No part of the wall: what [probeCell] answers before there is a wall. */
+        const val NO_CELL = Int.MIN_VALUE
+
+        /**
+         * How close two placements have to score to count as the same, in square pixels.
+         *
+         * Two candidate indices that pack to identical walls score identically, so this is
+         * only guarding the float arithmetic that got them there.
+         */
+        private const val TIE = 1f
+
         /**
          * How many columns of the usual size fit across [available].
          *
@@ -517,10 +707,12 @@ class TileGridLayout @JvmOverloads constructor(
          * are the same number and this returns the setting untouched; laid on its side it
          * returns however many more fit, which is what keeps a tile the size it is either
          * way instead of stretching four of them across a screen twice as wide.
+         *
+         * [density] only to turn the flat outer margin into pixels - see [MARGIN_DP].
          */
-        fun columnsFor(available: Int, basis: Int, portraitColumns: Int): Int {
+        fun columnsFor(available: Int, basis: Int, portraitColumns: Int, density: Float): Int {
             if (available <= 0 || basis <= 0) return portraitColumns
-            val margin = basis * MARGIN_FRACTION
+            val margin = marginPxFor(density).toFloat()
             val gap = basis * GAP_FRACTION
             val cell = (basis - 2 * margin - (portraitColumns - 1) * gap) / portraitColumns
             if (cell <= 0f) return portraitColumns
@@ -529,8 +721,24 @@ class TileGridLayout @JvmOverloads constructor(
         }
 
         const val COLUMNS = 4
-        /** Read by the wall, so a folder's heading starts where the tiles start. */
-        const val MARGIN_FRACTION = 0.05f
+
+        /**
+         * Air down each side of the wall.
+         *
+         * A hairline, and flat rather than a share of the screen. The phone kept a
+         * twentieth of the width at each edge, which on a screen this size is a tenth of
+         * the row spent on nothing - and spent out of the tiles, since a cell is what is
+         * left of the row once the margins and the gaps have been taken. So the wall runs
+         * to the edges, with just enough held back that the tiles are not welded to the
+         * bezel.
+         *
+         * Read by more than the grid: a folder's heading has to start where the tiles
+         * start, so it asks for the same number. See [marginPxFor].
+         */
+        const val MARGIN_DP = 5f
+
+        /** [MARGIN_DP] in pixels, for whichever screen is asking. */
+        fun marginPxFor(density: Float): Int = (MARGIN_DP * density).toInt()
         private const val GAP_FRACTION = 0.025f
 
         // What the wall can be set to. Two would make a medium tile the whole width; the

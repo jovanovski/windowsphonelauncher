@@ -119,13 +119,43 @@ enum class Style {
     /**
      * The accent fill, white on colour.
      *
-     * The enter key wears it, whatever the field it is being shown for asks that key to do -
-     * `send`, `search`, `go`, or a plain return. It was once only `send`, which made the one
-     * key on the keyboard that finishes what you are typing look like an ordinary function
-     * key in every app that names its action anything else. Shift takes it too, but only
-     * while shift is on: there it is a state and not a job.
+     * **Shift, and only while shift is on.** The accent here means a state - something is
+     * switched on that will change what the next key does - and nothing else.
+     *
+     * The enter key wore it too for a while, on the reasoning that the key which finishes
+     * what you are typing should look like it. That was wrong for a reason worth writing
+     * down: the enter key is always there and always does the same thing, so an accent on it
+     * is a colour that is simply always present, and a colour that is always present says
+     * nothing. Worse, it left the keyboard with two accented keys whenever shift was on, one
+     * of which was a state and one of which was not - so the one signal the accent carries
+     * had to be worked out from context. Enter is a function key now, like the rest of the
+     * keys that are about the keyboard rather than about your sentence.
      */
     ACCENT
+}
+
+/**
+ * What the enter key wears for the action the field being typed into asked of it.
+ *
+ * Two of the five actions Android names have a mark everybody already reads, and a mark reads
+ * at a glance where a word has to be read - which on the key you are reaching for without
+ * looking is the whole difference. The other three keep their words: there is no picture of
+ * `send`, `next` or `done` that would not have to be learned first, and a symbol somebody has
+ * to learn is worse than the word it replaced.
+ *
+ * The words are English and the marks are not, which is the second reason this is an enum
+ * rather than the view sniffing the label.
+ */
+enum class EnterMark {
+
+    /** No mark: the word, or the return arrow when there is no word. */
+    NONE,
+
+    /** A magnifier, for a field that searches. */
+    SEARCH,
+
+    /** An arrow, for a field whose action is `go` - an address bar, mostly. */
+    GO
 }
 
 /** The keys that are not letters. */
@@ -155,7 +185,7 @@ enum class Action {
      */
     GIF,
 
-    /** The keyboard's own settings. Behind the hold on `&123` - see its ellipsis. */
+    /** The keyboard's own settings. Behind the hold on the full stop - see its ellipsis. */
     SETTINGS
 }
 

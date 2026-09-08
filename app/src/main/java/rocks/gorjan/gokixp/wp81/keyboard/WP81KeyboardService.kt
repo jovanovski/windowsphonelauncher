@@ -74,6 +74,36 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
     private var offered: List<String> = emptyList()
 
     /**
+     * How many of [offered] are emoji rather than words, sitting at indices 1 upwards.
+     *
+     * The bar hands back one index and knows nothing about what is in it, so this is what
+     * tells a tap on 👑 from a tap on `crowns`. It is also what keeps autocorrect honest:
+     * the keyboard's own best word used to be `offered[1]` by construction, and with emoji
+     * in front of it that constant would have made a space insert an emoji. See
+     * [correctionIndex], which is the same claim written once instead of at three call sites.
+     */
+    private var emojiOffered = 0
+
+    /** Where the keyboard's own best word sits on the bar, with the emoji counted in. */
+    private val correctionIndex: Int get() = 1 + emojiOffered
+
+    /** Whether the bar's [index] holds an emoji rather than a word. */
+    private fun isEmojiSlot(index: Int): Boolean = index in 1..emojiOffered
+
+    /**
+     * Sets what the bar is showing, both halves at once.
+     *
+     * A function rather than two assignments because they are one fact, and there are eight
+     * places that clear or replace it - one of them forgetting the count would leave the
+     * keyboard believing there were emoji on a bar that had none, which is a space that
+     * inserts the wrong thing.
+     */
+    private fun offer(words: List<String>, emoji: Int = 0) {
+        offered = words
+        emojiOffered = emoji
+    }
+
+    /**
      * The typed text [offered] was worked out for.
      *
      * Because the search runs off the main thread, what the bar is showing can be a keystroke
@@ -166,7 +196,15 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
             WP81Settings.KEY_WP81_KB_AUTOCORRECT,
             WP81Settings.KEY_WP81_KB_AUTOCAPS,
             WP81Settings.KEY_WP81_KB_OFFLINE_VOICE,
-            WP81Settings.KEY_WP81_KB_SHORT_BOTTOM -> applySettings()
+            WP81Settings.KEY_WP81_KB_SHORT_BOTTOM,
+            WP81Settings.KEY_WP81_KB_SOUND,
+            WP81Settings.KEY_WP81_KB_KEY_PREVIEW,
+            WP81Settings.KEY_WP81_KB_JOYSTICK,
+            WP81Settings.KEY_WP81_KB_SLIDE_KEYS,
+            // Changed by dragging a slider on a page that has a text box on it, so this
+            // fires many times a second with the keyboard on screen underneath. It has to:
+            // watching the keys resize under the finger is the whole point of that box.
+            WP81Settings.KEY_WP81_KB_KEY_HEIGHT -> applySettings()
             // Changed from the settings page, which is a different window: the system's own
             // list has to be brought back into step before the globe is next used.
             WP81Settings.KEY_WP81_KB_LANGUAGES -> {
@@ -188,6 +226,10 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         offlineVoice = themeManager.getWP81KeyboardOfflineVoice()
         keyboard?.holdMillis = themeManager.getWP81KeyboardHoldMs().toLong()
         keyboard?.shortBottomRow = themeManager.getWP81KeyboardShortBottomRow()
+        keyboard?.keyHeightScale = themeManager.getWP81KeyboardKeyHeight() / 100f
+        keyboard?.keyPreview = themeManager.getWP81KeyboardKeyPreview()
+        keyboard?.joystick = themeManager.getWP81KeyboardJoystick()
+        keyboard?.slideKeys = themeManager.getWP81KeyboardSlideKeys()
         // Survives a trip to the symbol pages, which have a space bar and no language.
         keyboard?.setSpaceLabel(language.name)
         // Started now, so the dictionary is parsed and waiting before the first key is
@@ -197,6 +239,7 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         // preference read per keystroke is exactly the sort of thing that turns into a lag
         // nobody can account for. See [KeyboardHaptics.strength].
         KeyboardHaptics.refresh(this, themeManager)
+        KeyboardSounds.refresh(this, themeManager)
     }
 
     /**
@@ -230,6 +273,10 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         // first word or two go by with nothing offered.
         language = KeyboardLanguages.enabled(themeManager).first()
         warmSuggester()
+        // The same argument as the dictionary above, on the same thread: read it before
+        // anybody has tapped a field, so the first word typed can already be the name of
+        // something.
+        warmEmojiNames()
     }
 
     override fun onCreateInputView(): View {
@@ -327,7 +374,7 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         // whatever is half-typed in it is not the keyboard's to finish.
         composer.reset()
         previousWord = null
-        offered = emptyList()
+        offer(emptyList())
         learned?.flush()
         super.onFinishInput()
     }
@@ -336,6 +383,7 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         // A row left open would still be on screen the next time the keyboard is shown,
         // offering alternates for a key that is no longer being held.
         keyboard?.hideAlternates()
+        cancelSlide()
         clipboardHistory?.dismiss()
         watchClipboard(false)
         super.onFinishInputView(finishingInput)
@@ -441,7 +489,7 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         }
         composer.reset()
         previousWord = null
-        offered = emptyList()
+        offer(emptyList())
         offeredFor = ""
         host?.bar?.clear()
         // Sending a message empties the box, and an empty box is where the paste offer
@@ -501,6 +549,7 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         keyboard?.hideAlternates()
+        cancelSlide()
         // Now, rather than when the clip was made: an input method may read the clipboard
         // while it is the active one, which it is exactly now and mostly is not. See
         // [ClipboardStore], and [watchingClipboard] for the other half of the same idea.
@@ -508,7 +557,7 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         watchClipboard(true)
         composer.reset()
         previousWord = null
-        offered = emptyList()
+        offer(emptyList())
         applySettings()
         host?.bar?.clear()
         searchingEmoji = false
@@ -580,15 +629,21 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         // action has somewhere else to be.
         val multiLine = (info?.inputType ?: 0) and InputType.TYPE_TEXT_FLAG_MULTI_LINE != 0
 
-        val label = if (multiLine || noAction) null else when (action) {
-            EditorInfo.IME_ACTION_SEARCH -> "search"
-            EditorInfo.IME_ACTION_GO -> "go"
+        val named = !multiLine && !noAction
+        // A mark for the two actions that have one, and the word for the rest. See [EnterMark]
+        // for which and why.
+        val mark = if (!named) EnterMark.NONE else when (action) {
+            EditorInfo.IME_ACTION_SEARCH -> EnterMark.SEARCH
+            EditorInfo.IME_ACTION_GO -> EnterMark.GO
+            else -> EnterMark.NONE
+        }
+        val label = if (!named) null else when (action) {
             EditorInfo.IME_ACTION_SEND -> "send"
             EditorInfo.IME_ACTION_NEXT -> "next"
             EditorInfo.IME_ACTION_DONE -> "done"
             else -> null
         }
-        view.setEnterKey(label)
+        view.setEnterKey(label, mark)
     }
 
     /**
@@ -697,6 +752,9 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
 
     /** The tick that answers a hold is [KeyView]'s; only what the hold *does* is here. */
     override fun onKeyLongPress(view: KeyView) {
+        // A hold that brings up a page to slide across wins over both of the others, and can:
+        // the two keys it applies to offer no characters and open nothing.
+        if (startSlide(view)) return
         // A hold that opens something wins over a hold that offers characters.
         view.key.holdAction?.let { held ->
             when (held) {
@@ -716,8 +774,12 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         }
     }
 
-    /** Reaching along the row a hold opened. */
+    /** Reaching along the row a hold opened, or across the page a slide brought up. */
     override fun onKeyDrag(view: KeyView, x: Float, y: Float) {
+        if (slidingKeys) {
+            keyboard?.moveSlide(view, x, y)
+            return
+        }
         keyboard?.moveAlternates(view, x)
     }
 
@@ -730,6 +792,10 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
     override fun onKeyRelease(view: KeyView) {
         if (view.key.action == Action.BACKSPACE) {
             finishRepeating()
+            return
+        }
+        if (slidingKeys) {
+            finishSlide(view)
             return
         }
         val chosen = keyboard?.takeAlternate()
@@ -755,6 +821,14 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
      * release of this one.
      */
     override fun onKeyPress(view: KeyView) {
+        // Read before the page changes below, because `&123` changes it on the way *down* and
+        // a slide that starts on this press has to put back what was here before it. Cleared
+        // for every other key, so a slide can never begin on a stale one.
+        pageBeforeSlide = if (view.slides()) {
+            keyboard?.let { Page(shiftState, it.currentLayout()) }
+        } else {
+            null
+        }
         when (view.key.action) {
             Action.SYMBOLS -> toggleSymbols()
             Action.SYMBOLS_PAGE -> flipSymbolPage()
@@ -807,12 +881,13 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
      * keyboard seize the moment to rewrite what you had just typed would be a nasty surprise
      * from a gesture that is supposed to be about looking rather than changing.
      */
-    override fun onCursorSlide(view: KeyView, steps: Int) {
-        if (steps == 0) return
-        val ic = currentInputConnection ?: return
+    override fun onCursorSlide(view: View, steps: Int): Int {
+        if (steps == 0) return 0
+        val ic = currentInputConnection ?: return 0
         if (composer.isComposing) finishWord(appending = "", correcting = false)
         phantomSpace = false
 
+        val moved: Int
         try {
             // From the near edge of any selection, so the first move out of a selected range
             // collapses it the way an arrow key would rather than jumping from its middle.
@@ -826,21 +901,18 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
             } else {
                 maxOf(0, from + steps)
             }
-            if (target == selStart && target == selEnd) return
+            if (target == selStart && target == selEnd) return 0
             ic.setSelection(target, target)
-            // One tick per character the caret actually passes, which is what makes the
-            // slide feel like it is moving over something. Deliberately after the clamp
-            // above: running off the end of the text stops the caret, and a keyboard still
-            // ticking there would say it was moving when it was not.
-            KeyboardHaptics.key(view)
+            moved = target - from
             // Locally, because the field's own report of this move arrives after the next
             // step has already been asked for, and a slide that waited for it would crawl.
             selStart = target
             selEnd = target
         } catch (e: Exception) {
-            return
+            return 0
         }
         updateAutoCaps()
+        return moved
     }
 
     private fun commitLetter(view: KeyView) {
@@ -916,16 +988,21 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
                 else -> null
             }
             val words = next?.map { it.word }.orEmpty().take(BAR_SLOTS)
-            offered = words
+            offer(words)
             bar.setWords(words, emphasised = -1)
             return
         }
 
+        // Anything this word is the name of. Worked out here rather than with the words
+        // below, because it is a hash lookup rather than a search and there is no reason for
+        // it to wait behind one - see [emojiFor].
+        val emoji = emojiFor(typed)
+
         // The literal goes up immediately, before anything has been searched for. The bar is
         // never empty and never lags the keys, whatever the dictionary is busy doing.
-        offered = listOf(typed)
+        offer(listOf(typed) + emoji, emoji.size)
         offeredFor = typed
-        bar.setWords(offered, emphasised = -1)
+        bar.setWords(offered, emphasised = -1, emoji = emoji.size)
 
         val engine = suggester() ?: run {
             // Not ready yet. The bar already shows what was typed; this asks for the
@@ -957,27 +1034,119 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
                 if (generation != searchGeneration) return@post
                 val current = host?.bar ?: return@post
 
-                // The literal first, then the two best guesses - three in all, which is what
-                // the bar shows. The order is the display order: left is what was typed, the
-                // middle is the best guess, the right is the runner-up.
+                // The literal first, then the best guesses in order, up to what the bar
+                // will hold. The order is the display order: the leftmost word is always
+                // exactly what was typed, so rejecting a correction is the same movement
+                // every time, and the keyboard's own best guess is the one beside it. The
+                // rest run off to the right and are reached with a flick.
                 val words = ArrayList<String>(BAR_SLOTS)
                 words.add(typed)
+                // Straight after the literal, which is the only place they are worth
+                // putting. Somebody who has typed `crown` in full has finished the word -
+                // there is not much a completion can offer them - and an emoji tucked in
+                // behind three spellings of what they already wrote is one they will never
+                // see. It is also a far stronger signal than a completion: the word they
+                // typed *is* the name of the thing.
+                words.addAll(emoji)
                 for (candidate in suggestions) {
                     if (words.size >= BAR_SLOTS) break
                     words.add(candidate.word)
                 }
-                offered = words
+                offer(words, emoji.size)
                 offeredFor = typed
 
                 // Which word a space would take, marked before it is taken rather than
                 // discovered afterwards. Only ever a *correction*: marking the literal when
                 // nothing is going to happen put the accent on what the user had just typed,
                 // which reads as the keyboard objecting to it.
+                //
+                // [correctionIndex] rather than a literal 1: with emoji on the bar the
+                // keyboard's best word is no longer the second thing on it, and a space that
+                // took `offered[1]` would insert an emoji nobody asked for.
                 val willCorrect = autocorrect &&
-                    composer.shouldAutocorrect(words.getOrNull(1), typedIsAWord())
-                current.setWords(words, emphasised = if (willCorrect) 1 else -1)
+                    composer.shouldAutocorrect(words.getOrNull(correctionIndex), typedIsAWord())
+                current.setWords(
+                    words,
+                    emphasised = if (willCorrect) correctionIndex else -1,
+                    emoji = emoji.size
+                )
             }
         }
+    }
+
+    /**
+     * The emoji list, once it has been read, or null while it is still being read.
+     *
+     * `@Volatile` and read straight off the keystroke path, which is why it is a field rather
+     * than a call to [EmojiData.load]: that opens an asset and then asks the font whether it
+     * can draw each of three and a half thousand glyphs, which is cheap once and is exactly
+     * the sort of thing that must never happen under a finger. Null until it is ready, and the
+     * bar simply offers no emoji until then - a keyboard that stalled on its first keystroke
+     * to load a picture list would be a worse trade than a few seconds without pictures.
+     */
+    @Volatile
+    private var emojiNames: EmojiData? = null
+
+    /**
+     * Reads the emoji list in the background, once.
+     *
+     * On [loads], the same thread the dictionaries are read on, and for the same reason:
+     * both are a file and a few thousand small operations, neither belongs on the main thread
+     * and neither belongs in front of a keystroke's search. Sharing one thread with the
+     * dictionary also means the two do not compete - they happen one after the other, once,
+     * while nobody is typing yet.
+     */
+    private fun warmEmojiNames() {
+        if (emojiNames != null) return
+        loads.execute {
+            if (emojiNames != null) return@execute
+            emojiNames = try {
+                EmojiData.load(this)
+            } catch (e: Exception) {
+                // No emoji suggestions. Everything else about the keyboard still works.
+                null
+            }
+        }
+    }
+
+    /**
+     * The emoji [typed] is the name of, if it is the name of any.
+     *
+     * Nothing at all in a password field, which is the same rule the word suggestions follow
+     * and for a stronger reason: this is a lookup of what somebody typed against a list, and a
+     * field that has asked to be forgotten should not be having its contents looked up in
+     * anything.
+     */
+    private fun emojiFor(typed: String): List<String> {
+        if (privateField) return emptyList()
+        val data = emojiNames ?: return emptyList()
+        return data.headed(typed, EMOJI_SLOTS).map { it.glyph }
+    }
+
+    /**
+     * An emoji was taken from the bar.
+     *
+     * The typed word goes: it was how the emoji was asked for, not something to keep - typing
+     * `crown` and tapping 👑 should leave 👑, not `crown 👑`. And nothing is learned from it.
+     * The word was spelled correctly or it would not have matched, so there is nothing for the
+     * dictionary to gain, and the emoji itself must never enter it: a glyph learned as a word
+     * would come back as a *correction* for something spelled a little like it.
+     *
+     * A space follows, exactly as it does for a word taken from the bar, so the sentence
+     * carries on without one having to be typed - and the phantom-space rule takes it back
+     * again if what comes next is a full stop. [previousWord] is cleared rather than set,
+     * because an emoji is not a word to predict the next one from.
+     */
+    private fun takeEmojiSuggestion(glyph: String) {
+        // `commit` replaces whatever is composing, which is the word that was typed to find
+        // this - so the substitution and the space are one operation on the field.
+        composer.reset()
+        commit("$glyph ")
+        phantomSpace = true
+        previousWord = null
+        offer(emptyList())
+        offeredFor = ""
+        refreshCandidates()
     }
 
     /**
@@ -1040,6 +1209,10 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
     /** A suggestion was tapped. */
     private fun takeSuggestion(index: Int) {
         val word = offered.getOrNull(index) ?: return
+        if (isEmojiSlot(index)) {
+            takeEmojiSuggestion(word)
+            return
+        }
         if (composer.isComposing) {
             // Tapping the literal is how a correction is refused, and the honest reading of
             // that is "this is a word" - so it is learned, and stops being corrected from
@@ -1283,9 +1456,9 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         // than not correcting at all.
         val current = offeredFor == composer.typed
         val correction = if (correcting && autocorrect && current &&
-            composer.shouldAutocorrect(offered.getOrNull(1), typedIsAWord())
+            composer.shouldAutocorrect(offered.getOrNull(correctionIndex), typedIsAWord())
         ) {
-            offered.getOrNull(1)
+            offered.getOrNull(correctionIndex)
         } else {
             null
         }
@@ -1313,7 +1486,7 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
             }
         }
         previousWord = words.lastOrNull() ?: finished
-        offered = emptyList()
+        offer(emptyList())
         offeredFor = ""
         refreshCandidates()
     }
@@ -1514,7 +1687,7 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
                 // follow the last one, so nothing should be predicted from it.
                 composer.reset()
                 previousWord = null
-                offered = emptyList()
+                offer(emptyList())
                 offeredFor = ""
                 host?.bar?.clear()
             } else {
@@ -1995,29 +2168,156 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         if (view.currentLayout().id.startsWith("symbols")) showLetters() else showSymbols()
     }
 
-    private fun showSymbols() {
+    /**
+     * Puts a page up, with the `&123` key saying what it now does.
+     *
+     * The four calls below are the same three lines with a different layout in the middle,
+     * and one of them is reached from the slide, which has a layout rather than a direction:
+     * it is putting back whichever of the four was showing before the finger landed, and
+     * there is no `showWhateverWasThereBefore`.
+     */
+    private fun showPage(next: KeyboardLayout) {
         val view = keyboard ?: return
-        view.setLayout(Layouts.SYMBOLS_1)
-        view.setSymbolsLabel("abc")
+        view.setLayout(next)
+        view.setSymbolsLabel(if (next.id.startsWith("symbols")) "abc" else "&123")
         refreshEnterKey()
     }
+
+    private fun showSymbols() = showPage(Layouts.SYMBOLS_1)
 
     private fun flipSymbolPage() {
         val view = keyboard ?: return
-        val next = if (view.currentLayout().id == Layouts.SYMBOLS_1.id) Layouts.SYMBOLS_2 else Layouts.SYMBOLS_1
-        view.setLayout(next)
-        view.setSymbolsLabel("abc")
-        refreshEnterKey()
+        showPage(
+            if (view.currentLayout().id == Layouts.SYMBOLS_1.id) Layouts.SYMBOLS_2
+            else Layouts.SYMBOLS_1
+        )
     }
 
     private fun showLetters() {
-        val view = keyboard ?: return
-        view.setLayout(language)
-        view.setSymbolsLabel("&123")
-        // The grid was rebuilt, so the enter key's label and the shift state are sitting on
-        // the old set of key views and have to be put back onto the new one.
-        refreshEnterKey()
+        showPage(language)
+        // The grid was rebuilt, so the shift state is sitting on the old set of key views and
+        // has to be put back onto the new one.
         setShift(shiftState)
+    }
+
+    // ---------------------------------------------------------------- sliding
+
+    /**
+     * What the keyboard was before the key under the finger was pressed.
+     *
+     * Filled on every press of shift or `&123` - see [onKeyPress] - and read only if that
+     * press turns into a hold. Both halves are recorded whichever of the two keys it was,
+     * because at the moment of the press it is not yet known which gesture this is going to
+     * be; [finishSlide] puts back the half that its own key had changed.
+     */
+    private class Page(val shift: ShiftState, val layout: KeyboardLayout)
+
+    private var pageBeforeSlide: Page? = null
+
+    /** Whether a slide is actually running: the hold has fired and the page is up. */
+    private var slidingKeys = false
+
+    /**
+     * A hold on shift or `&123`, which turns the page it opens into something to slide across.
+     *
+     * The whole of the gesture is delivered to the key it started on - Android sends a stream
+     * of touches to whichever view claimed the press, wherever the finger goes afterwards -
+     * which is what makes this possible at all: the keys being slid across are never touched,
+     * so the key that *was* touched passes the movement on and the grid works out what is
+     * under it. See `KeyboardView.moveSlide`.
+     *
+     * @return whether the hold was taken, so the caller can leave the rest of it alone.
+     */
+    private fun startSlide(view: KeyView): Boolean {
+        if (!view.slides()) return false
+        if (pageBeforeSlide == null) return false
+        when (view.key.action) {
+            // Shift has done nothing yet - a tap on it is read on the way up - so the hold is
+            // what brings the capitals up. Locked rather than one-shot, because the letter
+            // this slide types must not spend a shift the slide put on itself; what happens
+            // to shift afterwards is [finishSlide]'s to decide, and it decides by putting
+            // back what was there before.
+            Action.SHIFT -> setShift(ShiftState.LOCKED)
+            // `&123` has already changed the page, on the way down, and that is not an
+            // accident of ordering - it is what makes the page available to slide across at
+            // the moment the hold fires rather than a frame later. See [onKeyPress].
+            Action.SYMBOLS -> Unit
+            else -> return false
+        }
+        slidingKeys = true
+        keyboard?.startSlide(view)
+        return true
+    }
+
+    /**
+     * The finger has come off, somewhere out on the page the hold brought up.
+     *
+     * Types whatever it was over and puts the keyboard back. A key that would itself change
+     * the page or the shift state is not typed: this gesture's promise is that both go back
+     * to where they were, and a key that argues with that would leave the keyboard in a state
+     * nobody asked for.
+     */
+    private fun finishSlide(view: KeyView) {
+        val from = pageBeforeSlide
+        slidingKeys = false
+        pageBeforeSlide = null
+        val target = keyboard?.takeSlide()
+        keyboard?.endSlide()
+        if (from == null) return
+        // Never left the key it started on - a slow press rather than a slide, which is most
+        // of what a hold on either of these keys has always been. So it means what it has
+        // always meant: shift is locked, or the symbol page is up, and stays that way.
+        if (target == null || target === view || target.key.action == view.key.action) return
+        val typed = when (target.key.action) {
+            null -> {
+                // Through the same path a tap takes, so the letter arrives capitalised, joins
+                // the word being composed, and is learned from, exactly as a typed one is.
+                commitLetter(target)
+                true
+            }
+            Action.SPACE -> {
+                space()
+                true
+            }
+            Action.BACKSPACE -> {
+                backspace()
+                true
+            }
+            Action.ENTER -> {
+                enter()
+                true
+            }
+            else -> false
+        }
+        // Only the slide that put the capitals up takes them down again, and it does it
+        // before the page moves, so what comes back is painted in the state it is coming back
+        // to. A slide from `&123` never touched shift, and what the key it just typed did to
+        // it - a full stop arming the next capital - is the field's answer, not this
+        // gesture's to overrule.
+        if (view.key.action == Action.SHIFT) {
+            // A one-shot that was already armed is spent by the letter this slide typed, the
+            // same way a tapped letter would have spent it: one capital was asked for and one
+            // was had. A locked shift, or none at all, is neither and goes back untouched.
+            setShift(if (typed && from.shift == ShiftState.ONCE) ShiftState.OFF else from.shift)
+            // The keys that end a sentence had nothing to say while the slide held shift
+            // locked - see [updateAutoCaps], which leaves a locked shift alone and is right to
+            // - so they are asked again now that it is not.
+            if (typed && target.key.action != null) updateAutoCaps()
+        }
+        if (from.layout.id != keyboard?.currentLayout()?.id) showPage(from.layout)
+    }
+
+    /**
+     * Abandons a slide without acting on it.
+     *
+     * For the keyboard going away underneath one, which is not the finger lifting and must
+     * not type anything. What is left behind otherwise is a key painted as though a finger
+     * were on it, on a grid that will be shown again.
+     */
+    private fun cancelSlide() {
+        slidingKeys = false
+        pageBeforeSlide = null
+        keyboard?.endSlide()
     }
 
     /**
@@ -2102,7 +2402,25 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         const val KEY_SUBTYPES_ENABLED_FOR = "subtypes_enabled_for"
 
         /** How many the bar shows. See [CandidateBar]. */
-        const val BAR_SLOTS = 3
+        /**
+         * How many suggestions are worked out for the bar.
+         *
+         * The bar's own limit rather than a second number here, because the two have to agree
+         * and there is nothing this end could sensibly decide: how many words fit is a
+         * question about a strip of screen, and the strip is what answers it. See
+         * [CandidateBar.MAX_WORDS].
+         */
+        const val BAR_SLOTS = CandidateBar.MAX_WORDS
+
+        /**
+         * How many emoji one typed word may put on the bar.
+         *
+         * Two. `kiss` names three or four things and `heart` names a dozen, and past the
+         * second the bar stops being suggestions with an emoji in them and becomes an emoji
+         * picker that has pushed the words off the end. Anyone who wanted the third is one tap
+         * from the panel that has all of them, which is what the panel is for.
+         */
+        const val EMOJI_SLOTS = 2
 
         /** How long a message stays on the bar before the suggestions come back. */
         const val MESSAGE_MS = 2_500L

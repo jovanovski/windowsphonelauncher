@@ -205,7 +205,18 @@ class MetroPanorama(
     private fun rebuildStrip() {
         headerRow.removeAllViews()
         titleLabels.clear()
-        if (titleTexts.isEmpty()) return
+        // A panorama whose sections have no names has no strip to draw. That is not a
+        // degenerate case: a program with one section - the address book, the
+        // conversations - is still laid out on this surface, for the wordmark that drifts
+        // and the page that turns in under it, and a strip repeating that one section's
+        // name under the app's own name is the same word twice with a gap between them.
+        //
+        // Hidden rather than left empty, so the pages take the height back. The labels are
+        // simply not built: nothing else reads them when there are none - see
+        // [titleOffsetFor] and [repaintTitles], which both answer for an empty strip.
+        headerClip.visibility =
+            if (titleTexts.any { it.isNotBlank() }) View.VISIBLE else View.GONE
+        if (titleTexts.none { it.isNotBlank() }) return
         for ((index, text) in titleTexts.withIndex()) {
             val label = TextView(context).apply {
                 this.text = text

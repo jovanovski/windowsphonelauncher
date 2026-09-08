@@ -1,4 +1,4 @@
-package rocks.gorjan.gokixp.apps.people
+package rocks.gorjan.gokixp.apps.messaging
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -17,13 +17,15 @@ import rocks.gorjan.gokixp.R
 import rocks.gorjan.gokixp.wp81.MessageStore
 import rocks.gorjan.gokixp.wp81.PeopleStore
 import rocks.gorjan.gokixp.wp81.metroLook
+import rocks.gorjan.gokixp.apps.people.facePhoto
+import rocks.gorjan.gokixp.apps.people.glyphFace
 
 /**
  * A message, in the shade, as the person who sent it.
  *
  * This exists because of the role. While another app is the phone's messaging app, that
  * app announces arriving messages and there is nothing for the launcher to do; the moment
- * People takes the role, that app is not told a message arrived at all - so a text that is
+ * this launcher takes the role, that app is not told a message arrived at all - so a text that is
  * not announced here is a text nobody ever finds out about. It is the other half of
  * [MessageStore.writeIncoming], and just as non-optional.
  *
@@ -276,5 +278,5 @@ object MessageNotifier {
     private const val CONVERSATION_CATEGORY =
         android.content.pm.ShortcutInfo.SHORTCUT_CATEGORY_CONVERSATION
 
-    private const val TAG = "WP81People"
+    private const val TAG = "WP81Messaging"
 }

@@ -2,9 +2,9 @@
 <!--
   wp81_glyph_missed_call
 
-  The mark the People tile wears while a call has gone unanswered - a handset with the
+  The mark the Phone tile wears while a call has gone unanswered - a handset with the
   arrow that says the call came in and was not taken. Its own drawable rather than
-  something folded into wp81_glyph_people: the tile shows one or the other, and which of
+  something folded into wp81_glyph_phone: the tile shows one or the other, and which of
   them it is *is* the notification.
 
   The supplied path is minified SVG - ".6.6" for two numbers, flags run into the value

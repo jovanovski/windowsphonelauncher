@@ -296,7 +296,7 @@ class CarStartScreen(carContext: CarContext) : Screen(carContext) {
                 // permission or a service of its own - which is the whole point of the
                 // tile from the driver's seat: whether there is a mail worth stopping for.
                 setNotifications { tile ->
-                    NotificationListenerService.getNotificationLines(tile.packageName)
+                    NotificationListenerService.linesFor(tile.packageName)
                         .map { TileView.Line(it.title, it.text) }
                 }
 

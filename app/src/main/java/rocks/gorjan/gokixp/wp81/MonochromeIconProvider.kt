@@ -44,7 +44,44 @@ class MonochromeIconProvider(private val context: Context) {
         data class FullColor(val drawable: Drawable, val contentRatio: Float = 1f) : Glyph()
     }
 
-    fun glyphFor(packageName: String, fallback: Drawable?): Glyph? {
+    /**
+     * The icon pack's answer for a package, when the user has asked for one to reach the
+     * tiles as well as the app list.
+     *
+     * A seam rather than a pack of its own, for the same reason the fallback is handed in:
+     * which pack is on, and whether it was invited this far, are the shell's business.
+     * Unset - or set and silent about this app - and the three-step resolution below is
+     * exactly what it was.
+     *
+     * It goes first because it is the one answer here the user chose deliberately. The
+     * three below are all inferences about what an app's tile should look like; a pack is
+     * an instruction, and an instruction that loses to an inference is not one.
+     */
+    @Volatile
+    var packGlyph: ((String) -> Drawable?)? = null
+
+    /**
+     * Whether the Start tiles are included in what [packGlyph] answers for.
+     *
+     * The app list always is, and the wall only when the user has said so - which is a
+     * setting rather than a preference of this class's because the two surfaces want
+     * different things. A list row is a name with a mark beside it and a pack's artwork
+     * suits it; the wall is a grid of accent squares that a full-colour icon breaks the
+     * look of. See [glyphFor]'s `isTile`, and WP81Settings.getWP81IconPackOnTiles.
+     */
+    @Volatile
+    var packOnTiles: Boolean = false
+
+    /**
+     * @param isTile whether the caller is drawing a Start tile, as opposed to a row in the
+     *   app list. The only thing it changes is whether the icon pack gets a turn.
+     */
+    fun glyphFor(packageName: String, fallback: Drawable?, isTile: Boolean = false): Glyph? {
+        if (!isTile || packOnTiles) packGlyph?.invoke(packageName)?.let {
+            // Full colour, so it is never tinted: a pack's artwork is the picture, not a
+            // silhouette of one, and washing it in white would leave a white square.
+            return Glyph.FullColor(it, ratioFor("pack:$packageName", it))
+        }
         monochromeLayer(packageName)?.let {
             return Glyph.Monochrome(it, ratioFor("mono:$packageName", it))
         }

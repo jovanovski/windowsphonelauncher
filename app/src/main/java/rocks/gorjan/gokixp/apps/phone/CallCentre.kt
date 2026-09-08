@@ -1,4 +1,4 @@
-package rocks.gorjan.gokixp.apps.people
+package rocks.gorjan.gokixp.apps.phone
 
 import android.content.Context
 import android.os.Build
@@ -297,7 +297,7 @@ object CallCentre {
      * which.
      *
      * Reading it needs BLUETOOTH_CONNECT from Android 12 - see the manifest, and
-     * MainActivity.ensureCallPermissions, which asks for it when People is made the phone.
+     * MainActivity.ensureCallPermissions, which asks for it when Phone is made the dialler.
      * Null whenever that is missing, refused or simply unknown, and the list falls back to
      * the word. Nothing else changes: choosing the route never needed the permission.
      */

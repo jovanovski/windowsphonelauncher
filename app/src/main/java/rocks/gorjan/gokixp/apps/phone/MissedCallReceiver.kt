@@ -1,4 +1,4 @@
-package rocks.gorjan.gokixp.apps.people
+package rocks.gorjan.gokixp.apps.phone
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -16,6 +16,8 @@ import androidx.core.graphics.drawable.IconCompat
 import rocks.gorjan.gokixp.MainActivity
 import rocks.gorjan.gokixp.R
 import rocks.gorjan.gokixp.wp81.metroLook
+import rocks.gorjan.gokixp.apps.people.facePhoto
+import rocks.gorjan.gokixp.apps.people.glyphFace
 
 /**
  * The missed call, told to the phone app rather than posted over its head.
@@ -130,7 +132,7 @@ class MissedCallReceiver : BroadcastReceiver() {
             .setSmallIcon(R.drawable.wp81_notify_missed_call)
             .metroLook(context)
             .setContentIntent(opening)
-            // What the People tile reads to know it should stand aside for this. It is also
+            // What the Phone tile reads to know it should stand aside for this. It is also
             // what it is: the platform has a category for exactly this notification, and
             // Telecom's own - the thing this replaces - is the one that leaves it unset.
             .setCategory(NotificationCompat.CATEGORY_MISSED_CALL)

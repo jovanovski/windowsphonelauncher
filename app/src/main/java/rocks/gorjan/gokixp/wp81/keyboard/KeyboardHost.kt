@@ -85,8 +85,16 @@ internal class KeyboardHost(
         val width = MeasureSpec.getSize(widthMeasureSpec)
         if (width > 0) {
             // The reference column count, not the current layout's: the bar is the same
-            // height whichever language is up, for the same reason the keys are.
-            val unit = KeyboardView.verticalUnit(resources, width, KeyboardView.REFERENCE_COLUMNS)
+            // height whichever language is up, for the same reason the keys are. The keys'
+            // own height setting goes in too, because in landscape it moves the cap that
+            // decides the unit - and a bar sized from a different unit than the keys is a bar
+            // whose text is subtly the wrong size for the keyboard under it.
+            val unit = KeyboardView.verticalUnit(
+                resources,
+                width,
+                KeyboardView.REFERENCE_COLUMNS,
+                keyboard.keyHeightScale
+            )
             bar.setMetrics(unit, unit * KeyboardView.GAP)
         }
         super.onMeasure(widthMeasureSpec, heightMeasureSpec)

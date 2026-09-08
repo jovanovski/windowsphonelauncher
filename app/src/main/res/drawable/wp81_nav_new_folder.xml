@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  wp81_nav_new_folder
+
+  A folder with a cross knocked out of it - appbar.folder over appbar.add - in the manner
+  of Templarian/WindowsIcons (Modern UI Icons), CC BY 3.0, the set the rest of these
+  glyphs are converted from. Drawn here rather than converted, because that set has no
+  "new folder" of its own; same 76x76 viewport and same weight as its neighbours.
+  Emitted white so callers can tint per accent / light-dark theme.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="76"
+    android:viewportHeight="76">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M 19,24L 33,24L 37,29L 57,29L 57,53L 19,53 Z M 31,38.25L 35.25,38.25L 35.25,34L 40.75,34L 40.75,38.25L 45,38.25L 45,43.75L 40.75,43.75L 40.75,48L 35.25,48L 35.25,43.75L 31,43.75 Z" />
+</vector>

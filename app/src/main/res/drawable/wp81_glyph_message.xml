@@ -3,8 +3,11 @@
   wp81_glyph_message
 
   The speech bubble the shell wears for a text message - in the status bar when one
-  arrives, and on the notification it posts. The same mark as custom_icons_8/appbar.message,
-  which is what the app bar shows, so a message says the same thing in both places.
+  arrives, on the notification it posts, and on the Messaging tile while one is waiting.
+  The same mark as custom_icons_8/appbar.message, which is what the app bar shows, so a
+  message says the same thing in every place. The app's own mark is the bubble with a face
+  in it - see wp81_glyph_message_smiley - so a tile that has stepped aside for a message is
+  plainly not the tile at rest.
 
   Emitted white so callers can tint per accent / light-dark theme; the status bar tints it
   itself and reads only the shape.

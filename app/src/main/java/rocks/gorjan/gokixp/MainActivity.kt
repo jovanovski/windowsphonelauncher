@@ -127,6 +127,17 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     private val updateCheckHandler = Handler(Looper.getMainLooper())
     private var updateCheckRunnable: Runnable? = null
     private val UPDATE_CHECK_INTERVAL = 3600000L // 1 hour in milliseconds
+
+    /**
+     * How long the band across the top stays quiet about an update it has already announced.
+     *
+     * The looking goes on hourly - the Welcome tile is only right about a new version if
+     * something keeps asking - but announcing is an interruption, and one an hour about a
+     * download the user has already decided not to take yet is nagging. Two days; a version
+     * that has not been announced before says so straight away whatever the clock reads.
+     * See [shouldAnnounceUpdate].
+     */
+    private val UPDATE_NOTICE_INTERVAL = 2L * 24 * 60 * 60 * 1000 // 2 days in milliseconds
     private var updateDownloadLink: String? = null
 
     /** The version waiting to be installed, or null. Shown on the Welcome tile. */
@@ -148,7 +159,23 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      * System programs' artwork is passed in rather than looked up there: which drawable
      * Zune or Internet Explorer wears is the shell's business, not the store's.
      */
-    val iconStore by lazy { IconStore(this) { pkg -> loadAppIcon(pkg) } }
+    val iconStore by lazy {
+        IconStore(this, { pkg -> loadAppIcon(pkg) }, ::isIconPackable)
+    }
+
+    /**
+     * Whether an icon pack gets a say about this package.
+     *
+     * Only real installed apps. Everything else the launcher draws an icon for is its own -
+     * the shell's programs under [SYSTEM_APP_PREFIX], the folders on the wall, the recycle
+     * bin carried over from the desktop - and a pack has no entry for any of them, so what
+     * it would do instead is mount the shell's own artwork on its backplate. See
+     * [loadAppIcon], which answers for exactly the same three cases.
+     */
+    private fun isIconPackable(packageName: String): Boolean =
+        !isSystemApp(packageName) &&
+            !packageName.startsWith("folder_") &&
+            packageName != "recycle.bin"
     private val customNameMappings = mutableMapOf<String, String>() // packageName -> customName
 
     // Foldable device state
@@ -285,7 +312,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         ActivityResultContracts.StartActivityForResult()
     ) {
         ensureCallPermissions()
-        peopleAppInstance?.refresh()
+        phoneAppInstance?.refresh()
     }
 
     /**
@@ -319,7 +346,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     /**
      * Asks to become the default phone app.
      *
-     * Only ever from a tap in People - never on a launch, never on a timer. Taking this
+     * Only ever from a tap in Phone - never on a launch, never on a timer. Taking this
      * role means every call on the device comes through this app's screen, including ones
      * placed from somewhere else entirely, and that is not a thing to ask for on the way
      * past. The system puts its own dialog in front of the request, which is the consent
@@ -328,12 +355,12 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     private fun requestDialerRole() {
         val roles = getSystemService(android.app.role.RoleManager::class.java)
         if (roles == null || !roles.isRoleAvailable(android.app.role.RoleManager.ROLE_DIALER)) {
-            showNotification("People", "This device has no phone app to be")
+            showNotification("Phone", "This device has no phone app to be")
             return
         }
         if (roles.isRoleHeld(android.app.role.RoleManager.ROLE_DIALER)) {
             ensureCallPermissions()
-            peopleAppInstance?.refresh()
+            phoneAppInstance?.refresh()
             return
         }
         try {
@@ -341,7 +368,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 roles.createRequestRoleIntent(android.app.role.RoleManager.ROLE_DIALER))
         } catch (e: Exception) {
             Log.w("MainActivity", "Could not ask to be the phone", e)
-            showNotification("People", "This phone would not offer the choice")
+            showNotification("Phone", "This phone would not offer the choice")
         }
     }
 
@@ -357,13 +384,13 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         ActivityResultContracts.StartActivityForResult()
     ) {
         ensureMessagePermissions()
-        peopleAppInstance?.refresh()
+        messagingAppInstance?.refresh()
     }
 
     /**
      * Asks to become the phone's messaging app.
      *
-     * Only ever from a tap in People. Taking this role is a larger thing than taking the
+     * Only ever from a tap in Messaging. Taking this role is a larger thing than taking the
      * phone one, because it moves work rather than only moving a screen: from that moment
      * every text message on the device is delivered to this app alone, and one it fails to
      * write down or announce is a message nobody ever sees. It also ends multimedia
@@ -373,12 +400,12 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     private fun requestSmsRole() {
         val roles = getSystemService(android.app.role.RoleManager::class.java)
         if (roles == null || !roles.isRoleAvailable(android.app.role.RoleManager.ROLE_SMS)) {
-            showNotification("People", "This device has no messaging app to be")
+            showNotification("Messaging", "This device has no messaging app to be")
             return
         }
         if (roles.isRoleHeld(android.app.role.RoleManager.ROLE_SMS)) {
             ensureMessagePermissions()
-            peopleAppInstance?.refresh()
+            messagingAppInstance?.refresh()
             return
         }
         try {
@@ -386,7 +413,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 roles.createRequestRoleIntent(android.app.role.RoleManager.ROLE_SMS))
         } catch (e: Exception) {
             Log.w("MainActivity", "Could not ask to be the messaging app", e)
-            showNotification("People", "This phone would not offer the choice")
+            showNotification("Messaging", "This phone would not offer the choice")
         }
     }
 
@@ -532,6 +559,24 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         /** Icons handed to the picker per batch, so the grid fills as it decodes. */
         private const val WP81_ICON_BATCH = 40
 
+        /**
+         * The most icons offered out of an icon pack, and how large each is held.
+         *
+         * A cap rather than the whole pack: the grid holds every choice it is handed, and
+         * packs run to a couple of thousand drawables. See loadWP81IconPackChoices.
+         */
+        private const val WP81_ICON_PACK_MAX = 400
+        private const val WP81_ICON_PACK_THUMB_PX = 144
+
+        /**
+         * The most icon packs listed at once.
+         *
+         * The command list is a plain column with no scroller - it is meant for four or
+         * five verbs - so a phone with a dozen packs would put its last few off the bottom
+         * of the screen where they cannot be reached. Well past what anyone has installed.
+         */
+        private const val ICON_PACK_MENU_MAX = 8
+
         /** Slider movement smaller than this reuses the cached blur rather than re-scaling. */
         private const val BLUR_QUANTISATION = 0.02f
         private const val KEY_PINNED_APPS = "pinned_apps"
@@ -583,6 +628,10 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         private const val KEY_WEATHER_APP = "weather_app"
         private const val KEY_NOTIFICATION_PERMISSION_REQUESTED = "notification_permission_requested"
         private const val KEY_SHOWN_WELCOME_FOR_VERSION = "shown_welcome_for_version"
+
+        /** The version the update band last announced, and when. See [shouldAnnounceUpdate]. */
+        private const val KEY_UPDATE_ANNOUNCED_VERSION = "update_announced_version"
+        private const val KEY_UPDATE_ANNOUNCED_AT = "update_announced_at"
         private const val KEY_LAST_GOOGLE_DRIVE_SYNC = "last_google_drive_sync"
         private const val KEY_OPEN_URLS_IN_IE = "open_urls_in_ie"
 
@@ -647,7 +696,8 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
          * filed for people installing fresh and never appear for anybody who already has
          * the launcher, which is the bug this whole mechanism exists to stop.
          */
-        private val WINDOWS_APPS_FOLDER_LATE_ADDITIONS = setOf("system.cortana")
+        private val WINDOWS_APPS_FOLDER_LATE_ADDITIONS =
+            setOf("system.cortana", "system.settings", "system.phone", "system.messaging")
 
         /**
          * That the five live widgets have been handed to their programs. See
@@ -672,12 +722,13 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         private const val CONTACTS_PERMISSION_REQUEST_CODE = 1006
 
         /**
-         * Anything the People app asks for from inside itself.
+         * Anything People, Phone or Messaging asks for from inside itself.
          *
-         * One code for the lot - writing contacts, the call log, placing a call - because
-         * the answer is always the same: read everything again and let the page the user
-         * is on show what it can now do. Which of them was granted is a question the app
-         * asks the system directly, at the moment it matters.
+         * One code for all three - writing contacts, the call log, placing a call, reading
+         * and sending texts - because the answer is always the same: tell every one of
+         * them that is open to read again, and let the page the user is standing on show
+         * what it can now do. Which of them was granted is a question each app asks the
+         * system directly, at the moment it matters.
          */
         private const val PEOPLE_PERMISSION_REQUEST_CODE = 1007
 
@@ -708,7 +759,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
          * What an address that means "a message" looks like.
          *
          * All four, though this app only sends the first two: an `mmsto:` link tapped on a
-         * phone where People is the messaging app has nowhere else to go, and opening the
+         * phone where Messaging holds the role has nowhere else to go, and opening the
          * conversation with that person is a better answer to it than nothing happening.
          */
         private val MESSAGE_SCHEMES = setOf("sms", "smsto", "mms", "mmsto")
@@ -851,7 +902,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // Give the phone shell back the icons it filed under a desktop theme's key
         migrateWP81CustomIconsIfNeeded()
         // A call notification left over from a process that was killed while a call was up.
-        rocks.gorjan.gokixp.apps.people.GokiInCallService.clearIfIdle(this)
+        rocks.gorjan.gokixp.apps.phone.GokiInCallService.clearIfIdle(this)
 
         // And the alarms, put back. AlarmBootReceiver does this after a restart, but a
         // launcher that has just been reinstalled, restored from a backup or force-stopped
@@ -867,6 +918,10 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
         // Load custom icon mappings first so they're available when loading desktop icons
         iconStore.load()
+
+        // And the icon pack with them, for the same reason: everything built below resolves
+        // an icon per app, and a pack applied afterwards would mean building it all twice.
+        applyIconPack()
 
         // Load saved desktop icons (now with custom mappings available)
         loadDesktopIcons()
@@ -1063,13 +1118,24 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             showPeopleDialog()
         }
 
-        // Welcome. Tapping it while an update is waiting goes to the update instead: the
-        // tile is showing the update, and what a tile shows is what tapping it should be
-        // about.
+        // Phone and Messaging, the two programs People used to hold pages for. Registered
+        // on the same terms, and reached from three other places besides the app list: a
+        // tile, one of their own notifications, and an intent from somewhere else on the
+        // phone asking to dial or to send a text. See handleDialIntent and
+        // handleMessageIntent.
+        systemAppActions["system.phone"] = { _ ->
+            showPhoneDialog()
+        }
+
+        systemAppActions["system.messaging"] = { _ ->
+            showMessagingDialog()
+        }
+
+        // Welcome. A waiting update does not divert the tap any more: the program opens
+        // either way and carries the update across the top of itself, so the tile still
+        // leads to the page it names and the download is one tap further on.
         systemAppActions["system.welcome"] = { _ ->
-            val update = updateDownloadLink
-            if (!update.isNullOrEmpty()) openUrlShortcut(update)
-            else showWelcomeDialogWP81()
+            showWelcomeDialogWP81()
         }
 
         // Register Minesweeper
@@ -1105,6 +1171,18 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // anything else, the way the phone let Cortana be pinned to Start.
         systemAppActions["system.cortana"] = { _ ->
             showCortanaDialog()
+        }
+
+        // Settings, which opens the very page a hold on Start opens - see openWP81Settings.
+        //
+        // The one program here that is not a window: settings are a Metro page inside the
+        // shell, and this is a second door onto it rather than a second copy of it. The
+        // hold was the only way in, and a gesture nobody is told about is a settings screen
+        // nobody can find - which was the whole of the problem this answers. An icon in the
+        // app list, filed with the rest of the shell's programs and pinnable to Start, is
+        // where somebody looks for settings on a phone.
+        systemAppActions["system.settings"] = { _ ->
+            openWP81Settings()
         }
 
         Log.d("MainActivity", "System apps initialized: ${systemAppActions.size} apps")
@@ -1180,9 +1258,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             ))
         }
 
-        // People, which is this shell's phone app as well as its address book - the two
-        // things Windows Phone kept in separate programs that were always about the same
-        // list.
+        // People: the address book. It used to be this shell's phone and its messaging app
+        // as well, on four pages of one panorama - Windows Phone kept those in programs of
+        // their own and so does this now. See PeopleApp, and the two below.
         AppCompatResources.getDrawable(this, R.drawable.wp81_glyph_people)?.let { glyph ->
             val tinted = glyph.mutate()
             androidx.core.graphics.drawable.DrawableCompat.setTint(
@@ -1191,6 +1269,36 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 name = "People",
                 exeName = "people.exe",
                 packageName = "system.people",
+                icon = iconStore.square(tinted)
+            ))
+        }
+
+        // Phone: the speed dial, the call log and the keypad. Listed straight after People
+        // because that is what it was carved out of, and because the two of them are read
+        // as a pair in the app list the way the phone's own were.
+        AppCompatResources.getDrawable(this, R.drawable.wp81_glyph_phone)?.let { glyph ->
+            // The glyph is drawn white for tiles; the app list is not always dark, so it
+            // takes the accent here rather than vanishing on a Light theme.
+            val tinted = glyph.mutate()
+            androidx.core.graphics.drawable.DrawableCompat.setTint(
+                tinted, themeManager.getWP81Accent())
+            systemApps.add(AppInfo(
+                name = "Phone",
+                exeName = "phone.exe",
+                packageName = "system.phone",
+                icon = iconStore.square(tinted)
+            ))
+        }
+
+        // Messaging: the conversations, and the box to say something in.
+        AppCompatResources.getDrawable(this, R.drawable.wp81_glyph_message_smiley)?.let { glyph ->
+            val tinted = glyph.mutate()
+            androidx.core.graphics.drawable.DrawableCompat.setTint(
+                tinted, themeManager.getWP81Accent())
+            systemApps.add(AppInfo(
+                name = "Messaging",
+                exeName = "messaging.exe",
+                packageName = "system.messaging",
                 icon = iconStore.square(tinted)
             ))
         }
@@ -1277,6 +1385,24 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 name = "Cortana",
                 exeName = "cortana.exe",
                 packageName = "system.cortana",
+                icon = iconStore.square(tinted)
+            ))
+        }
+
+        // Settings, the way in that is not a gesture. The page it opens is the shell's own
+        // - the same one a hold on Start reaches - and this is a program only in the sense
+        // that matters here: something with a name, a mark and a row in the app list, that
+        // can be pinned to the wall like anything else.
+        AppCompatResources.getDrawable(this, R.drawable.wp81_glyph_settings_app)?.let { glyph ->
+            // The glyph is drawn white for tiles; the app list is not always dark, so it
+            // takes the accent here rather than vanishing on a Light theme.
+            val tinted = glyph.mutate()
+            androidx.core.graphics.drawable.DrawableCompat.setTint(
+                tinted, themeManager.getWP81Accent())
+            systemApps.add(AppInfo(
+                name = "Settings",
+                exeName = "settings.exe",
+                packageName = "system.settings",
                 icon = iconStore.square(tinted)
             ))
         }
@@ -1594,10 +1720,20 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                             } else if (frontWindow?.windowIdentifier == "system.people" &&
                                 peopleAppInstance?.handleBack() == true
                             ) {
-                                // A profile, the editor, the keypad or a command list was
-                                // open over the panorama. Backing out of one of those is a
+                                // A profile, the editor, the jump grid or a command list
+                                // was open over the book. Backing out of one of those is a
                                 // step inside the app rather than a way out of it.
                                 Log.d("MainActivity", "Back pressed (modern): handled by People")
+                            } else if (frontWindow?.windowIdentifier == "system.phone" &&
+                                phoneAppInstance?.handleBack() == true
+                            ) {
+                                // The keypad, one number's calls, or a command list.
+                                Log.d("MainActivity", "Back pressed (modern): handled by Phone")
+                            } else if (frontWindow?.windowIdentifier == "system.messaging" &&
+                                messagingAppInstance?.handleBack() == true
+                            ) {
+                                // A conversation, the new-message page, or a command list.
+                                Log.d("MainActivity", "Back pressed (modern): handled by Messaging")
                             } else if (frontWindow?.windowIdentifier == "system.files" &&
                                 metroFilesAppInstance?.handleBack() == true
                             ) {
@@ -2756,21 +2892,30 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     }
 
     private var peopleAppInstance: rocks.gorjan.gokixp.apps.people.PeopleApp? = null
+    private var phoneAppInstance: rocks.gorjan.gokixp.apps.phone.PhoneApp? = null
+    private var messagingAppInstance:
+        rocks.gorjan.gokixp.apps.messaging.MessagingApp? = null
 
     /**
-     * Opens People - the phone's address book, and its phone app.
+     * Opens People - the phone's address book.
      *
      * Full-screen and chromeless like Zune and News, and one window only: there is one
      * address book, and a second copy of this open somewhere else would be a second view
      * of it that disagrees with the first the moment either one saves anything.
      *
-     * The permission is not demanded here. The app opens either way and each section says
-     * what it is missing and offers to ask for it, which is the only honest order to do
-     * this in: somebody who opened People to look at their contacts has said nothing yet
-     * about the call log.
+     * The permission is not demanded here. The app opens either way and says what it is
+     * missing and offers to ask for it, which is the only honest order to do this in.
+     *
+     * [contactId] opens straight onto somebody's card, which is how Phone and Messaging
+     * reach a person: neither of them has a card of its own any more, and both have rows
+     * that are about somebody rather than about a call or a conversation.
      */
-    private fun showPeopleDialog() {
-        if (floatingWindowManager.findAndFocusWindow("system.people")) return
+    private fun showPeopleDialog(contactId: Long? = null, newContactNumber: String? = null) {
+        if (floatingWindowManager.findAndFocusWindow("system.people")) {
+            contactId?.let { peopleAppInstance?.showProfile(it) }
+            newContactNumber?.let { peopleAppInstance?.showNewContact(it) }
+            return
+        }
 
         val windowsDialog = createThemedWindowsDialog()
         windowsDialog.windowIdentifier = "system.people"
@@ -2782,10 +2927,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 androidx.core.app.ActivityCompat.requestPermissions(
                     this, permissions, PEOPLE_PERMISSION_REQUEST_CODE)
             },
+            onNotify = { title, message -> showNotification(title, message) },
             photoPicker = peoplePhotoPickerLauncher,
-            onBecomeDialer = { requestDialerRole() },
-            onBecomeMessenger = { requestSmsRole() },
-            onNotify = { title, message -> showNotification(title, message) }
+            onShowThread = { number -> showMessagingDialog(address = number) }
         )
         peopleAppInstance = people
         // The address book is the search this key was made for. See refreshWP81SearchOffer.
@@ -2808,13 +2952,115 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         windowsDialog.setContextMenuView(contextMenu)
         floatingWindowManager.showWindow(windowsDialog)
         turnWP81PageIn(view)
+        // After the window, because the card is a page inside it and there has to be
+        // something for it to be a page over.
+        contactId?.let { people.showProfile(it) }
+        newContactNumber?.let { people.showNewContact(it) }
+    }
+
+    /**
+     * Opens Phone - the speed dial, the call log and the keypad.
+     *
+     * One window, on the same terms as People and for the same reason. The three ways in
+     * besides the app list all land here: the tile, this app's own missed-call
+     * notification, and an `ACTION_DIAL` from anywhere on the phone.
+     *
+     * A person reached from inside it opens People, and a conversation opens Messaging.
+     * They are three programs now, and a program that drew somebody else's page inside its
+     * own window would be the split undone.
+     */
+    private fun showPhoneDialog() {
+        if (floatingWindowManager.findAndFocusWindow("system.phone")) return
+
+        val windowsDialog = createThemedWindowsDialog()
+        windowsDialog.windowIdentifier = "system.phone"
+
+        val phone = rocks.gorjan.gokixp.apps.phone.PhoneApp(
+            context = this,
+            palette = rocks.gorjan.gokixp.wp81.WP81Palette.from(themeManager),
+            onRequestPermissions = { permissions ->
+                androidx.core.app.ActivityCompat.requestPermissions(
+                    this, permissions, PEOPLE_PERMISSION_REQUEST_CODE)
+            },
+            onNotify = { title, message -> showNotification(title, message) },
+            onBecomeDialer = { requestDialerRole() },
+            onShowContact = { id -> showPeopleDialog(contactId = id) },
+            onNewContact = { number -> showPeopleDialog(newContactNumber = number) },
+            onShowThread = { number -> showMessagingDialog(address = number) }
+        )
+        phoneAppInstance = phone
+
+        val view = phone.createView()
+        windowsDialog.setContentView(view)
+        windowsDialog.setBorderless()
+        windowsDialog.setSaveState(false)
+        windowsDialog.setMaximizable(true)
+        windowsDialog.setTaskbarIcon(R.drawable.wp81_glyph_phone)
+        windowsDialog.setTitle("Phone")
+        windowsDialog.setOnCloseListener {
+            phoneAppInstance = null
+            // Somebody starred or unstarred on the favourites wall is the same book the
+            // People tile is a mosaic of.
+            refreshWP81People(force = true)
+        }
+        windowsDialog.setContextMenuView(contextMenu)
+        floatingWindowManager.showWindow(windowsDialog)
+        turnWP81PageIn(view)
+    }
+
+    /**
+     * Opens Messaging - the conversations, and one of them if the caller named a number.
+     *
+     * [address] and [draft] are how everything else on the phone asks for this: a
+     * notification tapped, an `sms:` link followed, a share sheet that picked the messaging
+     * app before it picked a person. Handed to the app after its window is up, because a
+     * conversation is a page inside it.
+     */
+    private fun showMessagingDialog(address: String? = null, draft: String? = null) {
+        if (floatingWindowManager.findAndFocusWindow("system.messaging")) {
+            messagingAppInstance?.showMessages(address, draft)
+            return
+        }
+
+        val windowsDialog = createThemedWindowsDialog()
+        windowsDialog.windowIdentifier = "system.messaging"
+
+        val messaging = rocks.gorjan.gokixp.apps.messaging.MessagingApp(
+            context = this,
+            palette = rocks.gorjan.gokixp.wp81.WP81Palette.from(themeManager),
+            onRequestPermissions = { permissions ->
+                androidx.core.app.ActivityCompat.requestPermissions(
+                    this, permissions, PEOPLE_PERMISSION_REQUEST_CODE)
+            },
+            onNotify = { title, message -> showNotification(title, message) },
+            onBecomeMessenger = { requestSmsRole() },
+            onShowContact = { id -> showPeopleDialog(contactId = id) },
+            onNewContact = { number -> showPeopleDialog(newContactNumber = number) }
+        )
+        messagingAppInstance = messaging
+
+        val view = messaging.createView()
+        windowsDialog.setContentView(view)
+        windowsDialog.setBorderless()
+        windowsDialog.setSaveState(false)
+        windowsDialog.setMaximizable(true)
+        windowsDialog.setTaskbarIcon(R.drawable.wp81_glyph_message_smiley)
+        windowsDialog.setTitle("Messaging")
+        windowsDialog.setOnCloseListener { messagingAppInstance = null }
+        windowsDialog.setContextMenuView(contextMenu)
+        floatingWindowManager.showWindow(windowsDialog)
+        turnWP81PageIn(view)
+        messaging.showMessages(address, draft)
     }
 
     /**
      * Opens Welcome, the phone's version of the window the desktop themes show after an
      * update.
+     *
+     * [startOnReleaseNotes] is the update itself opening the program rather than the user:
+     * it lands on what changed instead of on the introduction. See showWelcomeScreenIfNeeded.
      */
-    private fun showWelcomeDialogWP81() {
+    private fun showWelcomeDialogWP81(startOnReleaseNotes: Boolean = false) {
         if (floatingWindowManager.findAndFocusWindow("system.welcome")) return
 
         val windowsDialog = createThemedWindowsDialog()
@@ -2844,7 +3090,15 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 }
             },
             loadReleaseNotes = { onReady -> fetchWP81ReleaseNotes(onReady) },
-            permissions = launcherPermissions()
+            permissions = launcherPermissions(),
+            // The strip across the top, when a version is already known to be waiting. The
+            // tile is showing the same thing, and this is where tapping it leads now.
+            onDownloadUpdate = updateDownloadLink
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { link -> { openUrlShortcut(link) } },
+            // Tapping the version number asks now rather than waiting for the hourly look.
+            onCheckForUpdates = { onDone -> checkForUpdates(manualCheck = true, onDone = onDone) },
+            startOnReleaseNotes = startOnReleaseNotes
         )
         welcomeAppInstance = welcomeApp
 
@@ -2919,7 +3173,15 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             Triple("system.news", rocks.gorjan.gokixp.wp81.TileSize.MEDIUM, 4),
             Triple("system.notepad", rocks.gorjan.gokixp.wp81.TileSize.SMALL, 5),
             Triple("system.zune", rocks.gorjan.gokixp.wp81.TileSize.SMALL_WIDE_3, 6),
-            Triple("system.people", rocks.gorjan.gokixp.wp81.TileSize.SMALL, 7)
+            // The three that were one program. All at the same size and next to each
+            // other, because that is what they are on this wall - the address book, the
+            // dialler and the texts, which is the row Windows Phone shipped its own Start
+            // screen with. Medium rather than small: two of them have something to say -
+            // a call that went unanswered, a text waiting - and a 1x1 tile has nowhere to
+            // write it. See TileSize.canShowText.
+            Triple("system.people", rocks.gorjan.gokixp.wp81.TileSize.MEDIUM, 7),
+            Triple("system.phone", rocks.gorjan.gokixp.wp81.TileSize.MEDIUM, 8),
+            Triple("system.messaging", rocks.gorjan.gokixp.wp81.TileSize.MEDIUM, 9)
         ).forEach { (packageName, size, index) ->
             val app = system[packageName] ?: return@forEach
             pinWP81SystemTile(app, size to index, size to index)
@@ -3059,7 +3321,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      * by scrolling an alphabetical list of everything installed. A folder called
      * [WINDOWS_APPS_FOLDER_NAME] puts them together where the phone is actually looked at.
      *
-     * All twelve of them, as copies. An app can be in more than one place - see
+     * Every one of them, as copies. An app can be in more than one place - see
      * [pinWP81Tile] - so a program already pinned to the wall or filed in a folder of the
      * user's own is filed here as well rather than taken from where it was: the folder is
      * somewhere to find every one of these, not somewhere they are kept instead. Nothing
@@ -3271,10 +3533,10 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         )
         list += runtime("Contacts", "Faces on the People tile, and the address book in People.",
             android.Manifest.permission.READ_CONTACTS, android.Manifest.permission.WRITE_CONTACTS)
-        list += runtime("Phone", "Making and taking calls, and the call history.",
+        list += runtime("Phone", "Making and taking calls, and the call history in Phone.",
             android.Manifest.permission.CALL_PHONE, android.Manifest.permission.READ_PHONE_STATE,
             android.Manifest.permission.READ_CALL_LOG)
-        list += runtime("Messages", "Reading and sending texts.",
+        list += runtime("Messages", "Reading and sending texts in Messaging.",
             android.Manifest.permission.READ_SMS, android.Manifest.permission.SEND_SMS,
             android.Manifest.permission.RECEIVE_SMS)
         list += runtime("Calendar", "What the Calendar tile shows.",
@@ -3357,6 +3619,25 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     } catch (e: Exception) {
         Log.w("MainActivity", "Could not read the enabled keyboards", e)
         false
+    }
+
+    /**
+     * The keyboard's own settings page, from the shell's.
+     *
+     * In this task rather than a new one, unlike everything else launched from here: it is
+     * this app's own page, and the back key should come back to the settings the user
+     * opened it from rather than dropping them out of the launcher entirely. The keyboard
+     * starts the same activity with `NEW_TASK` because an input method has no task to
+     * start one in - see WP81KeyboardService.showSettings.
+     */
+    private fun openKeyboardSettings() {
+        try {
+            startActivity(
+                Intent(this, rocks.gorjan.gokixp.wp81.keyboard.KeyboardSettingsActivity::class.java)
+            )
+        } catch (e: Exception) {
+            Log.w("MainActivity", "Could not open the keyboard's settings", e)
+        }
     }
 
     /** This app's own page in Android settings, for a permission already granted. */
@@ -3774,7 +4055,11 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             // The phone's own welcome. A Vista dialog with a picture and two buttons over
             // a Start screen would be a window from another operating system, which is
             // why this branched before; there is only the one shell to greet now.
-            showWelcomeDialogWP81()
+            //
+            // An update opens it on the release notes - the reason it is opening at all is
+            // that something changed, and the person reading has met the introduction. A
+            // first install, which is the null, opens on the introduction itself.
+            showWelcomeDialogWP81(startOnReleaseNotes = shownForVersion != null)
 
 
             // Save that we've shown it for this version
@@ -3814,6 +4099,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 // Everything on screen was built from the preferences that have just been
                 // replaced, so it is all read again rather than patched.
                 iconStore.load()
+                applyIconPack()
                 loadDesktopIcons()
                 applyWP81StartBackground()
                 refreshWP81Tiles()
@@ -4215,9 +4501,10 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     /**
      * A number handed to the launcher from somewhere else on the phone.
      *
-     * Once People holds the phone role this is where every DIAL lands - a number tapped in
-     * the browser, in a message, on a web page - and the right answer to all of them is the
-     * same: open People's keypad with it already typed, one tap short of the call. Never
+     * Once this launcher holds the phone role this is where every DIAL lands - a number
+     * tapped in the browser, in a message, on a web page - and the right answer to all of
+     * them is the same: open Phone's keypad with it already typed, one tap short of the
+     * call. Never
      * dialled outright. A DIAL intent is a request to *offer* a number, and an app that
      * rings it the moment it arrives has upgraded somebody's tap into a phone call.
      *
@@ -4245,7 +4532,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         intent.action = Intent.ACTION_MAIN
         intent.type = null
 
-        rocks.gorjan.gokixp.apps.people.MissedCallReceiver.clear(this)
+        rocks.gorjan.gokixp.apps.phone.MissedCallReceiver.clear(this)
         try {
             (getSystemService(TELECOM_SERVICE) as? android.telecom.TelecomManager)
                 ?.cancelMissedCallsNotification()
@@ -4254,8 +4541,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             Log.d("MainActivity", "Could not clear the missed calls", e)
         }
 
-        showPeopleDialog()
-        peopleAppInstance?.showHistory()
+        showPhoneDialog()
+        // After the window, because the history is a page inside it.
+        phoneAppInstance?.showHistory()
     }
 
     private fun handleDialIntent(intent: Intent?) {
@@ -4269,10 +4557,10 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         intent.data = null
         intent.action = Intent.ACTION_MAIN
 
-        showPeopleDialog()
+        showPhoneDialog()
         // After the window, because the keypad is a page inside it and there has to be
         // something for it to be a page over.
-        peopleAppInstance?.showDialer(number)
+        phoneAppInstance?.showDialer(number)
     }
 
     /**
@@ -4280,8 +4568,8 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      *
      * Four ways in and one answer. This app's own notifications ask by name; an `sms:` or
      * `smsto:` link followed anywhere on the phone arrives as `SENDTO`, which is the filter
-     * that makes People eligible to be the messaging app in the first place; a picture
-     * message it cannot show offers the section as somewhere to go instead.
+     * that makes this launcher eligible to be the messaging app in the first place; a
+     * picture message it cannot show offers the list as somewhere to go instead.
      *
      * A number in the address, words in the body, both optional: `smsto:` with nothing
      * after it is a request to open messages, which is exactly what a share sheet sends
@@ -4319,10 +4607,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         intent.removeExtra("sms_body")
         intent.removeExtra(Intent.EXTRA_TEXT)
 
-        showPeopleDialog()
-        // After the window, because the conversation is a page inside it and there has to
-        // be something for it to be a page over.
-        peopleAppInstance?.showMessages(address?.takeIf { it.isNotEmpty() }, draft)
+        showMessagingDialog(address?.takeIf { it.isNotEmpty() }, draft)
     }
 
     private fun handleViewUrlIntent(intent: Intent?) {
@@ -5207,6 +5492,14 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                         peopleAppInstance?.handleBack() == true
                     ) {
                         Log.d("MainActivity", "Back pressed (legacy): handled by People")
+                    } else if (frontWindow?.windowIdentifier == "system.phone" &&
+                        phoneAppInstance?.handleBack() == true
+                    ) {
+                        Log.d("MainActivity", "Back pressed (legacy): handled by Phone")
+                    } else if (frontWindow?.windowIdentifier == "system.messaging" &&
+                        messagingAppInstance?.handleBack() == true
+                    ) {
+                        Log.d("MainActivity", "Back pressed (legacy): handled by Messaging")
                     } else if (frontWindow?.windowIdentifier == "system.zune" &&
                         zuneAppInstance?.handleBack() == true
                     ) {
@@ -5269,6 +5562,10 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // And the same for the phone shell's settings page, which the user can now come
         // back to rather than being put on Start - see wp81ReturningToWhatWasOpen.
         refreshWP81SettingsPermissions()
+
+        // A bar the user swiped back into view while they were here, or one the app they
+        // came home from left standing, is put away again. See applyWP81Fullscreen.
+        if (wp81Shell != null) applyWP81Fullscreen()
     }
 
     /**
@@ -5284,6 +5581,10 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         val shell = wp81Shell ?: return
         if (!shell.isSettingsOpen()) return
         shell.settingsPage.setDefaultBrowser(isDefaultBrowser())
+        // And the keyboard, which is switched on in Android's own list of input methods -
+        // reached from the keyboard's settings page, and so left behind exactly the same
+        // way: by a home gesture that reports nothing back.
+        shell.settingsPage.setKeyboardEnabled(isOwnKeyboardEnabled())
     }
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
@@ -5943,10 +6244,14 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             }
 
             PEOPLE_PERMISSION_REQUEST_CODE -> {
-                // Whatever was granted, the app re-reads everything: a section that was
-                // showing "tap to allow" fills in where it stands rather than asking the
-                // user to leave the app and come back to it.
+                // Whatever was granted, every one of the three re-reads: the address book,
+                // the call log and the message store are asked for from three programs
+                // that share this one request code, and a page that was showing "tap to
+                // allow" fills in where it stands rather than asking the user to leave the
+                // app and come back to it. Any of them that is not open is null.
                 peopleAppInstance?.refresh()
+                phoneAppInstance?.refresh()
+                messagingAppInstance?.refresh()
                 if (grantResults.none { it == PackageManager.PERMISSION_GRANTED }) {
                     showNotification("People", "That needs permission to work")
                 } else {
@@ -6289,6 +6594,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             // The wall being rebuilt does not reach inside an opened folder, which is
             // built once from what it held at the time.
             if (removed) refreshWP81OpenFolder()
+            reapplyIfIconPack(packageName)
         }
     }
     
@@ -6299,7 +6605,28 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             // bitmaps have to go before anything reads the icon again
             refreshIconsForPackage(packageName)
             refreshWP81ForPackageChange(packageName)
+            reapplyIfIconPack(packageName)
         }
+    }
+
+    /**
+     * Re-resolves every app icon when the package that changed is the icon pack itself.
+     *
+     * The routines above are all keyed on the one package that changed, which is right for
+     * an app but wrong for a pack: a pack leaving takes its artwork off every app it was
+     * dressing, and a pack updating can ship a whole new set under the same name. So this
+     * is the wall, the app list and the cache rather than one entry in any of them.
+     *
+     * Cheap to ask and almost always false - it is a string comparison against a
+     * preference - so it is asked on every package change rather than guessed at.
+     */
+    private fun reapplyIfIconPack(packageName: String) {
+        if (packageName != themeManager.getWP81IconPack()) return
+        Log.d("MainActivity", "Icon pack $packageName changed; re-resolving every app icon")
+        // Re-opened rather than kept: an update ships new artwork under the same package,
+        // and the instance in hand is holding the previous version's resources.
+        commitIconPack(reopen = true)
+        refreshWP81IconPackRow()
     }
 
     /**
@@ -6561,10 +6888,13 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         "system.solitare" to R.drawable.wp81_glyph_solitaire,
         "system.calculator" to R.drawable.wp81_glyph_calculator,
         "system.people" to R.drawable.wp81_glyph_people,
+        "system.phone" to R.drawable.wp81_glyph_phone,
+        "system.messaging" to R.drawable.wp81_glyph_message_smiley,
         "system.alarms" to R.drawable.wp81_glyph_clock,
         "system.weather" to R.drawable.wp81_glyph_weather,
         "system.files" to R.drawable.wp81_glyph_files,
-        "system.cortana" to R.drawable.wp81_glyph_cortana
+        "system.cortana" to R.drawable.wp81_glyph_cortana,
+        "system.settings" to R.drawable.wp81_glyph_settings_app
     )
 
 
@@ -6602,8 +6932,8 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                     RelativeLayout.LayoutParams.MATCH_PARENT,
                     RelativeLayout.LayoutParams.MATCH_PARENT
                 ).apply {
-                    bottomMargin =
-                        (rocks.gorjan.gokixp.wp81.WP81NavBar.HEIGHT_DP * density).toInt()
+                    // The keys' height, or none if they are hidden - see wp81NavBarInsetPx.
+                    bottomMargin = wp81NavBarInsetPx()
                 }
             )
         }
@@ -6642,10 +6972,10 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         }
 
         shell.applyPalette(palette)
-        paintWP81NavBar()
+        applyWP81NavBarVisibility()
         applyWP81SystemBarAppearance(palette)
+        applyWP81Fullscreen()
         applyWP81StartBackground()
-        rebaseFloatingWindowsForWP81()
 
         // The phone keeps its own hand-picked icons, so they have to be read for this
         // theme the way each desktop theme reads its own. Without this the shell arrived
@@ -6653,6 +6983,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // and writing that borrowed set back out under the phone's key the moment one
         // tile icon was changed.
         iconStore.load()
+        // Read alongside them, and for the same reason: the pack is the other half of the
+        // answer to "what is this app wearing", and the wall is about to be built from it.
+        applyIconPack()
         wp81IconProvider.invalidateAll()
 
         refreshWP81Tiles()
@@ -6781,10 +7114,12 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         shell.navBar.onBack = { onBackPressedDispatcher.onBackPressed() }
         // Holding it: the task switcher. See WP81NavBar.applyHold for why the hold is timed
         // by hand rather than left to the framework's long press.
-        // Folders are made by holding one tile over another, as on the phone, so there is
-        // no "new folder" command any more. "Remove from folder" is on the tile's own
-        // command list, where the rest of the once-a-tile things live.
+        // "Remove from folder" is on the tile's own command list, where the rest of the
+        // once-a-tile things live.
         shell.secondaryBar.onAddApp = { addAppToOpenWP81Folder() }
+        shell.secondaryBar.onNewFolder = {
+            shell.selectedTile()?.let { tile -> newWP81FolderFrom(tile) }
+        }
         shell.secondaryBar.onTileColor = {
             shell.selectedTile()?.let { tile ->
                 shell.colorPicker.show(tile.label, themeManager.getWP81TileColors()[tile.id])
@@ -6924,12 +7259,23 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      */
     private fun rebaseFloatingWindowsForWP81() {
         val container = findViewById<View>(R.id.floating_windows_container) ?: return
-        val density = resources.displayMetrics.density
         val params = container.layoutParams as RelativeLayout.LayoutParams
         params.topMargin = 0
-        params.bottomMargin = (rocks.gorjan.gokixp.wp81.WP81NavBar.HEIGHT_DP * density).toInt()
+        params.bottomMargin = wp81NavBarInsetPx()
         container.layoutParams = params
     }
+
+    /**
+     * How much room the navigation keys are taking at the foot of the screen.
+     *
+     * The shell's own answer once it exists - see [rocks.gorjan.gokixp.wp81.WP81Shell.navBarInsetPx] -
+     * and the same sum read off the setting before it does, because the window container
+     * is rebased and the toast is lifted while the shell is still being built.
+     */
+    private fun wp81NavBarInsetPx(): Int =
+        if (themeManager.getWP81HideNavBar()) 0
+        else (rocks.gorjan.gokixp.wp81.WP81NavBar.HEIGHT_DP *
+            resources.displayMetrics.density).toInt()
 
     // ---------------------------------------------------------------- tiles
 
@@ -6952,16 +7298,27 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      */
     private fun refreshWP81Notifications() {
         val shell = wp81Shell ?: return
-        // A missed call arriving or being dismissed decides whether the People tile is a
-        // wall of faces or an icon with a number on it. Only when the answer has actually
-        // changed: this pass runs every two seconds, and rebuilding the mosaic on each of
-        // them would reshuffle the faces under the user twice a minute.
+        // A missed call arriving or being dismissed decides whether the Phone tile wears
+        // its handset or the mark for a call that went unanswered, and a text does the
+        // same to Messaging. The words underneath arrive with setNotifications below; the
+        // *mark* is settled when the wall is built and has to be repainted by hand.
+        //
+        // Only when the answer has actually changed: this pass runs every two seconds, and
+        // handing every tile a freshly rasterised glyph on each of them is work for a
+        // picture that is the same picture.
         val missed = NotificationListenerService.missedCalls().isNotEmpty()
         val texts = NotificationListenerService.messages().isNotEmpty()
         if (missed != wp81MissedCalls || texts != wp81Messages) {
             wp81MissedCalls = missed
             wp81Messages = texts
-            refreshWP81People()
+            for (start in wp81TileSurfaces()) {
+                start.setGlyph("system.phone", wp81GlyphOf(
+                    if (missed) R.drawable.wp81_glyph_missed_call
+                    else R.drawable.wp81_glyph_phone))
+                start.setGlyph("system.messaging", wp81GlyphOf(
+                    if (texts) R.drawable.wp81_glyph_message
+                    else R.drawable.wp81_glyph_message_smiley))
+            }
         }
         shell.startScreen.setNotifications { tile -> wp81NotificationsFor(tile) }
         // The folder page shows tiles too, so it gets the same treatment while it is open.
@@ -7245,10 +7602,15 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     private var wp81PeopleReadAt = 0L
     private var wp81PeopleLoading = false
 
-    /** Whether a missed call was showing last time the shade was read. See above. */
+    /**
+     * Whether a missed call was showing last time the shade was read.
+     *
+     * The Phone tile's mark turns over when this changes - see refreshWP81Notifications.
+     * It used to be the People tile's, back when People was the phone as well.
+     */
     private var wp81MissedCalls = false
 
-    /** And whether a text message was. The tile steps aside for either. */
+    /** And whether a text message was, which is the Messaging tile's mark on the same terms. */
     private var wp81Messages = false
 
     private fun wp81HasPeopleTile(): Boolean = wp81HasProgramTile(rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_PEOPLE)
@@ -7270,31 +7632,11 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         val shell = wp81Shell ?: return
         if (!wp81HasPeopleTile()) return
 
-        // A missed call takes the tile, before any of the faces below get a turn at it.
-        // Ahead of the reading branches on purpose: those say "People / looking…" while the
-        // address book is being read and "People / no contacts yet" when it comes back
-        // empty, and either of them standing over a missed call is the tile answering a
-        // question nobody asked. With nothing of its own on it the tile falls to its icon
-        // and the count beside it, which is what every other app on the wall does with
-        // something waiting - and a missed call, unlike a wall of faces, is a thing to be
-        // answered. See TileView.standingIn.
-        val missed = NotificationListenerService.missedCalls().isNotEmpty()
-        val texts = NotificationListenerService.messages().isNotEmpty()
-        if (missed || texts) {
-            // Which of the two it stepped aside for, said by the icon it steps aside to.
-            // A call outranks a message when both are waiting: one of them is somebody who
-            // tried to reach you and could not, and the other is somebody who did.
-            for (start in wp81TileSurfaces()) {
-                start.setGlyph(rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_PEOPLE, wp81PeopleStandInGlyph(missed))
-                start.setLiveWidgetRotation(
-                    rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_PEOPLE,
-                    emptyList(),
-                    rocks.gorjan.gokixp.wp81.TileView.LiveStyle.READING
-                )
-                start.setPeopleMosaic(emptyList(), emptyList())
-            }
-            return
-        }
+        // The tile used to step aside here for a missed call or a waiting text, because
+        // People was the phone and the messaging app as well and those were the only two
+        // things it ever had to announce. They are Phone's and Messaging's now, and each
+        // says so on its own tile - see wp81NotificationsFor. What is left on this one is
+        // what it was always about: the faces.
 
         if (!rocks.gorjan.gokixp.wp81.ContactFeed.hasAccess(this)) {
             wp81People = rocks.gorjan.gokixp.wp81.ContactFeed.Book(emptyList(), emptyList())
@@ -7358,23 +7700,21 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 emptyList(),
                 rocks.gorjan.gokixp.wp81.TileView.LiveStyle.READING
             )
-            // The faces come back the moment the missed call is dismissed, which is the
-            // same moment the user has dealt with it - see the top of this function.
             start.setPeopleMosaic(wp81People.favourites, wp81People.others)
         }
     }
 
     /**
-     * Tapping the People tile: the permission first, the phone after.
+     * Tapping the People tile: the permission first, the address book after.
      *
      * The first tap is the opt-in, exactly as it is on the Photos tile - the shell has
      * nowhere else to ask, and an address book is not something to demand on first run for
      * a tile the user may never have wanted.
      *
-     * Then People, which is the hub Windows Phone opened here - the same address book
-     * this wall is made of, with the call log and the keypad in it. It used to open
+     * Then People, which is the same address book this wall is made of. It used to open
      * whichever dialler the phone had, for want of anything better; a tile that is a wall
-     * of faces from *this* book should land inside the app that book belongs to.
+     * of faces from *this* book should land inside the app that book belongs to - and the
+     * dialler has a tile of its own now.
      */
     private fun openWP81People() {
         if (!rocks.gorjan.gokixp.wp81.ContactFeed.hasAccess(this)) {
@@ -7401,25 +7741,15 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // competing for the same tile and are the less useful of the two.
         if (wp81MediaSessions?.active()?.containsKey(wp81MediaPackageFor(tile)) == true) {
             emptyList()
-        } else if (tile.kind == rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_PEOPLE) {
-            // The People tile's notifications are the calls that went unanswered. Not
-            // People's own - this shell posts none - and they may have been left by any of
-            // three apps depending on which one is the phone, so they are gathered by what
-            // they are rather than by who sent them. See
-            // NotificationListenerService.missedCalls.
-            // Calls first, and messages only when there are none: both belong to this app
-            // and the tile has one number to show, so the more pressing of the two takes
-            // it whole rather than the pair being added into a total that is about nothing
-            // in particular. See NotificationListenerService.messages.
-            NotificationListenerService.missedCalls()
-                .ifEmpty { NotificationListenerService.messages() }
-                .map { rocks.gorjan.gokixp.wp81.TileView.Line(it.title, it.text) }
         } else if (tile.kind == rocks.gorjan.gokixp.wp81.Tile.Kind.FOLDER) {
             collectFolderNotifications(tile.id, mutableSetOf())
         } else {
-            NotificationListenerService.getNotificationLines(tile.packageName)
+            // By package, so Phone and Messaging get the calls and texts that were left
+            // by somebody else. See NotificationListenerService.linesFor.
+            NotificationListenerService.linesFor(tile.packageName)
                 .map { rocks.gorjan.gokixp.wp81.TileView.Line(it.title, it.text) }
         } + wp81UpdateLine(tile)
+
 
     /**
      * The Welcome tile's live content: the update, when there is one.
@@ -7459,7 +7789,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 continue
             }
             val appName = getCustomOrOriginalName(child.packageName, child.name)
-            for (line in NotificationListenerService.getNotificationLines(child.packageName)) {
+            for (line in NotificationListenerService.linesFor(child.packageName)) {
                 val detail = listOf(line.title, line.text)
                     .filter { it.isNotBlank() }
                     .joinToString(" \u00b7 ")
@@ -7525,7 +7855,44 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     ) {
         val first = desktopIcons.firstOrNull { it.id == onto.id } ?: return
         val second = desktopIcons.firstOrNull { it.id == dragged.id } ?: return
-        if (first.type == IconType.FOLDER || second.type == IconType.FOLDER) return
+        // The one that was underneath goes in first, so the folder opens in the order the
+        // two were put together in - and it is the one whose place the folder takes.
+        makeWP81Folder(first, onto.size, listOf(first, second))
+    }
+
+    /**
+     * Makes a folder out of the tile that is selected, where it stands.
+     *
+     * The app bar's answer to holding one tile over another, which is switched off - see
+     * StartScreenView.FOLD_ON_DRAG. A folder of one is the start of a folder rather than
+     * the whole of it: it opens into the wall as soon as it is made, and the rest goes in
+     * by dragging tiles down into the band, which is a target the size of a row.
+     */
+    private fun newWP81FolderFrom(tile: rocks.gorjan.gokixp.wp81.Tile) {
+        val icon = desktopIcons.firstOrNull { it.id == tile.id } ?: return
+        // Nothing already filed: a folder does not go inside a folder, and the command is
+        // only offered on the wall. Answered again here because the strip decides what to
+        // *show* from the tile on screen, and this decides what to do from the icon behind
+        // it - see StartScreenView.editingCanFolder for the other half.
+        if (icon.parentFolderId != null) return
+        makeWP81Folder(icon, tile.size, listOf(icon))
+    }
+
+    /**
+     * Puts a new folder in [seat]'s place, files [members] into it in order, and opens it.
+     *
+     * Shared by the two ways of asking for one, because everything except how many tiles go
+     * in is the same. The folder takes the seat's slot and the size it is asked for, so it
+     * appears where the user was looking rather than at the end of the wall - and it opens
+     * straight away, because a folder nobody can see the inside of is indistinguishable
+     * from a tile that has vanished.
+     */
+    private fun makeWP81Folder(
+        seat: DesktopIcon,
+        size: rocks.gorjan.gokixp.wp81.TileSize,
+        members: List<DesktopIcon>
+    ) {
+        if (members.isEmpty() || members.any { it.type == IconType.FOLDER }) return
 
         val folderId = "folder_${System.currentTimeMillis()}"
         val folderIcon = AppCompatResources.getDrawable(this, R.drawable.folder_vista) ?: return
@@ -7538,21 +7905,17 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 y = 0f,
                 id = folderId,
                 type = IconType.FOLDER,
-                // In the slot the tile it was dropped on was in, at that tile's size: the
-                // folder appears where the user was looking, not at the end of the wall.
-                tileSize = onto.size.name,
-                tileIndex = first.tileIndex,
-                tileSizeLandscape = onto.size.name,
-                tileIndexLandscape = first.tileIndexLandscape
+                tileSize = size.name,
+                tileIndex = seat.tileIndex,
+                tileSizeLandscape = size.name,
+                tileIndexLandscape = seat.tileIndexLandscape
             )
         )
 
-        // The one that was underneath first, so the folder opens in the order they were
-        // put together in.
-        first.parentFolderId = folderId
-        first.wp81TileIndex = 0
-        second.parentFolderId = folderId
-        second.wp81TileIndex = 1
+        members.forEachIndexed { i, icon ->
+            icon.parentFolderId = folderId
+            icon.wp81TileIndex = i
+        }
 
         saveDesktopIcons()
         refreshWP81Tiles()
@@ -8023,20 +8386,28 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
 
     /**
-     * The mark the People tile wears while it has stepped aside for the shade.
+     * The mark a tile wears while something of its own is waiting in the shade.
      *
-     * Only ever on screen while something is waiting - see refreshWP81People - so it says
-     * what is waiting rather than naming the app. A handset with an arrow for a call that
-     * went unanswered, a speech bubble for a message that arrived. The People icon here
-     * would be the tile introducing itself at the one moment it has something else to say.
+     * Only ever on screen while there is something behind it, so it says what is waiting
+     * rather than naming the app: a handset with an arrow on Phone for a call that went
+     * unanswered, a speech bubble on Messaging for a text that arrived. Their own icons
+     * here would be the tile introducing itself at the one moment it has something else
+     * to say.
+     *
+     * Both of these used to be one tile's business, because People was all three programs.
+     * See wp81NotificationsFor, which split the words the same way.
      */
-    private fun wp81PeopleStandInRes(missedCall: Boolean): Int =
-        if (missedCall) R.drawable.wp81_glyph_missed_call else R.drawable.wp81_glyph_message
+    private fun wp81WaitingMarkFor(packageName: String): Int? = when (packageName) {
+        "system.phone" ->
+            R.drawable.wp81_glyph_missed_call
+                .takeIf { NotificationListenerService.missedCalls().isNotEmpty() }
 
-    private fun wp81PeopleStandInGlyph(
-        missedCall: Boolean
-    ): rocks.gorjan.gokixp.wp81.MonochromeIconProvider.Glyph? =
-        wp81GlyphOf(wp81PeopleStandInRes(missedCall))
+        "system.messaging" ->
+            R.drawable.wp81_glyph_message
+                .takeIf { NotificationListenerService.messages().isNotEmpty() }
+
+        else -> null
+    }
 
     /** One of this shell's own drawables, as a tile glyph. */
     private fun wp81GlyphOf(
@@ -8073,7 +8444,11 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             rocks.gorjan.gokixp.wp81.Tile.Kind.RECYCLE_BIN -> R.drawable.wp81_glyph_recycle
             rocks.gorjan.gokixp.wp81.Tile.Kind.URL_SHORTCUT -> R.drawable.wp81_glyph_ie
             rocks.gorjan.gokixp.wp81.Tile.Kind.SYSTEM_APP ->
-                wp81SystemGlyphs[tile.packageName] ?: R.drawable.wp81_glyph_computer
+                // Phone and Messaging step aside for what is waiting; every other program
+                // of the shell's own wears its mark whatever is in the shade.
+                wp81WaitingMarkFor(tile.packageName)
+                    ?: wp81SystemGlyphs[tile.packageName]
+                    ?: R.drawable.wp81_glyph_computer
             rocks.gorjan.gokixp.wp81.Tile.Kind.APP -> null
             rocks.gorjan.gokixp.wp81.Tile.Kind.SETTINGS -> R.drawable.wp81_glyph_settings
             // A live tile draws its content instead of a mark and hides the mark while it
@@ -8086,22 +8461,14 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_PHOTOS -> wp81SystemGlyphs[tile.packageName]
             // The shell's own has no program behind it to take a mark from.
             rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_CALENDAR -> null
-            // People is the one that steps aside for a notification, and the mark it steps
-            // aside *to* is the notification rather than the program: a handset for a call
-            // that went unanswered, a bubble for a message that arrived. Only while one of
-            // them is actually waiting - a handset on a tile with nothing behind it would
-            // be the shell reporting a call that never came.
-            rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_PEOPLE -> {
-                val missed = NotificationListenerService.missedCalls().isNotEmpty()
-                if (missed || NotificationListenerService.messages().isNotEmpty()) {
-                    wp81PeopleStandInRes(missed)
-                } else {
-                    wp81SystemGlyphs[tile.packageName]
-                }
-            }
+            // People's mark, for the moments the mosaic has no faces to draw - the book
+            // unread, or the permission never given.
+            rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_PEOPLE ->
+                wp81SystemGlyphs[tile.packageName]
         }
         if (fixed != null) return wp81GlyphOf(fixed)
-        return wp81IconProvider.glyphFor(tile.packageName, getAppIcon(tile.packageName))
+        return wp81IconProvider.glyphFor(
+            tile.packageName, getAppIcon(tile.packageName), isTile = true)
     }
 
     // ---------------------------------------------------------------- task switcher
@@ -8311,6 +8678,14 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             setPendingImagePick(PICK_TARGET_WP81_ICON_PREFIX + icon.packageName)
             imagePickerLauncher.launch("image/*")
         }
+        // A pack the user already has on is a set of icons they chose, so it is worth
+        // offering as a source here even for an app the pack has no artwork for - which is
+        // the case somebody reaches this page over in the first place.
+        picker.setIconPackAvailable(wp81IconPack != null)
+        picker.onIconPack = { showPack ->
+            picker.clearChoices()
+            if (showPack) loadWP81IconPackChoices(picker) else loadWP81IconChoices(picker)
+        }
 
         loadWP81IconChoices(picker)
     }
@@ -8350,6 +8725,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         refreshWP81BackgroundControls()
         // The square that was tapped to get here now wears what came back, so the strip
         // shows what Start is wearing rather than losing the answer among the bundled set.
+        // The page is told the choice as well: it is open behind the picker and was never
+        // tapped, so without this the picture only showed on the next visit to settings.
+        wp81Shell?.settingsPage?.setSelectedBackground(stored)
         refreshWP81CustomBackground()
         // Nothing else is asked. Browsing for a picture is a request to dress Start, and
         // the command list used to open over the answer offering to dress the phone's own
@@ -8402,6 +8780,236 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 runOnUiThread { if (picker.isShowing()) picker.addChoices(chunk) }
             }
         }.start()
+    }
+
+    // ---- icon packs -------------------------------------------------------------------
+
+    /**
+     * The icon pack in force, opened once and held for as long as it is the answer.
+     *
+     * Held rather than opened per lookup because opening one means asking the package
+     * manager for another app's [android.content.res.Resources] and parsing its
+     * `appfilter.xml` - a few hundred to a few thousand entries. Once per pack, not once
+     * per icon. See [IconPack].
+     */
+    private var wp81IconPack: IconPack? = null
+
+    /**
+     * Puts the saved icon pack in force, or takes one out of force.
+     *
+     * Sets the two places a pack is consulted and nothing else - see [commitIconPack] for
+     * the repaint - because this also runs on the way in, before there is anything on
+     * screen to repaint.
+     *
+     * A pack named in preferences that the phone no longer has is forgotten here rather
+     * than carried: an uninstalled pack cannot be opened, so every lookup would fall
+     * through to the app's own icon anyway, and the settings row would go on naming a pack
+     * that is not there.
+     */
+    private fun applyIconPack(reopen: Boolean = false) {
+        val chosen = themeManager.getWP81IconPack()
+        // The one already open is kept unless it is the wrong one or the caller says it is
+        // stale, because opening a pack means parsing a few thousand mapping entries - and
+        // because handing the store a fresh instance is what empties its bitmap cache. A
+        // change of accent must not cost every app icon the launcher has already rendered.
+        val pack = wp81IconPack?.takeIf { !reopen && it.packageName == chosen }
+            ?: chosen?.let { IconPack.open(this, it) }
+        if (chosen != null && pack == null) {
+            Log.d("MainActivity", "Icon pack $chosen is gone; back to the apps' own icons")
+            themeManager.setWP81IconPack(null)
+        }
+
+        wp81IconPack = pack
+        // Empties the rendered-bitmap cache by itself when the answer actually changed.
+        iconStore.pack = pack
+
+        // The app list is always dressed by the pack; the wall only when the user has said
+        // so. Both are the same resolution - a list row and a tile ask the provider the same
+        // question - so which surface is asking is what the flag below settles, rather than
+        // whether the pack is consulted at all. See MonochromeIconProvider.packOnTiles.
+        wp81IconProvider.packOnTiles = themeManager.getWP81IconPackOnTiles()
+        wp81IconProvider.packGlyph =
+            if (pack == null) null
+            else { packageName ->
+                // Nothing where the pack has no word about this app, so the themed
+                // monochrome layer and the notification silhouette still get their turn -
+                // and nothing where the user picked an icon for it by hand, which is a
+                // narrower answer than a pack and outranks it everywhere else too.
+                if (!isIconPackable(packageName) ||
+                    iconStore.has(packageName) ||
+                    !pack.covers(packageName)
+                ) null
+                // Asked of the store rather than the pack so the composite is cached: this
+                // is called for every tile on every rebuild, and dressing an icon means
+                // rendering three layers into a 288px bitmap.
+                else iconStore.iconFor(packageName, skipCustom = true)
+            }
+    }
+
+    /** [applyIconPack], and everything wearing an app icon repainted around it. */
+    private fun commitIconPack(reopen: Boolean = false) {
+        applyIconPack(reopen)
+        cachedAppList = null
+        wp81IconProvider.invalidateAll()
+        loadInstalledApps()
+        refreshWP81Tiles()
+        refreshWP81AppList()
+    }
+
+    /**
+     * The list of packs to choose from, hung off the settings row that was tapped.
+     *
+     * "none" is first and always there, because getting back to the phone's own icons is
+     * the one command on this list that has to be reachable whatever else is installed.
+     * The way to the store is last, and is offered even when packs are installed - a
+     * search for more of them is a reasonable thing to want from the row that lists them.
+     */
+    private fun showIconPackChooser(anchorY: Float) {
+        if (wp81Shell == null) return
+        val current = themeManager.getWP81IconPack()
+        // Off the main thread: finding the packs means asking the package manager, once per
+        // theme action, for every app on the phone that answers it.
+        Thread {
+            val installed = IconPack.installed(this)
+            runOnUiThread {
+                val shell = wp81Shell ?: return@runOnUiThread
+                val items = mutableListOf<rocks.gorjan.gokixp.wp81.WP81ContextMenu.Item>()
+                if (current != null) {
+                    items.add(rocks.gorjan.gokixp.wp81.WP81ContextMenu.Item("none") {
+                        chooseIconPack(null)
+                    })
+                }
+                installed.asSequence()
+                    .filter { it.packageName != current }
+                    .take(ICON_PACK_MENU_MAX)
+                    .forEach { pack ->
+                        items.add(rocks.gorjan.gokixp.wp81.WP81ContextMenu.Item(
+                            pack.label.lowercase()) { chooseIconPack(pack.packageName) })
+                    }
+                items.add(rocks.gorjan.gokixp.wp81.WP81ContextMenu.Item("get icon packs") {
+                    openIconPackStore()
+                })
+                shell.contextMenu.show("icon pack", items, anchorY)
+            }
+        }.start()
+    }
+
+    /** Records the chosen pack and repaints everything that was wearing the old answer. */
+    private fun chooseIconPack(packageName: String?) {
+        themeManager.setWP81IconPack(packageName)
+        commitIconPack()
+        refreshWP81IconPackRow()
+        showNotification(
+            "Icon pack",
+            if (packageName == null) "Apps are back to their own icons"
+            else "Applied to the app list" +
+                if (themeManager.getWP81IconPackOnTiles()) " and Start" else ""
+        )
+    }
+
+    /**
+     * Sends the user to the store's own list of icon packs.
+     *
+     * Left as an ACTION_VIEW so the Play Store app claims it, rather than opened in
+     * Internet Explorer: the store is an app the phone has, and a store page rendered in
+     * this launcher's browser is a page that cannot install anything.
+     */
+    private fun openIconPackStore() {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, IconPack.STORE_SEARCH.toUri()).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+        } catch (e: Exception) {
+            Log.w("MainActivity", "No store to send the user to", e)
+            showNotification("Icon pack", "No app store to open")
+        }
+    }
+
+    /** Tells the settings page which pack is on, and how many there are to choose from. */
+    private fun refreshWP81IconPackRow() {
+        val shell = wp81Shell ?: return
+        val current = themeManager.getWP81IconPack()
+        val name = wp81IconPack?.label?.takeIf { current != null }
+        // Off the main thread: this queries every installed package for a theme activity.
+        Thread {
+            val installed = IconPack.installed(this).size
+            runOnUiThread {
+                shell.settingsPage.setIconPack(
+                    name, themeManager.getWP81IconPackOnTiles(), installed)
+            }
+        }.start()
+    }
+
+    /**
+     * Refills the icon picker's grid from the pack the user has on.
+     *
+     * The same batching as the bundled set, and for a stronger reason: a pack routinely
+     * ships two thousand drawables, and decoding them before showing any would leave the
+     * page blank for as long as it took.
+     *
+     * Two things the bundled set does not need. The grid holds every choice it is given, so
+     * the artwork is scaled down to the size the cells actually draw it at - the bundled
+     * icons are SVG paths and cost nothing to hold, while a pack's are full-size PNGs and
+     * two thousand of them at their own resolution is hundreds of megabytes. And the run is
+     * capped at [WP81_ICON_PACK_MAX], because a grid of two thousand icons with nothing to
+     * search it by is not a way of finding one anyway.
+     */
+    private fun loadWP81IconPackChoices(picker: rocks.gorjan.gokixp.wp81.WP81IconPicker) {
+        val pack = wp81IconPack ?: return
+        picker.clearChoices()
+        Thread {
+            val names = try {
+                pack.contents()
+            } catch (e: Exception) {
+                Log.w("MainActivity", "Cannot list ${pack.packageName}'s icons", e)
+                emptyList()
+            }
+            val batch = mutableListOf<rocks.gorjan.gokixp.wp81.WP81IconPicker.Choice>()
+            var taken = 0
+            fun flush() {
+                val chunk = batch.toList()
+                batch.clear()
+                runOnUiThread { if (picker.isShowing()) picker.addChoices(chunk) }
+            }
+            for (name in names) {
+                val drawable = try {
+                    pack.drawableNamed(name)
+                } catch (e: Exception) {
+                    null
+                } ?: continue
+                batch.add(rocks.gorjan.gokixp.wp81.WP81IconPicker.Choice(
+                    IconPack.pathFor(pack.packageName, name), thumbnailOf(drawable)))
+                if (batch.size >= WP81_ICON_BATCH) flush()
+                if (++taken >= WP81_ICON_PACK_MAX) break
+            }
+            if (batch.isNotEmpty()) flush()
+        }.start()
+    }
+
+    /**
+     * [drawable] rendered small enough to keep a grid of them in memory.
+     *
+     * Only for the picker, and only for a pack's own artwork. What gets *chosen* out of
+     * that grid is stored as a path and loaded again at full size when it is drawn, so
+     * nothing downstream ever sees this copy. See [IconPack.pathFor].
+     */
+    private fun thumbnailOf(drawable: Drawable): Drawable {
+        val w = drawable.intrinsicWidth
+        val h = drawable.intrinsicHeight
+        val longest = maxOf(w, h)
+        if (longest in 1..WP81_ICON_PACK_THUMB_PX) return drawable
+        val scale = if (longest > 0) WP81_ICON_PACK_THUMB_PX.toFloat() / longest else 1f
+        val tw = (w * scale).toInt().coerceAtLeast(1)
+        val th = (h * scale).toInt().coerceAtLeast(1)
+        return try {
+            val bitmap = createBitmap(tw, th)
+            drawable.setBounds(0, 0, tw, th)
+            drawable.draw(Canvas(bitmap))
+            bitmap.toDrawable(resources)
+        } catch (e: Exception) {
+            Log.w("MainActivity", "Could not scale a pack icon down", e)
+            drawable
+        }
     }
 
     /** Commits a chosen icon through the same mappings the desktop themes read. */
@@ -8503,7 +9111,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         val shell = wp81Shell ?: return
         shell.openSettings()
         shell.settingsPage.setDefaultBrowser(isDefaultBrowser())
+        shell.settingsPage.setKeyboardEnabled(isOwnKeyboardEnabled())
         refreshDefaultBrowser = { shell.settingsPage.setDefaultBrowser(isDefaultBrowser()) }
+        refreshWP81IconPackRow()
         refreshWP81CustomBackground()
         Thread {
             val items = try {
@@ -8525,6 +9135,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
     private fun wireWP81Settings(shell: rocks.gorjan.gokixp.wp81.WP81Shell) {
         shell.settingsPage.onBack = { shell.closeSettings() }
+        shell.settingsPage.onKeyboard = { openKeyboardSettings() }
         shell.settingsPage.onAccentPicked = { color ->
             commitWP81Appearance(color, themeManager.isWP81Dark())
         }
@@ -8570,6 +9181,21 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             themeManager.setWP81AccentNavBar(enabled)
             paintWP81NavBar()
         }
+        // How much of the screen the shell is given: its own keys, and the phone's bars.
+        // Neither is a repaint - both change what is laid out where - so each goes to the
+        // applier that owns that, rather than through the palette.
+        shell.settingsPage.setScreenControls(
+            hideNavBar = themeManager.getWP81HideNavBar(),
+            fullscreen = themeManager.getWP81Fullscreen()
+        )
+        shell.settingsPage.onHideNavBarChanged = { hidden ->
+            themeManager.setWP81HideNavBar(hidden)
+            applyWP81NavBarVisibility()
+        }
+        shell.settingsPage.onFullscreenChanged = { enabled ->
+            themeManager.setWP81Fullscreen(enabled)
+            applyWP81Fullscreen()
+        }
         shell.settingsPage.onColumnsPicked = { columns ->
             themeManager.setWP81Columns(columns)
             shell.startScreen.columns = columns
@@ -8593,6 +9219,13 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // No launcher-theme row: this app is the Windows Phone shell and nothing else.
         // The desktop themes it used to offer live in the other launcher now, and a row
         // that switched to one of them would be switching to a shell that is not here.
+        // What the apps are wearing. The row opens the list of installed packs; the switch
+        // under it decides whether the answer reaches Start as well as the app list.
+        shell.settingsPage.onIconPack = { anchorY -> showIconPackChooser(anchorY) }
+        shell.settingsPage.onIconPackOnTilesChanged = { onTiles ->
+            themeManager.setWP81IconPackOnTiles(onTiles)
+            commitIconPack()
+        }
         shell.settingsPage.onBrowse = {
             setPendingImagePick(PICK_TARGET_WP81_BACKGROUND)
             imagePickerLauncher.launch("image/*")
@@ -9564,7 +10197,13 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      */
     private fun paintWP81NavBar() {
         val shell = wp81Shell ?: return
-        shell.navBar.setAccented(themeManager.getWP81AccentNavBar())
+        // Hidden keys are not accented keys: with the strip gone the accent would be left
+        // as a band of colour along the bottom of the wall with nothing on it, and the
+        // band below is the system's gesture bar rather than anything this shell drew.
+        // The stored answer is untouched, so the keys come back wearing what they wore.
+        shell.navBar.setAccented(
+            !themeManager.getWP81HideNavBar() && themeManager.getWP81AccentNavBar()
+        )
         val ground = shell.navBar.groundColour()
         findViewById<View>(R.id.gesture_bar_strip)?.setBackgroundColor(ground)
         // The system draws its gesture pill over that band and picks the colour of it from
@@ -9575,6 +10214,47 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             .getInsetsController(window, window.decorView)
             .isAppearanceLightNavigationBars =
             androidx.core.graphics.ColorUtils.calculateLuminance(ground) > LIGHT_GROUND
+    }
+
+    /**
+     * Puts the navigation keys on the screen, or takes them off it.
+     *
+     * Three things move together, which is why they are in one place: the strip itself
+     * and everything the shell laid out above it, the container windowed programs are
+     * drawn in - which is the host's and so out of the shell's reach - and the colour of
+     * the band at the foot of the screen, since keys that are not there cannot be wearing
+     * the accent. See [rocks.gorjan.gokixp.wp81.WP81Shell.setNavBarShown].
+     */
+    private fun applyWP81NavBarVisibility() {
+        val shell = wp81Shell ?: return
+        shell.setNavBarShown(!themeManager.getWP81HideNavBar())
+        rebaseFloatingWindowsForWP81()
+        paintWP81NavBar()
+    }
+
+    /**
+     * Hides Android's own bars, or gives them back.
+     *
+     * Nothing is laid out from here. The shell already stands clear of the status bar and
+     * the gesture bar by whatever those bars report as insets - see
+     * [setupNavigationBarInsets] - and a hidden bar reports none, so asking for the insets
+     * again is the whole of the layout change. The bars themselves come back on a swipe
+     * from the edge and leave again by themselves, which is Android's own behaviour for a
+     * full screen app and the nearest thing to how Windows Phone hid its status bar.
+     *
+     * Applied again on every resume: a bar swiped back into view stays until the system
+     * decides otherwise, and coming home from another app is not something that puts it
+     * away again.
+     */
+    private fun applyWP81Fullscreen() {
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        controller.systemBarsBehavior =
+            androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        val bars = androidx.core.view.WindowInsetsCompat.Type.systemBars()
+        if (themeManager.getWP81Fullscreen()) controller.hide(bars) else controller.show(bars)
+        findViewById<View>(R.id.root_container)?.let {
+            androidx.core.view.ViewCompat.requestApplyInsets(it)
+        }
     }
 
     /** Repaints the shell after an accent or Light/Dark change, without a recreate. */
@@ -9655,6 +10335,8 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             metroIEAppInstance?.let { "system.internet_explorer" to it },
             metroFilesAppInstance?.let { "system.files" to it },
             peopleAppInstance?.let { "system.people" to it },
+            phoneAppInstance?.let { "system.phone" to it },
+            messagingAppInstance?.let { "system.messaging" to it },
             newsAppInstance?.let { "system.news" to it },
             alarmsAppInstance?.let { "system.alarms" to it },
             weatherAppInstance?.let { "system.weather" to it },
@@ -9768,8 +10450,17 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
     /**
      * Checks for app updates from remote config
+     *
+     * [manualCheck] is somebody having tapped the version number in Welcome rather than the
+     * hourly clock coming round. A check that was asked for says what it found whatever that
+     * is - a new version, none, or GitHub not answering - and says it now, skipping the two
+     * days of quiet [shouldAnnounceUpdate] keeps for the checks nobody asked for. A tap that
+     * answers with nothing reads as a broken tap.
+     *
+     * [onDone] runs on the main thread once the answer is in, however it went, so the page
+     * that asked can stop saying it is asking.
      */
-    private fun checkForUpdates(showCheckingNotification: Boolean = false) {
+    private fun checkForUpdates(manualCheck: Boolean = false, onDone: (() -> Unit)? = null) {
         Thread {
             try {
                 val apiUrl = URL("https://api.github.com/repos/$GITHUB_REPO/releases/latest")
@@ -9791,6 +10482,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                     // Skip prereleases if you only want stable versions
                     if (isPrerelease) {
                         Log.d("MainActivity", "Skipping prerelease: $latestTag")
+                        // Nothing stable on offer, which to somebody who just asked is the
+                        // same answer as no update at all.
+                        if (manualCheck) runOnUiThread { showNoUpdateNotice() }
                         return@Thread
                     }
 
@@ -9822,38 +10516,87 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                             // The Welcome tile says so on Start, the way the taskbar icon
                             // says so on the desktop.
                             refreshWP81Notifications()
+                            // And the Welcome program itself, if it happens to be open: it
+                            // was built before this answer came back, and would otherwise be
+                            // the one page on the phone with nothing to say about the update.
+                            welcomeAppInstance?.setUpdateAvailable { openUrlShortcut(downloadUrl) }
 
-                            showNotification(
-                                "Windows Update",
-                                "A new version ($latestTag) is available. Tap to download."
-                            ) {
-                                if (downloadUrl.isNotEmpty()) {
-                                    try {
-//                                        val intent = Intent(Intent.ACTION_VIEW, downloadUrl.toUri())
-//                                        startActivity(intent)
-                                        openUrlShortcut(downloadUrl)
-                                    } catch (e: Exception) {
-                                        Log.e("MainActivity", "Error opening link", e)
+                            // The band, though, only every couple of days - see
+                            // UPDATE_NOTICE_INTERVAL. The tile and the page above carry it
+                            // the rest of the time, and neither of them interrupts anything.
+                            // Not short-circuited: the stamp wants writing either way, or
+                            // the next hourly check announces what the tap just showed.
+                            val due = shouldAnnounceUpdate(latestTag)
+                            if (manualCheck || due) {
+                                showNotification(
+                                    "Windows Update",
+                                    "A new version ($latestTag) is available. Tap to download."
+                                ) {
+                                    if (downloadUrl.isNotEmpty()) {
+                                        try {
+                                            openUrlShortcut(downloadUrl)
+                                        } catch (e: Exception) {
+                                            Log.e("MainActivity", "Error opening link", e)
+                                        }
                                     }
                                 }
                             }
                         }
                     } else {
                         Log.d("MainActivity", "No update available")
-                        if (showCheckingNotification) {
-                            runOnUiThread {
-                                showNotification("Up to date", "No new updates available")
-                            }
-                        }
+                        if (manualCheck) runOnUiThread { showNoUpdateNotice() }
                     }
                 } else {
                     connection.disconnect()
                     Log.w("MainActivity", "GitHub API failed: ${connection.responseCode}")
+                    if (manualCheck) runOnUiThread { showUpdateCheckFailedNotice() }
                 }
             } catch (e: Exception) {
                 Log.e("MainActivity", "Error checking for updates", e)
+                if (manualCheck) runOnUiThread { showUpdateCheckFailedNotice() }
+            } finally {
+                onDone?.let { runOnUiThread(it) }
             }
         }.start()
+    }
+
+    /** The band that answers a check nobody needed to make. See [checkForUpdates]. */
+    private fun showNoUpdateNotice() =
+        showNotification("Windows Update", "You are up to date, no new version available")
+
+    /** The band for a check that never got an answer out of GitHub. See [checkForUpdates]. */
+    private fun showUpdateCheckFailedNotice() =
+        showNotification("Windows Update", "Could not check for updates right now")
+
+    /**
+     * Whether the band should announce [version] now, and notes it down when it says yes.
+     *
+     * The check runs hourly and an update stays available until it is installed, so the
+     * plain answer would be the same notification every hour until the user gave in. Held
+     * in preferences rather than a field because a launcher is killed and restarted more
+     * often than anything else on the phone, and a field would forget on each of them -
+     * which is the hourly nag again, by another route.
+     *
+     * A version this launcher has not announced before goes out whatever the clock says:
+     * the two days of quiet are about a download the user has already been told of, not
+     * about the next one.
+     */
+    private fun shouldAnnounceUpdate(version: String): Boolean {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val announcedVersion = prefs.getString(KEY_UPDATE_ANNOUNCED_VERSION, null)
+        val announcedAt = prefs.getLong(KEY_UPDATE_ANNOUNCED_AT, 0L)
+        val now = System.currentTimeMillis()
+        // The last clause is a clock that has been wound back: a stamp sitting in the
+        // future would otherwise silence the band until the phone caught up with it.
+        val due = announcedVersion != version ||
+            now - announcedAt >= UPDATE_NOTICE_INTERVAL ||
+            now < announcedAt
+        if (!due) return false
+        prefs.edit {
+            putString(KEY_UPDATE_ANNOUNCED_VERSION, version)
+            putLong(KEY_UPDATE_ANNOUNCED_AT, now)
+        }
+        return true
     }
 
     /**

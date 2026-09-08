@@ -1,4 +1,4 @@
-package rocks.gorjan.gokixp.apps.people
+package rocks.gorjan.gokixp.apps.phone
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -20,7 +20,7 @@ import rocks.gorjan.gokixp.wp81.metroLook
  * default-phone-app role: whoever holds it gets bound to this service and is handed every
  * call on the device, incoming and outgoing, from this app or any other. There is no
  * halfway - an app cannot answer its own calls and leave the rest to somebody else - so
- * holding the role is the price of having a call screen at all. See [PeopleApp]'s offer to
+ * holding the role is the price of having a call screen at all. See [PhoneApp]'s offer to
  * take it, which is the only place it is ever asked for.
  *
  * Almost nothing happens here. The calls go to [CallCentre], which the screen reads; this
