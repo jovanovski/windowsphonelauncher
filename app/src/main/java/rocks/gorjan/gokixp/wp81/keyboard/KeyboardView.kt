@@ -204,6 +204,7 @@ class KeyboardView(
         // Zero when there is no listener, which is the same answer the field gives when the
         // caret has nowhere left to go: nothing moved.
         view.onDrag = { steps -> listener?.onCursorSlide(view, steps) ?: 0 }
+        view.onDragLines = { lines -> listener?.onCursorLines(view, lines) ?: 0 }
         joystickView = view
         addView(view)
         requestLayout()

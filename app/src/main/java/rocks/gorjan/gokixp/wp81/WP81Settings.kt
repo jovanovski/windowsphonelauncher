@@ -6,7 +6,9 @@ import android.content.pm.PackageManager
 import android.util.Log
 import androidx.core.content.edit
 import rocks.gorjan.gokixp.MainActivity
+import rocks.gorjan.gokixp.SettingsBackup
 import rocks.gorjan.gokixp.getSafeInt
+import rocks.gorjan.gokixp.getSafeLong
 import rocks.gorjan.gokixp.R
 
 /**
@@ -48,6 +50,81 @@ val DESKTOP_CUSTOM_ICON_KEYS = listOf("custom_icons_vista", "custom_icons_xp", "
  */
 class WP81Settings(private val context: Context) {
     private val prefs = context.getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE)
+
+    /**
+     * The keyboard's own settings, kept in the keyboard's own file.
+     *
+     * **A preference file belongs to one process.** SharedPreferences holds the whole file in
+     * memory and writes the whole of it back, so two processes editing one file do not
+     * interleave their changes - the second one to write puts back its own stale idea of
+     * every key the first one touched. Change the accent in the launcher, then move the key
+     * height slider in the keyboard, and the accent silently goes back to what it was.
+     *
+     * The keyboard runs in a process of its own (see the manifest, and [KeyboardAppearance]
+     * for why), so the line has to be drawn somewhere, and it is drawn here: everything
+     * `wp81_kb_` is the keyboard's and lives in `wp81_keyboard`, which nothing outside that
+     * process writes. Everything else stays where it was, written only by the launcher.
+     *
+     * The file is not new and the keys are spelled exactly as they were - it is the same one
+     * the clipboard history and the emoji recents are already in, and it is already carried
+     * by an import from the desktop launcher, so the settings keep travelling as they did.
+     * What was written under the old arrangement is moved across once; see
+     * [migrateKeyboardSettings].
+     */
+    private val keyboardPrefs =
+        context.getSharedPreferences(KEYBOARD_PREFS_FILE, Context.MODE_PRIVATE)
+
+    /**
+     * Moves the keyboard's settings into the keyboard's file, once.
+     *
+     * Everything `wp81_kb_` used to be written alongside the launcher's own settings, because
+     * there was one process and so it made no difference where anything sat. It makes a
+     * difference now - see [keyboardPrefs] - so what is already on disk has to be carried
+     * across, or turning the keyboard's process on would read as every keyboard setting on
+     * every phone quietly resetting itself.
+     *
+     * **Called from the keyboard's process and nowhere else.** It is a write to the
+     * keyboard's file, and the whole point of the file is that one process writes it. The
+     * launcher does not need it done: nothing over there reads a `wp81_kb_` key, which is
+     * what made the split possible in the first place.
+     *
+     * The originals are left where they are rather than deleted. They are dead weight of a
+     * few hundred bytes, and they are also the copy a backup taken before all this carries -
+     * so a restore onto an older build still finds its keyboard settings.
+     *
+     * Whether the move has happened is asked of the settings themselves - see
+     * [KEYBOARD_SETTING_KEYS] - rather than recorded in a flag beside them, and the
+     * difference matters. A flag has to live in one file or the other and both are wrong:
+     * kept here it survives a restore that refills the launcher's file with older settings,
+     * and goes on saying the move is done when what it was done to has just been replaced;
+     * kept over there it would have to be written from this process, which is the one thing
+     * the split exists to prevent. The settings answer it exactly - the keyboard's file
+     * holding none of them while the launcher's holds some is precisely and only the state
+     * of not having moved yet. A setting turned off is still a setting written, so nothing
+     * here can bring back a switch that somebody turned off.
+     */
+    fun migrateKeyboardSettings() {
+        if (keyboardPrefs.all.keys.any { it in KEYBOARD_SETTING_KEYS }) return
+        val moving = prefs.all.filterKeys { it in KEYBOARD_SETTING_KEYS }
+        if (moving.isEmpty()) return
+        keyboardPrefs.edit {
+            for ((key, value) in moving) {
+                when (value) {
+                    is Boolean -> putBoolean(key, value)
+                    is Int -> putInt(key, value)
+                    is Long -> putLong(key, value)
+                    is Float -> putFloat(key, value)
+                    is String -> putString(key, value)
+                    // A set is the only other shape SharedPreferences holds, and the compiler
+                    // cannot see that the values are strings, so it is checked rather than
+                    // cast. Nothing here writes one today; the branch is what stops the next
+                    // key that does from being dropped in silence.
+                    is Set<*> -> putStringSet(key, value.filterIsInstance<String>().toSet())
+                    else -> Unit
+                }
+            }
+        }
+    }
 
 
     // There is no selected theme to read. The stored `selected_theme` key is left in
@@ -264,6 +341,33 @@ class WP81Settings(private val context: Context) {
     }
 
     /**
+     * Whether the shell wears the phone's status bar and Action Center.
+     *
+     * Two things under one switch, because they are one thing: the strip along the top -
+     * signal, carrier, battery, clock and date - is the Action Center's header, and the
+     * panel is what comes down out of it. Turned on, a downward drag from the top of the
+     * wall opens that panel; turned off, the strip goes, the wall starts directly under
+     * Android's own status bar, and the gesture asks the system for its shade instead.
+     *
+     * On by default, because it is the thing the gesture was always standing in for: a
+     * downward drag from the top of Start is how Windows Phone opened the Action Center,
+     * and until now it opened somebody else's. Nothing is lost by it - Android's shade is
+     * still one swipe from the real status bar above, which is where every other app on
+     * the phone finds it too.
+     *
+     * The panel is the launcher's own drawing over the launcher's own screen. It is not,
+     * and cannot be, a replacement for the system shade: an app may not draw over that one,
+     * and the notifications it lists are the ones the listener is already reading for the
+     * tiles. See WP81ActionCenter and WP81StatusBar.
+     */
+    fun getWP81ActionCenter(): Boolean =
+        prefs.getBoolean(KEY_WP81_ACTION_CENTER, true)
+
+    fun setWP81ActionCenter(enabled: Boolean) {
+        prefs.edit { putBoolean(KEY_WP81_ACTION_CENTER, enabled) }
+    }
+
+    /**
      * Whether a tile says *how much* is waiting rather than merely that something is.
      *
      * On by default, because it is what Windows Phone did and it is strictly more than the
@@ -290,14 +394,131 @@ class WP81Settings(private val context: Context) {
     }
 
     /**
+     * Whether clips from the camera roll turn up on the Photos tile.
+     *
+     * On, because the roll is what the tile is a slideshow of and a phone camera records
+     * both - a tile that skipped every clip would be showing a gappy version of a day out.
+     * Off is for the wall rather than for the roll: a clip on a tile *plays*, and a home
+     * screen with something moving on it is a home screen that is asking to be looked at.
+     * Off, the tile is stills, and the clips are still in Files where they were.
+     *
+     * Read where the roll is asked for rather than where it is drawn - see
+     * PhotoFeed.recent - so that turning it off gives the tile twenty photographs rather
+     * than twenty items with the clips taken out.
+     */
+    fun getWP81PhotoTileVideos(): Boolean =
+        prefs.getBoolean(KEY_WP81_PHOTO_TILE_VIDEOS, true)
+
+    fun setWP81PhotoTileVideos(show: Boolean) {
+        prefs.edit { putBoolean(KEY_WP81_PHOTO_TILE_VIDEOS, show) }
+    }
+
+    /**
+     * Whether swiping across to the app list arrives with the search box up.
+     *
+     * On, because that is what the swipe has always done and it is the quick way to open
+     * an app: the gesture across and the typing are one movement, and the list is a page
+     * of forty icons that nobody scrolls when they already know the name. It is the wrong
+     * default for anybody who swipes across to *look* - they get a keyboard over two
+     * thirds of the list and a rail of letters that has folded itself away - so it can be
+     * turned off, and then the list arrives as a list. Search is still the key on the
+     * strip and the button at the top of the rail either way.
+     */
+    fun getWP81AppListSearchFocus(): Boolean =
+        prefs.getBoolean(KEY_WP81_APPLIST_SEARCH_FOCUS, true)
+
+    fun setWP81AppListSearchFocus(focus: Boolean) {
+        prefs.edit { putBoolean(KEY_WP81_APPLIST_SEARCH_FOCUS, focus) }
+    }
+
+    /**
+     * When a backup was last written to a file, and when to Google Drive.
+     *
+     * Two stamps rather than one, because they are two backups: somebody who keeps a copy
+     * on their Drive and exports a file before a big change wants to know the age of each,
+     * and a single "last backed up" would report whichever they did most recently and say
+     * nothing about the other.
+     *
+     * Kept per phone rather than inside the backup - see SettingsBackup.DEVICE_KEYS, which
+     * is what carries them across a restore. A stamp that travelled would mean restoring
+     * last month's backup told you your last backup was last month, which is true of the
+     * file and false of the phone.
+     *
+     * Zero is never.
+     */
+    fun getWP81LastDriveBackup(): Long =
+        prefs.getSafeLong(SettingsBackup.KEY_LAST_DRIVE_BACKUP, 0L)
+
+    fun setWP81LastDriveBackup(at: Long) {
+        prefs.edit { putLong(SettingsBackup.KEY_LAST_DRIVE_BACKUP, at) }
+    }
+
+    fun getWP81LastFileBackup(): Long =
+        prefs.getSafeLong(SettingsBackup.KEY_LAST_FILE_BACKUP, 0L)
+
+    fun setWP81LastFileBackup(at: Long) {
+        prefs.edit { putLong(SettingsBackup.KEY_LAST_FILE_BACKUP, at) }
+    }
+
+    /**
      * The news feeds the News tile reads, by id.
      *
      * Unset means the default rather than none: a News tile that has never been given a
      * feed would otherwise sit there empty with no hint that it wants configuring.
      */
     fun getWP81NewsFeeds(): Set<String> =
-        prefs.getStringSet(KEY_WP81_NEWS_FEEDS, null)
-            ?: setOf(rocks.gorjan.gokixp.wp81.NewsSources.DEFAULT_ID)
+        prefs.getStringSet(KEY_WP81_NEWS_FEEDS, null) ?: setOf(NewsSources.DEFAULT_ID)
+
+    /**
+     * The feeds the user has added themselves, in the order they added them.
+     *
+     * JSON rather than the joined string the tile colours are kept as: a feed carries a
+     * name the user can edit and an address they typed, and a name with a semicolon in it
+     * would quietly take the feed after it away with it.
+     *
+     * Order is the order they were added, which is the order they were last shown in -
+     * a list that sorted itself would move a feed while somebody was looking at it.
+     */
+    fun getWP81CustomNewsFeeds(): List<NewsSource> {
+        val raw = prefs.getString(KEY_WP81_NEWS_CUSTOM, null) ?: return emptyList()
+        return try {
+            val array = org.json.JSONArray(raw)
+            (0 until array.length()).mapNotNull { i ->
+                val entry = array.optJSONObject(i) ?: return@mapNotNull null
+                val url = entry.optString("url").orEmpty()
+                if (url.isBlank()) return@mapNotNull null
+                NewsSource(
+                    id = entry.optString("id").ifBlank { NewsSources.customId(url) },
+                    name = entry.optString("name").ifBlank { url },
+                    url = url
+                )
+            }
+        } catch (e: Exception) {
+            Log.w("WP81Settings", "Unreadable custom news feeds", e)
+            emptyList()
+        }
+    }
+
+    fun setWP81CustomNewsFeeds(feeds: List<NewsSource>) {
+        val array = org.json.JSONArray()
+        for (feed in feeds) {
+            array.put(org.json.JSONObject().apply {
+                put("id", feed.id)
+                put("name", feed.name)
+                put("url", feed.url)
+            })
+        }
+        prefs.edit { putString(KEY_WP81_NEWS_CUSTOM, array.toString()) }
+    }
+
+    /**
+     * The feed an enabled id names, whichever list it is in.
+     *
+     * The one thing that has to know about both: everything downstream of it - the tile,
+     * the reader - holds ids and should not care which kind of feed it has been handed.
+     */
+    fun getWP81NewsSource(id: String): NewsSource? =
+        NewsSources.byId(id) ?: getWP81CustomNewsFeeds().firstOrNull { it.id == id }
 
     /**
      * Tiles the user has painted a colour of their own, by tile id.
@@ -370,10 +591,10 @@ class WP81Settings(private val context: Context) {
      * offer rather than to insist.
      */
     fun getWP81KeyboardAutocorrect(): Boolean =
-        prefs.getBoolean(KEY_WP81_KB_AUTOCORRECT, false)
+        keyboardPrefs.getBoolean(KEY_WP81_KB_AUTOCORRECT, false)
 
     fun setWP81KeyboardAutocorrect(enabled: Boolean) {
-        prefs.edit { putBoolean(KEY_WP81_KB_AUTOCORRECT, enabled) }
+        keyboardPrefs.edit { putBoolean(KEY_WP81_KB_AUTOCORRECT, enabled) }
     }
 
     /**
@@ -385,10 +606,10 @@ class WP81Settings(private val context: Context) {
      * being told is one somebody has to keep un-capitalising. Shift is one tap away either way.
      */
     fun getWP81KeyboardAutoCapitalise(): Boolean =
-        prefs.getBoolean(KEY_WP81_KB_AUTOCAPS, false)
+        keyboardPrefs.getBoolean(KEY_WP81_KB_AUTOCAPS, false)
 
     fun setWP81KeyboardAutoCapitalise(enabled: Boolean) {
-        prefs.edit { putBoolean(KEY_WP81_KB_AUTOCAPS, enabled) }
+        keyboardPrefs.edit { putBoolean(KEY_WP81_KB_AUTOCAPS, enabled) }
     }
 
     /**
@@ -403,7 +624,7 @@ class WP81Settings(private val context: Context) {
      * that. See `KeyboardLanguages`, which keeps the second in step with the first.
      */
     fun getWP81KeyboardLanguages(): Set<String> =
-        prefs.getString(KEY_WP81_KB_LANGUAGES, null)
+        keyboardPrefs.getString(KEY_WP81_KB_LANGUAGES, null)
             ?.split(",")
             ?.filter { it.isNotBlank() }
             ?.toSet()
@@ -414,7 +635,7 @@ class WP81Settings(private val context: Context) {
         // Never none. A keyboard with no language is a keyboard with no letters, and the
         // setting that produced it would be impossible to undo from the keyboard itself.
         val kept = ids.ifEmpty { setOf(WP81_KB_DEFAULT_LANGUAGE) }
-        prefs.edit { putString(KEY_WP81_KB_LANGUAGES, kept.joinToString(",")) }
+        keyboardPrefs.edit { putString(KEY_WP81_KB_LANGUAGES, kept.joinToString(",")) }
     }
 
     /**
@@ -426,10 +647,10 @@ class WP81Settings(private val context: Context) {
      * would rather have four even rows.
      */
     fun getWP81KeyboardShortBottomRow(): Boolean =
-        prefs.getBoolean(KEY_WP81_KB_SHORT_BOTTOM, true)
+        keyboardPrefs.getBoolean(KEY_WP81_KB_SHORT_BOTTOM, true)
 
     fun setWP81KeyboardShortBottomRow(shorter: Boolean) {
-        prefs.edit { putBoolean(KEY_WP81_KB_SHORT_BOTTOM, shorter) }
+        keyboardPrefs.edit { putBoolean(KEY_WP81_KB_SHORT_BOTTOM, shorter) }
     }
 
     /**
@@ -442,10 +663,10 @@ class WP81Settings(private val context: Context) {
      * keyboard was built for it is the only dictation there is.
      */
     fun getWP81KeyboardOfflineVoice(): Boolean =
-        prefs.getBoolean(KEY_WP81_KB_OFFLINE_VOICE, true)
+        keyboardPrefs.getBoolean(KEY_WP81_KB_OFFLINE_VOICE, true)
 
     fun setWP81KeyboardOfflineVoice(offline: Boolean) {
-        prefs.edit { putBoolean(KEY_WP81_KB_OFFLINE_VOICE, offline) }
+        keyboardPrefs.edit { putBoolean(KEY_WP81_KB_OFFLINE_VOICE, offline) }
     }
 
     /**
@@ -456,11 +677,11 @@ class WP81Settings(private val context: Context) {
      * symbol, too long and the symbol feels like it is being withheld.
      */
     fun getWP81KeyboardHoldMs(): Int =
-        prefs.getSafeInt(KEY_WP81_KB_HOLD_MS, WP81_KB_HOLD_DEFAULT)
+        keyboardPrefs.getSafeInt(KEY_WP81_KB_HOLD_MS, WP81_KB_HOLD_DEFAULT)
             .coerceIn(WP81_KB_HOLD_MIN, WP81_KB_HOLD_MAX)
 
     fun setWP81KeyboardHoldMs(millis: Int) {
-        prefs.edit { putInt(KEY_WP81_KB_HOLD_MS, millis.coerceIn(WP81_KB_HOLD_MIN, WP81_KB_HOLD_MAX)) }
+        keyboardPrefs.edit { putInt(KEY_WP81_KB_HOLD_MS, millis.coerceIn(WP81_KB_HOLD_MIN, WP81_KB_HOLD_MAX)) }
     }
 
     /**
@@ -474,11 +695,11 @@ class WP81Settings(private val context: Context) {
      * for everybody in order to serve the few who want it stronger.
      */
     fun getWP81KeyboardVibration(): Int =
-        prefs.getSafeInt(KEY_WP81_KB_VIBRATION, WP81_KB_VIBRATION_SYSTEM)
+        keyboardPrefs.getSafeInt(KEY_WP81_KB_VIBRATION, WP81_KB_VIBRATION_SYSTEM)
             .coerceIn(WP81_KB_VIBRATION_SYSTEM, WP81_KB_VIBRATION_MAX)
 
     fun setWP81KeyboardVibration(strength: Int) {
-        prefs.edit {
+        keyboardPrefs.edit {
             putInt(
                 KEY_WP81_KB_VIBRATION,
                 strength.coerceIn(WP81_KB_VIBRATION_SYSTEM, WP81_KB_VIBRATION_MAX)
@@ -500,11 +721,11 @@ class WP81Settings(private val context: Context) {
      * much of one. See `KeyboardView.keyHeightScale`.
      */
     fun getWP81KeyboardKeyHeight(): Int =
-        prefs.getSafeInt(KEY_WP81_KB_KEY_HEIGHT, WP81_KB_KEY_HEIGHT_DEFAULT)
+        keyboardPrefs.getSafeInt(KEY_WP81_KB_KEY_HEIGHT, WP81_KB_KEY_HEIGHT_DEFAULT)
             .coerceIn(WP81_KB_KEY_HEIGHT_MIN, WP81_KB_KEY_HEIGHT_MAX)
 
     fun setWP81KeyboardKeyHeight(percent: Int) {
-        prefs.edit {
+        keyboardPrefs.edit {
             putInt(
                 KEY_WP81_KB_KEY_HEIGHT,
                 percent.coerceIn(WP81_KB_KEY_HEIGHT_MIN, WP81_KB_KEY_HEIGHT_MAX)
@@ -527,10 +748,10 @@ class WP81Settings(private val context: Context) {
      * the whole of that trade written down.
      */
     fun getWP81KeyboardSound(): Boolean =
-        prefs.getBoolean(KEY_WP81_KB_SOUND, false)
+        keyboardPrefs.getBoolean(KEY_WP81_KB_SOUND, false)
 
     fun setWP81KeyboardSound(enabled: Boolean) {
-        prefs.edit { putBoolean(KEY_WP81_KB_SOUND, enabled) }
+        keyboardPrefs.edit { putBoolean(KEY_WP81_KB_SOUND, enabled) }
     }
 
     /**
@@ -546,10 +767,10 @@ class WP81Settings(private val context: Context) {
      * See `KeyPreviewPopup`.
      */
     fun getWP81KeyboardKeyPreview(): Boolean =
-        prefs.getBoolean(KEY_WP81_KB_KEY_PREVIEW, true)
+        keyboardPrefs.getBoolean(KEY_WP81_KB_KEY_PREVIEW, true)
 
     fun setWP81KeyboardKeyPreview(enabled: Boolean) {
-        prefs.edit { putBoolean(KEY_WP81_KB_KEY_PREVIEW, enabled) }
+        keyboardPrefs.edit { putBoolean(KEY_WP81_KB_KEY_PREVIEW, enabled) }
     }
 
     /**
@@ -566,10 +787,10 @@ class WP81Settings(private val context: Context) {
      * slide on the space bar keeps only the occasional wrong space. See `JoystickView`.
      */
     fun getWP81KeyboardJoystick(): Boolean =
-        prefs.getBoolean(KEY_WP81_KB_JOYSTICK, false)
+        keyboardPrefs.getBoolean(KEY_WP81_KB_JOYSTICK, false)
 
     fun setWP81KeyboardJoystick(enabled: Boolean) {
-        prefs.edit { putBoolean(KEY_WP81_KB_JOYSTICK, enabled) }
+        keyboardPrefs.edit { putBoolean(KEY_WP81_KB_JOYSTICK, enabled) }
     }
 
     /**
@@ -585,10 +806,10 @@ class WP81Settings(private val context: Context) {
      * nothing at all. See `KeyboardView.slideKeys`.
      */
     fun getWP81KeyboardSlideKeys(): Boolean =
-        prefs.getBoolean(KEY_WP81_KB_SLIDE_KEYS, true)
+        keyboardPrefs.getBoolean(KEY_WP81_KB_SLIDE_KEYS, true)
 
     fun setWP81KeyboardSlideKeys(enabled: Boolean) {
-        prefs.edit { putBoolean(KEY_WP81_KB_SLIDE_KEYS, enabled) }
+        keyboardPrefs.edit { putBoolean(KEY_WP81_KB_SLIDE_KEYS, enabled) }
     }
 
     /**
@@ -601,10 +822,10 @@ class WP81Settings(private val context: Context) {
      * settings page, which is also where it says how to get one.
      */
     fun getWP81KeyboardGiphyKey(): String =
-        prefs.getString(KEY_WP81_KB_GIPHY_KEY, "").orEmpty().trim()
+        keyboardPrefs.getString(KEY_WP81_KB_GIPHY_KEY, "").orEmpty().trim()
 
     fun setWP81KeyboardGiphyKey(key: String) {
-        prefs.edit { putString(KEY_WP81_KB_GIPHY_KEY, key.trim()) }
+        keyboardPrefs.edit { putString(KEY_WP81_KB_GIPHY_KEY, key.trim()) }
     }
 
     fun isWP81Dark(): Boolean = prefs.getBoolean(KEY_WP81_DARK, true)
@@ -656,8 +877,52 @@ class WP81Settings(private val context: Context) {
 
     companion object {
         private const val KEY_SELECTED_THEME = "selected_theme"
+        private const val KEY_WP81_APPLIST_SEARCH_FOCUS = "wp81_applist_search_focus"
+        private const val KEY_WP81_PHOTO_TILE_VIDEOS = "wp81_photo_tile_videos"
         const val KEY_WP81_ACCENT = "wp81_accent"
         private const val KEY_WP81_DEVICE_WALL_IN_STEP = "wp81_device_wall_in_step"
+        /**
+         * The file the keyboard's own settings live in.
+         *
+         * Spelled here rather than taken from `WP81KeyboardService.KEYBOARD_PREFS`, which is
+         * the same string: the service is the keyboard's process and this class is read in
+         * the launcher's, and a settings class that has to load the keyboard to know where
+         * its own file is would drag the dictionary into the launcher to answer a question
+         * about a filename.
+         */
+        const val KEYBOARD_PREFS_FILE = "wp81_keyboard"
+
+        /**
+         * The keyboard's settings, named one by one rather than matched by their prefix.
+         *
+         * A prefix looks like the obvious test and is the wrong one. `wp81_kb_` is not the
+         * mark of a setting, it is the mark of the keyboard, and the keyboard's file already
+         * held `wp81_kb_clipboard` and `wp81_kb_emoji_recents` long before any of this - its
+         * clipboard history and the emoji it has reached for, which are the keyboard's own
+         * working notes and were never in the launcher's file at all. A move that asked
+         * "does the keyboard's file hold anything `wp81_kb_`?" would find the clipboard,
+         * conclude the settings were already across, and quietly leave every one of them
+         * behind on a phone that had ever copied a line of text.
+         *
+         * This is the list of settings, and it is exact in both directions: it says what to
+         * carry over, and its absence is what says the carrying has not happened yet.
+         */
+        val KEYBOARD_SETTING_KEYS = setOf(
+            KEY_WP81_KB_AUTOCORRECT,
+            KEY_WP81_KB_AUTOCAPS,
+            KEY_WP81_KB_OFFLINE_VOICE,
+            KEY_WP81_KB_SHORT_BOTTOM,
+            KEY_WP81_KB_LANGUAGES,
+            KEY_WP81_KB_HOLD_MS,
+            KEY_WP81_KB_VIBRATION,
+            KEY_WP81_KB_KEY_HEIGHT,
+            KEY_WP81_KB_SOUND,
+            KEY_WP81_KB_KEY_PREVIEW,
+            KEY_WP81_KB_JOYSTICK,
+            KEY_WP81_KB_SLIDE_KEYS,
+            KEY_WP81_KB_GIPHY_KEY
+        )
+
         const val KEY_WP81_KB_AUTOCORRECT = "wp81_kb_autocorrect"
         const val KEY_WP81_KB_AUTOCAPS = "wp81_kb_autocaps"
         const val KEY_WP81_KB_OFFLINE_VOICE = "wp81_kb_offline_voice"
@@ -708,6 +973,7 @@ class WP81Settings(private val context: Context) {
         const val KEY_WP81_START_BACKGROUND_BLUR = "wp81_start_background_blur"
         const val KEY_WP81_START_BACKGROUND_DRIFT = "wp81_start_background_drift"
         const val KEY_WP81_NEWS_FEEDS = "wp81_news_feeds"
+        const val KEY_WP81_NEWS_CUSTOM = "wp81_news_custom_feeds"
         const val KEY_WP81_TILE_COLORS = "wp81_tile_colors"
         const val KEY_WP81_TILE_NO_PICTURE = "wp81_tile_no_picture"
         const val KEY_WP81_HIDE_TILE_COLORS = "wp81_hide_tile_colors"
@@ -716,6 +982,7 @@ class WP81Settings(private val context: Context) {
         const val KEY_WP81_ACCENT_NAV_BAR = "wp81_accent_nav_bar"
         const val KEY_WP81_HIDE_NAV_BAR = "wp81_hide_nav_bar"
         const val KEY_WP81_FULLSCREEN = "wp81_fullscreen"
+        const val KEY_WP81_ACTION_CENTER = "wp81_action_center"
         const val KEY_WP81_TILE_COUNTS = "wp81_tile_counts"
         const val KEY_WP81_COLUMNS = "wp81_columns"
         const val KEY_WP81_HIDDEN_TILES = "wp81_hidden_tiles"

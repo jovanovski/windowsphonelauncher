@@ -121,10 +121,25 @@ class EmojiData private constructor(
         // By how many words the name has, which is the whole ranking and needs no second
         // clause: a bucket is keyed by a word that begins or ends every name in it, so a
         // one-word name in it *is* the emoji that term names outright - `crown` before
-        // `person with crown`, `kiss` before `kiss mark`. `sortedBy` is stable, so the
-        // asset's own order - Unicode's, which puts the ordinary before the specialised -
-        // is what breaks the ties.
-        index.mapValues { (_, found) -> found.sortedBy { nameWords(it.name).size } }
+        // `person with crown`, `kiss` before `kiss mark`. The sort is stable, so the asset's
+        // own order - Unicode's, which puts the ordinary before the specialised - is what
+        // breaks the ties.
+        //
+        // The count is worked out once per emoji and carried, rather than being read off
+        // `nameWords` inside the comparison. `sortedBy` builds a comparator that calls its
+        // selector on *both* sides of *every* comparison, so writing the obvious thing here
+        // re-split several thousand names tens of thousands of times, allocating a list and
+        // a builder each time - and all of it on whichever thread first asked this map a
+        // question, which used to be the main thread under a keystroke.
+        index.mapValues { (_, found) ->
+            if (found.size < 2) {
+                found
+            } else {
+                found.map { it to nameWords(it.name).size }
+                    .sortedBy { (_, words) -> words }
+                    .map { (emoji, _) -> emoji }
+            }
+        }
     }
 
     /**
@@ -147,6 +162,25 @@ class EmojiData private constructor(
      * before one called `person with crown` - and then by the asset's own order, which is
      * Unicode's, which puts the ordinary ones before the specialised.
      */
+    /**
+     * Builds the indices now, on whatever thread is calling, so nothing has to build them later.
+     *
+     * Every lookup here reads through a `by lazy` - [all], [byGlyph], [byHead] - and a lazy is
+     * built by whoever asks first. For [byHead] that first asker was the suggestion bar, which
+     * runs on the main thread under a keystroke, and what it triggered was a walk over the
+     * whole asset: three and a half thousand names split into words and filed into a map of
+     * two thousand buckets. Once, but once at the worst possible moment - the third letter of
+     * the first word of a typing session, which is precisely when somebody is deciding whether
+     * this keyboard keeps up.
+     *
+     * So the reader that has time asks first. See `WP81KeyboardService.warmEmojiNames`, which
+     * calls this on the thread the dictionaries are read on, while nobody is typing yet.
+     */
+    fun warm() {
+        byGlyph
+        byHead
+    }
+
     fun headed(term: String, limit: Int): List<Emoji> {
         val needle = term.trim().lowercase()
         if (needle.length < MIN_TERM) return emptyList()
@@ -273,6 +307,7 @@ class EmojiData private constructor(
          * and OS update far more than it varies by the Unicode version the AOSP emoji font
          * happened to ship with.
          */
+        @Synchronized
         fun load(context: Context): EmojiData {
             cached?.let { return it }
             val text = context.assets.open(ASSET_PATH).bufferedReader(Charsets.UTF_8).use {

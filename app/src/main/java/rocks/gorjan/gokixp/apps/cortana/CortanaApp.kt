@@ -16,6 +16,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.content.res.ResourcesCompat
+import androidx.core.widget.doAfterTextChanged
 import rocks.gorjan.gokixp.MainActivity
 import rocks.gorjan.gokixp.R
 import rocks.gorjan.gokixp.apps.cortana.shazam.SongRecogniser
@@ -36,12 +37,21 @@ import rocks.gorjan.gokixp.wp81.applyToField
  * results. This is that screen: fog, a breathing circle, a greeting that is different
  * every time, and one box along the bottom.
  *
- * What it cannot be is the assistant. Cortana was a service, the service is gone, and the
- * half of her that mattered - the notebook, the reminders, the voice - was never something
- * a launcher could stand in for. What is left is the part the screen was actually for: you
- * have a question, and you want it to go somewhere. So the microphone is replaced by two
- * buttons, and they are the honest version of what Cortana did - one sends the question to
- * a search engine, one sends it to a model. Which engine and which model are the user's
+ * What it cannot be is all of her. Cortana was a service, the service is gone, and the
+ * parts of her that reached into the phone - the notebook, the reminders, the voice - were
+ * never something a launcher could stand in for. What can be rebuilt is the part the screen
+ * was actually for: you have a question, and it goes somewhere and comes back.
+ *
+ * So the microphone is replaced by two buttons. One sends the question to a search engine.
+ * The other asks a model, and what happens then depends on whether the user has given this
+ * app a key of their own. Without one it hands the question to Copilot or ChatGPT or Claude
+ * as an intent, which lands in an app that is already signed in - honest, and the end of the
+ * matter. With one, the ring and the greeting give the middle of the screen over to the
+ * exchange itself: question, answer, and a follow-up that is answered in the light of both,
+ * which is the thing Cortana did that a link with a question in it cannot. See [converse]
+ * and [CortanaAgent].
+ *
+ * Which engine, which service, which model, and where the answer arrives are all the user's
  * business, which is what the cog in the corner is for.
  *
  * Everything here is drawn rather than laid out from a resource, like the rest of this
@@ -75,6 +85,27 @@ class CortanaApp(
     private lateinit var input: EditText
 
     /**
+     * The part of the screen between the cog and the box, which is one of two things.
+     *
+     * Either the ring with a greeting under it, or the conversation - never both, and never
+     * neither. Cortana's screen was a single page that changed what it was showing rather
+     * than a stack of them, which is why this is a swap rather than another overlay: the box
+     * along the bottom belongs to both states and must not move when one becomes the other.
+     */
+    private lateinit var middle: FrameLayout
+    private lateinit var greetingPane: LinearLayout
+    private lateinit var chat: CortanaChatView
+
+    /**
+     * The answer currently arriving, if one is.
+     *
+     * Held so it can be stopped. A stream writes into a bubble for as long as the model
+     * keeps talking, and leaving the conversation, asking something else, or closing the
+     * window are all things that happen while it is still going.
+     */
+    private var inFlight: CortanaAgent.Ask? = null
+
+    /**
      * What the middle of the screen is currently saying.
      *
      * Held because three different things can put words there - the greeting, a listen in
@@ -95,15 +126,41 @@ class CortanaApp(
      */
     private var greeting = CortanaGreetings.random(MainActivity.getUserName(context))
 
+    /**
+     * The name the greeting on screen was built with.
+     *
+     * Kept so that a name typed in settings can be spotted on the way back out - see
+     * [refreshGreetingForName]. The greeting itself does not say: two thirds of them carry
+     * the name and the rest do not, so a line without one is no evidence of anything.
+     */
+    private var greetingName = MainActivity.getUserName(context)
+
     // ---------------------------------------------------------------- construction
 
-    /** Rebuilds the program in a new theme. See [WP81Program]. */
+    /**
+     * Rebuilds the program in a new theme. See [WP81Program].
+     *
+     * A conversation does not survive it. The page is built again from the ground up, and
+     * what a rebuild costs is the place the user was in - which for this program is the
+     * exchange on screen. Only the stream has to be put down deliberately: everything else
+     * a rebuild orphans is a view, and a view nobody holds is collected, where an answer
+     * still arriving would go on writing into bubbles that are no longer on the screen.
+     */
     override fun applyPalette(palette: WP81Palette): View {
         this.palette = palette
+        inFlight?.cancel()
+        inFlight = null
         return createView()
     }
 
     fun createView(): View {
+        // The pages that were stacked over the last root belong to a view tree that is about
+        // to be thrown away. Kept, they would leave back with something to dismiss that is
+        // not on screen - a press that appears to do nothing at all.
+        overlays.clear()
+        settingsPage = null
+        settingsColumn = null
+
         root = FrameLayout(context)
 
         backdrop = CortanaBackdropView(context, palette)
@@ -113,14 +170,12 @@ class CortanaApp(
 
         column.addView(buildTopBar(), LinearLayout.LayoutParams(MATCH, WRAP))
 
-        // The ring and the greeting sit together about a quarter of the way down, which is
-        // where the phone put them: high enough that the keyboard never reaches them, low
-        // enough that the screen does not read as a header. The two spacers are what fix
-        // that proportion, and they are weighted rather than measured so it holds on a
-        // screen of any height - and closes up correctly when the keyboard takes half of it.
-        column.addView(View(context), LinearLayout.LayoutParams(MATCH, 0, TOP_WEIGHT))
-        column.addView(buildFace(), LinearLayout.LayoutParams(MATCH, WRAP))
-        column.addView(View(context), LinearLayout.LayoutParams(MATCH, 0, BOTTOM_WEIGHT))
+        middle = FrameLayout(context)
+        greetingPane = buildGreetingPane()
+        middle.addView(greetingPane, FrameLayout.LayoutParams(MATCH, MATCH))
+        chat = CortanaChatView(context, palette).apply { visibility = View.GONE }
+        middle.addView(chat, FrameLayout.LayoutParams(MATCH, MATCH))
+        column.addView(middle, LinearLayout.LayoutParams(MATCH, 0, 1f))
 
         column.addView(buildAskBar(), LinearLayout.LayoutParams(MATCH, WRAP))
 
@@ -129,13 +184,40 @@ class CortanaApp(
         // The fog's accent wash belongs under the ring, and where the ring is depends on
         // how tall the screen turned out to be - so the backdrop is told once the two of
         // them have actually been laid out against each other.
+        //
+        // Measured through the window rather than off the ring's own position, because the
+        // ring is now two containers down and its `y` is a distance from the top of the
+        // greeting rather than from the top of the page. Only while it is actually on
+        // screen: a conversation puts the ring away, and the wash stays where it was rather
+        // than sliding to the top of the page behind the bubbles.
         root.viewTreeObserver.addOnGlobalLayoutListener {
-            if (root.height > 0 && ring.height > 0) {
-                backdrop.setRingCentre((ring.y + ring.height / 2f) / root.height)
+            if (root.height > 0 && ring.height > 0 && ring.isShown) {
+                val ringAt = IntArray(2)
+                val rootAt = IntArray(2)
+                ring.getLocationInWindow(ringAt)
+                root.getLocationInWindow(rootAt)
+                val centre = (ringAt[1] - rootAt[1]) + ring.height / 2f
+                backdrop.setRingCentre(centre / root.height)
             }
         }
 
         return root
+    }
+
+    /**
+     * The ring and the greeting, held a quarter of the way down.
+     *
+     * Where the phone put them: high enough that the keyboard never reaches them, low enough
+     * that the screen does not read as a header. The two spacers are what fix that
+     * proportion, and they are weighted rather than measured so it holds on a screen of any
+     * height - and closes up correctly when the keyboard takes half of it.
+     */
+    private fun buildGreetingPane(): LinearLayout {
+        val pane = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        pane.addView(View(context), LinearLayout.LayoutParams(MATCH, 0, TOP_WEIGHT))
+        pane.addView(buildFace(), LinearLayout.LayoutParams(MATCH, WRAP))
+        pane.addView(View(context), LinearLayout.LayoutParams(MATCH, 0, BOTTOM_WEIGHT))
+        return pane
     }
 
     /**
@@ -302,6 +384,11 @@ class CortanaApp(
     fun startListening() {
         if (recogniser.isListening) return
         hideKeyboard()
+        // A listen says what it is doing in the middle of the page, which is where the
+        // conversation is - so the conversation ends here. That is not a compromise: naming
+        // a song finishes by handing the phone to a browser, so it was never going to be a
+        // thing done in the middle of talking to her.
+        endConversation()
         sayInstead("Listening\u2026", Face.Listening)
         listenKey?.imageTintList = ColorStateList.valueOf(palette.accent)
 
@@ -487,12 +574,28 @@ class CortanaApp(
         val query = input.text.toString().trim()
         if (query.isEmpty()) return
 
-        // A question for a model always leaves the launcher, whatever the browser setting
-        // says, because leaving is the point: handed to Android as an intent, the question
-        // is caught by the Copilot or ChatGPT or Claude app if one is installed, and lands
-        // in a session that is already signed in. Answering it in the phone's own WebView
-        // would be the one route that guarantees a signed-out web page - a model that has
-        // to be logged into again before it will answer is not an assistant, it is a form.
+        // The question the model can answer here, answered here. This is the one branch
+        // that does not end in a browser: the key is the user's, the conversation is on
+        // this page, and it can be followed up - which is the thing the phone did that a
+        // link with a question in it cannot. See [converse].
+        //
+        // The ring does not flare on the way out of this one, which it does for everything
+        // else here. The flare exists to fill the beat before a window opens over the
+        // screen; nothing opens over this, the ring is put away in the same frame, and the
+        // waiting bubble is what says the question landed.
+        if (toAgent && settings.canConverse() && settings.getAgentAnswersHere()) {
+            input.setText("")
+            converse(query)
+            return
+        }
+
+        // Otherwise the question leaves the launcher - and a question for a model leaves
+        // whatever the browser setting says, because leaving is the point: handed to Android
+        // as an intent, the question is caught by the Copilot or ChatGPT or Claude app if
+        // one is installed, and lands in a session that is already signed in. Answering it
+        // in the phone's own WebView would be the one route that guarantees a signed-out web
+        // page - a model that has to be logged into again before it will answer is not an
+        // assistant, it is a form.
         //
         // A page of search results has no such app behind it and nothing to be signed into,
         // so that one is the user's choice: see CortanaSettings.getSearchOpensInIe.
@@ -521,14 +624,82 @@ class CortanaApp(
         onOpenUrl(url, inIe)
     }
 
+    // ---------------------------------------------------------------- conversing
+
+    /**
+     * Asks the model, on this page, with everything already said behind the question.
+     *
+     * This is the part of Cortana that was never a program on the phone. She kept the
+     * exchange: you asked who somebody was and then asked how old *he* was, and the second
+     * question was answered because the first one was still there. A model has no memory
+     * between requests either, so the same trick is played the same way - the whole
+     * conversation goes up with every question. See [CortanaAgent.ask].
+     *
+     * Anything still arriving is dropped first. Asking a second question before the first
+     * answer has finished is a perfectly ordinary thing to do, and it means the first answer
+     * is no longer wanted; left running, it would go on writing into a bubble above the new
+     * question for another twenty seconds.
+     *
+     * The keyboard stays up, unlike everywhere else on this screen. A conversation is a
+     * thing you are in the middle of, and putting the keyboard away after each question
+     * would make every follow-up start with tapping the box again.
+     */
+    private fun converse(query: String) {
+        inFlight?.cancel()
+        showConversation()
+        chat.addMine(query)
+        val hers = chat.beginHers()
+        inFlight = CortanaAgent.ask(context, chat.turns(), object : CortanaAgent.Listener {
+            override fun onDelta(text: String) = hers.append(text)
+
+            override fun onDone() {
+                hers.done()
+                inFlight = null
+            }
+
+            override fun onFailed(message: String) {
+                hers.fail(message)
+                inFlight = null
+            }
+        })
+    }
+
+    /** Puts the conversation where the ring was. */
+    private fun showConversation() {
+        if (chat.visibility == View.VISIBLE) return
+        greetingPane.visibility = View.GONE
+        chat.visibility = View.VISIBLE
+    }
+
+    /**
+     * Ends it, and gives the screen back to the ring.
+     *
+     * Everything goes: the stream that was arriving, the bubbles, and the history behind
+     * them. A conversation is a session - it was on the phone too - and one that survived
+     * being left would mean the next question, asked days later, was answered in the light
+     * of something the user has long forgotten saying.
+     *
+     * Says whether there was one, because back has to know whether it has just done
+     * something or should carry on out of the app.
+     */
+    private fun endConversation(): Boolean {
+        inFlight?.cancel()
+        inFlight = null
+        if (!::chat.isInitialized || chat.visibility != View.VISIBLE) return false
+        chat.clear()
+        chat.visibility = View.GONE
+        greetingPane.visibility = View.VISIBLE
+        return true
+    }
+
     // ---------------------------------------------------------------- settings
 
     /**
-     * The three questions this app has to ask.
+     * What she needs to be told: a name to use, and where a question goes.
      *
-     * A page of its own rather than a strip of commands: these are settings, they are
-     * remembered, and each of them is one answer out of several - which is a page with
-     * round marks on it, not a menu.
+     * A page of its own rather than a strip of commands: these are settings and they are
+     * remembered, and three of the four are one answer out of several - which is a page
+     * with round marks on it, not a menu.
      */
     private fun showSettings() {
         val page = LinearLayout(context).apply {
@@ -552,27 +723,48 @@ class CortanaApp(
             setPadding(dp(PAGE_MARGIN_DP), 0, dp(PAGE_MARGIN_DP), dp(28))
         }
 
+        settingsColumn = column
+        fillSettings(column)
+
+        page.addView(
+            ScrollView(context).apply {
+                isFillViewport = true
+                overScrollMode = View.OVER_SCROLL_NEVER
+                addView(column, FrameLayout.LayoutParams(MATCH, WRAP))
+            },
+            LinearLayout.LayoutParams(MATCH, 0, 1f)
+        )
+
+        hideKeyboard()
+        settingsPage = page
+        pushOverlay(page)
+    }
+
+    /** The settings page, and the column its rows go in. Both held for the reasons above. */
+    private var settingsPage: View? = null
+    private var settingsColumn: LinearLayout? = null
+
+    /**
+     * Everything on the settings page, built from what is currently saved.
+     *
+     * Built rather than bound, and built again whenever the chosen service changes. Half of
+     * this page is about one service - its key, its model, whether it answers here - and
+     * those rows say the wrong thing the moment a different one is picked. Rebuilding is
+     * also what the rest of this shell does with a page whose contents depend on a choice
+     * made on it, and it costs a couple of dozen views.
+     */
+    private fun fillSettings(column: LinearLayout) {
+        column.removeAllViews()
+
+        column.addView(label("what to call you"), wide())
+        column.addView(nameField(), LinearLayout.LayoutParams(MATCH, dp(BUTTON_DP)))
+
         column.addView(label("search engine"), wide())
         column.addView(
             choices(
                 CortanaSettings.Engine.entries.map { it to it.label },
                 chosen = settings.getEngine(),
                 onPick = { settings.setEngine(it) }
-            ), wide()
-        )
-
-        column.addView(label("ai agent"), wide())
-        column.addView(
-            choices(
-                CortanaSettings.Agent.entries.map { it to it.label },
-                chosen = settings.getAgent(),
-                onPick = {
-                    settings.setAgent(it)
-                    // The sparkle key names whichever model it is going to ask, and a
-                    // screen reader that went on saying "ask Copilot" after the answer had
-                    // been changed would be the one place in the app that lied about it.
-                    rebuildAskBarDescriptions()
-                }
             ), wide()
         )
 
@@ -584,20 +776,244 @@ class CortanaApp(
                 onPick = { settings.setSearchOpensInIe(it) }
             ), wide()
         )
+
+        val agent = settings.getAgent()
+
+        column.addView(label("ai agent"), wide())
         column.addView(
-            note(
-                "Questions for the agent always go out to the phone, so that its own app " +
-                    "can answer them if you have one installed."
+            choices(
+                CortanaSettings.Agent.entries.map { it to it.label },
+                chosen = agent,
+                onPick = {
+                    settings.setAgent(it)
+                    // The sparkle key names whichever model it is going to ask, and a
+                    // screen reader that went on saying "ask Copilot" after the answer had
+                    // been changed would be the one place in the app that lied about it.
+                    rebuildAskBarDescriptions()
+                    fillSettings(column)
+                }
             ), wide()
         )
 
+        column.addView(label("${agent.label.lowercase()} key"), wide())
+        column.addView(linked(keyBlurb(agent), agent.keyUrl), wide())
+        column.addView(keyField(agent), LinearLayout.LayoutParams(MATCH, dp(BUTTON_DP)))
+
+        if (agent == CortanaSettings.Agent.COPILOT) {
+            column.addView(label("foundry resource"), wide())
+            column.addView(
+                detail(
+                    "the name you gave the resource the key belongs to - the first part of " +
+                        "its address, before .services.ai.azure.com."
+                ), wide()
+            )
+            column.addView(foundryField(), LinearLayout.LayoutParams(MATCH, dp(BUTTON_DP)))
+        }
+
+        column.addView(label("model"), wide())
         column.addView(
-            note(
-                "Cortana's own service closed in 2023, so nothing here is her. What she " +
-                    "did with a typed question was send it somewhere, and this is where " +
-                    "yours goes."
+            detail("which of ${agent.label}'s models answers. tap to change it."), wide()
+        )
+        column.addView(modelRow(agent), wide())
+
+        column.addView(label("answers arrive"), wide())
+        column.addView(
+            detail(
+                "with a key, she can answer here and be asked a follow-up. without one, " +
+                    "the question is handed to ${agent.label} itself, which is what the " +
+                    "sparkle has always done."
             ), wide()
         )
+        column.addView(
+            choices(
+                listOf(true to "here, in the conversation", false to "in ${agent.label}"),
+                chosen = settings.getAgentAnswersHere(),
+                onPick = { settings.setAgentAnswersHere(it) }
+            ), wide()
+        )
+    }
+
+    /**
+     * What the line above the key box says, and where tapping it goes.
+     *
+     * Three of them are the same sentence with a different name in it. Copilot is not, and
+     * the difference is worth the paragraph: Microsoft has never published an API for
+     * talking to Copilot - what they publish is Foundry, the service Copilot is built on -
+     * so the key that goes in this box is a Foundry key and the models behind it are the
+     * same models. Saying so is better than a box that quietly does not work.
+     */
+    private fun keyBlurb(agent: CortanaSettings.Agent): String = when (agent) {
+        CortanaSettings.Agent.COPILOT ->
+            "Copilot has no key of its own to paste. this one is a Microsoft Foundry key - " +
+                "the service Copilot is built on, and the same models. tap here to get one."
+        else ->
+            "with a key of your own she answers here instead of handing the question over. " +
+                "tap here to get one. it is billed to your ${agent.label} account, and " +
+                "nothing typed here goes anywhere else."
+    }
+
+    /**
+     * The key itself.
+     *
+     * Shown rather than starred out, like the keyboard's GIF key beside it. A key is a run
+     * of characters nobody can read back from memory, and the only way to tell whether the
+     * right one is in the box is to look at it - a masked field on a phone in somebody's own
+     * hand protects nothing and turns "check the key" into "paste it again". It lives in the
+     * launcher's preferences, which the settings export carries; see [CortanaSettings.getKey].
+     *
+     * Saved as it is typed, for the same reason the name box above it is: this page is left
+     * by pressing back, and a field that commits on some other gesture is a field that
+     * quietly loses what was put in it.
+     */
+    private fun keyField(agent: CortanaSettings.Agent): View = EditText(context).apply {
+        setText(settings.getKey(agent))
+        hint = "paste your ${agent.label} key here"
+        setSingleLine()
+        // Nothing here is a word: no correction, no capitals, and nothing worth teaching to
+        // the dictionary that learns what you type.
+        inputType = android.text.InputType.TYPE_CLASS_TEXT or
+            android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        imeOptions = EditorInfo.IME_ACTION_DONE
+        textSize = INPUT_SP
+        setPadding(dp(12), dp(10), dp(12), dp(10))
+        palette.applyToField(this)
+        typeface = font(R.font.segoeui_regular)
+        doAfterTextChanged { settings.setKey(agent, it?.toString().orEmpty()) }
+        setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_DONE) {
+                hideKeyboard()
+                true
+            } else false
+        }
+    }
+
+    /** The other half of a Foundry address. See [CortanaSettings.getFoundryResource]. */
+    private fun foundryField(): View = EditText(context).apply {
+        setText(settings.getFoundryResource())
+        hint = "resource name"
+        setSingleLine()
+        inputType = android.text.InputType.TYPE_CLASS_TEXT or
+            android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        imeOptions = EditorInfo.IME_ACTION_DONE
+        textSize = INPUT_SP
+        setPadding(dp(12), dp(10), dp(12), dp(10))
+        palette.applyToField(this)
+        typeface = font(R.font.segoeui_regular)
+        doAfterTextChanged { settings.setFoundryResource(it?.toString().orEmpty()) }
+        setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_DONE) {
+                hideKeyboard()
+                true
+            } else false
+        }
+    }
+
+    /** The model in force, and the way to a page of the others. */
+    private fun modelRow(agent: CortanaSettings.Agent): View = TextView(context).apply {
+        text = settings.getModel(agent)
+        typeface = font(R.font.segoeui_regular)
+        textSize = INPUT_SP
+        setTextColor(palette.accent)
+        setPadding(0, dp(2), 0, dp(10))
+        isClickable = true
+        contentDescription = "model: ${settings.getModel(agent)}"
+        setOnClickListener {
+            Haptics.tap(it)
+            showModelPage(agent)
+        }
+        TiltEffect.apply(this)
+    }
+
+    /**
+     * Which model of the chosen service's answers.
+     *
+     * A box and a list, and the box is the one that matters. The list is asked for from the
+     * service itself - see [CortanaAgent.models] - because no list written into a launcher
+     * stays true for a season: these four rename their models several times a year, and a
+     * page offering names that no longer resolve while the ones that do are unreachable is
+     * worse than no page. But the request needs a key, and a service can be slow, or down,
+     * or answer with a hundred entries of which the wanted one is a deployment name only the
+     * user knows - so a name can always simply be typed.
+     */
+    private fun showModelPage(agent: CortanaSettings.Agent) {
+        val page = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(palette.background)
+            isClickable = true
+        }
+
+        page.addView(
+            MetroPageHeader(context, palette).apply {
+                setTitle("model")
+                onBack = { handleBack() }
+            },
+            LinearLayout.LayoutParams(MATCH, WRAP)
+        )
+
+        val column = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(PAGE_MARGIN_DP), 0, dp(PAGE_MARGIN_DP), dp(28))
+        }
+
+        column.addView(label("${agent.label.lowercase()} model"), wide())
+        column.addView(
+            detail("the name ${agent.label} knows it by. pick one below, or type it here."),
+            wide()
+        )
+
+        val field = EditText(context).apply {
+            setText(settings.getModel(agent))
+            setSelection(text.length)
+            hint = agent.defaultModel
+            setSingleLine()
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            imeOptions = EditorInfo.IME_ACTION_DONE
+            textSize = INPUT_SP
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            palette.applyToField(this)
+            typeface = font(R.font.segoeui_regular)
+            doAfterTextChanged { settings.setModel(agent, it?.toString().orEmpty()) }
+            setOnEditorActionListener { _, actionId, _ ->
+                if (actionId == EditorInfo.IME_ACTION_DONE) {
+                    hideKeyboard()
+                    true
+                } else false
+            }
+        }
+        column.addView(field, LinearLayout.LayoutParams(MATCH, dp(BUTTON_DP)))
+
+        val list = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        column.addView(list, wide())
+        list.addView(detail("asking ${agent.label}\u2026"), wide())
+
+        // The answer arrives on the main thread and may well arrive after this page has been
+        // left, which needs no guarding: the views it fills are this page's, and a page that
+        // has been dismissed is simply a set of views nobody is looking at.
+        CortanaAgent.models(context) { names ->
+            list.removeAllViews()
+            when {
+                names == null -> list.addView(
+                    detail(
+                        "I couldn't get the list from ${agent.label} - it needs a key first, " +
+                            "and it has to be reachable. the box above still works."
+                    ), wide()
+                )
+                names.isEmpty() -> list.addView(
+                    detail("${agent.label} didn't offer any models."), wide()
+                )
+                else -> list.addView(
+                    choices(
+                        names.map { it to it },
+                        chosen = settings.getModel(agent),
+                        onPick = {
+                            settings.setModel(agent, it)
+                            field.setText(it)
+                        }
+                    ), wide()
+                )
+            }
+        }
 
         page.addView(
             ScrollView(context).apply {
@@ -610,6 +1026,47 @@ class CortanaApp(
 
         hideKeyboard()
         pushOverlay(page)
+    }
+
+    /**
+     * The one setting here that is not a choice: what she calls you.
+     *
+     * Cortana asked for a name the first time she was opened and kept it in the notebook,
+     * and it is the whole reason the greeting reads as being addressed to somebody. There
+     * is no notebook to put it in and nowhere else in the shell that says a name, so it is
+     * a box at the top of this page.
+     *
+     * Saved as it is typed rather than behind a button. There is nothing to validate and
+     * nothing that can go wrong with a name, so a save key would exist only to be
+     * forgotten - and a page that is left by pressing back is one where a field that only
+     * commits on some other gesture quietly loses what was typed into it.
+     *
+     * A phone that has not been told a name has "User" stored under it, which is a
+     * placeholder rather than an answer; the box opens empty in that case, because the
+     * point of a hint is that it is not text you have to clear before you can type.
+     */
+    private fun nameField(): View = EditText(context).apply {
+        val stored = MainActivity.getUserName(context)
+        setText(if (stored.equals("User", true)) "" else stored)
+        setSelection(text.length)
+        hint = NAME_HINT
+        setSingleLine()
+        imeOptions = EditorInfo.IME_ACTION_DONE
+        inputType = android.text.InputType.TYPE_CLASS_TEXT or
+            android.text.InputType.TYPE_TEXT_FLAG_CAP_WORDS
+        textSize = INPUT_SP
+        setPadding(dp(12), dp(10), dp(12), dp(10))
+        // The shell's one text box, from the one place it is described - the same box the
+        // question is typed into on the screen behind this one.
+        palette.applyToField(this)
+        typeface = font(R.font.segoeui_regular)
+        doAfterTextChanged { MainActivity.setUserName(context, it?.toString().orEmpty()) }
+        setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_DONE) {
+                hideKeyboard()
+                true
+            } else false
+        }
     }
 
     /**
@@ -650,9 +1107,22 @@ class CortanaApp(
     fun handleBack(): Boolean {
         overlays.lastOrNull()?.let { top ->
             dismissOverlay(top)
+            // Where the page just closed was the model list, the settings page is the one
+            // underneath it and is now saying the model that was in force before it was
+            // opened. Where it was settings itself, there is nothing left to correct.
+            if (top === settingsPage) {
+                settingsPage = null
+                settingsColumn = null
+            } else {
+                settingsColumn?.let { fillSettings(it) }
+            }
+            // The name box may have had the keyboard up when back was pressed, and the
+            // page it belongs to is now gone.
+            hideKeyboard()
             // Which model the sparkle asks may have changed while that page was up, and
             // the button's description says which one by name.
             rebuildAskBarDescriptions()
+            refreshGreetingForName()
             return true
         }
         if (recogniser.isListening) {
@@ -665,6 +1135,10 @@ class CortanaApp(
             showGreeting()
             return true
         }
+        // And out of the conversation before that. It is not an overlay - it is the middle
+        // of this page rather than a page over it - but it is a place the user has gone to
+        // and back is how this shell comes out of one.
+        if (endConversation()) return true
         return false
     }
 
@@ -689,6 +1163,27 @@ class CortanaApp(
         askKey?.contentDescription = "ask ${settings.getAgent().label}"
     }
 
+    /**
+     * Puts a name just typed in settings into the greeting straight away.
+     *
+     * The greeting is the only thing in the shell that uses the name, so a page that took
+     * one and handed the user back to "How can I help?" would look like a box that did
+     * nothing. Rolled again rather than patched, because a third of the greetings have no
+     * room for a name and the one on screen is quite likely to be one of them.
+     *
+     * Only when the name actually changed - an arrival is a new greeting and a settings
+     * page is not - and only while the greeting is what the middle of the screen is
+     * showing: a song that was just named is an answer the user asked for, and it does not
+     * get thrown away because they went into settings afterwards.
+     */
+    private fun refreshGreetingForName() {
+        val name = MainActivity.getUserName(context)
+        if (name == greetingName) return
+        greetingName = name
+        greeting = CortanaGreetings.random(name)
+        if (face == Face.Greeting && ::greetingLabel.isInitialized) showGreeting()
+    }
+
     /** The sparkle key, kept only so its description can be corrected. See above. */
     private var askKey: View? = null
 
@@ -704,10 +1199,16 @@ class CortanaApp(
      */
     fun greetAfresh() {
         recogniser.stop()
+        // Whatever was being said is over. The search key means "ask Cortana something",
+        // and the whole reason this app rerolls its greeting is that arriving at her is a
+        // moment - one that would be undercut by finding last week's exchange still on the
+        // page underneath it.
+        endConversation()
         // Not hideKeyboard(): every arrival asks for the keyboard, and this runs first on
         // the way to that - see MainActivity.showCortanaDialog. Putting it away here and
         // raising it again a line later is a flicker.
-        greeting = CortanaGreetings.random(MainActivity.getUserName(context))
+        greetingName = MainActivity.getUserName(context)
+        greeting = CortanaGreetings.random(greetingName)
         if (::greetingLabel.isInitialized) {
             endListening()
             showGreeting()
@@ -746,6 +1247,11 @@ class CortanaApp(
         // The microphone must not outlive the window. A closed Cortana that is still
         // recording is the single worst bug this app could have.
         recogniser.stop()
+        // Nor should an answer outlive the page it was being written onto. Nothing would
+        // break if it did - the bubble is still a live object and would simply fill up
+        // unseen - but it is somebody's account being spent on a page nobody is looking at.
+        inFlight?.cancel()
+        inFlight = null
         hideKeyboard()
     }
 
@@ -780,13 +1286,38 @@ class CortanaApp(
         setPadding(0, dp(22), 0, dp(4))
     }
 
-    private fun note(message: String) = TextView(context).apply {
-        text = message
+    /**
+     * The small print under a setting.
+     *
+     * Several of the rows on this page cannot be understood from their own name - a key box
+     * with nothing above it is a box asking for a secret and giving no reason - so they get
+     * a sentence. In the page's quiet colour, because it is there to be read once.
+     */
+    private fun detail(text: String) = TextView(context).apply {
+        this.text = text
         typeface = font(R.font.segoeui_regular)
-        textSize = 14f
+        textSize = DETAIL_SP
         setTextColor(palette.foregroundSubtle)
-        setPadding(0, dp(26), dp(8), dp(6))
-        setLineSpacing(0f, 1.1f)
+        setLineSpacing(0f, DETAIL_LEADING)
+        setPadding(0, 0, 0, dp(8))
+    }
+
+    /**
+     * The same, where the sentence is also the way to the thing it is about.
+     *
+     * Accent-coloured, which is what says a thing can be tapped everywhere else in this
+     * shell, and it leaves by intent rather than into the phone's own browser: a sign-in
+     * page for a service the user has an account with belongs in the app or the browser that
+     * is already signed into it, not in a WebView that is signed into nothing.
+     */
+    private fun linked(text: String, url: String) = detail(text).apply {
+        setTextColor(palette.accent)
+        isClickable = true
+        setOnClickListener {
+            Haptics.tap(it)
+            onOpenUrl(url, false)
+        }
+        TiltEffect.apply(this)
     }
 
     private fun font(res: Int): Typeface? = ResourcesCompat.getFont(context, res)
@@ -801,6 +1332,9 @@ class CortanaApp(
 
         /** The phone's own placeholder, word for word. */
         const val HINT = "ask me anything"
+
+        /** The name box's. What she wants is a name, so that is all it asks for. */
+        const val NAME_HINT = "your name"
 
         /**
          * Where the ring and the greeting sit, as a share of what is above the box.
@@ -854,5 +1388,9 @@ class CortanaApp(
         const val BAR_PAD_DP = 8
 
         const val INPUT_SP = 16f
+
+        /** The small print under a setting, and how it is set. See [detail]. */
+        const val DETAIL_SP = 12.5f
+        const val DETAIL_LEADING = 1.08f
     }
 }

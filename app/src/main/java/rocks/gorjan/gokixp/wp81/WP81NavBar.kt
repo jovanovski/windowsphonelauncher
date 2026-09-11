@@ -108,6 +108,18 @@ class WP81NavBar(
         applyPalette(palette)
     }
 
+    /**
+     * Stands the keys off the ends by [px], for a display with rounded corners.
+     *
+     * The spacers give the room up, so the keys move together rather than the strip getting
+     * narrower - which is what should happen: the strip is the phone's own hardware and runs
+     * the width of it, and it is the keys on it that must not be bitten into.
+     */
+    fun setCornerInset(px: Int) {
+        if (paddingLeft == px && paddingRight == px) return
+        setPadding(px, 0, px, 0)
+    }
+
     /** The gap that does the spreading. */
     private fun spacer(): View =
         View(context).apply { layoutParams = LayoutParams(0, LayoutParams.MATCH_PARENT, 1f) }
@@ -288,8 +300,17 @@ class WP81NavBar(
     companion object {
         const val HEIGHT_DP = 64
 
+
         /** Glyph edge. Deliberately large - these are the only navigation on screen. */
         private const val GLYPH_DP = 46
+
+        /**
+         * How far above the strip's own bottom edge a key's glyph stops.
+         *
+         * Read from outside for the same reason [WP81StatusBar.contentTopPx] is: it decides
+         * how far a rounded corner reaches into what is actually drawn here.
+         */
+        const val GLYPH_INSET_DP = (HEIGHT_DP - GLYPH_DP) / 2
 
         /** How long the back key has to be held to mean the switcher. See [applyHold]. */
         private const val HOLD_MS = 200L

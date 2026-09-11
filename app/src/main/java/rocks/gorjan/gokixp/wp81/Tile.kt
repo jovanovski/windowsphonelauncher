@@ -193,6 +193,17 @@ data class Tile(
         LIVE_PEOPLE,
 
         /**
+         * The charge, drawn into the cell that holds it - the Battery tile.
+         *
+         * The one live tile whose reading is a picture as much as a number: the mark is a
+         * battery and the level is painted inside it, so the smallest tile on the wall
+         * still answers the question without room for a figure. Which makes it the only
+         * widget that has something to show at 1x1 - see TileView.showsLive, where every
+         * other one stands down to its icon. See BatteryFaceView.
+         */
+        LIVE_BATTERY,
+
+        /**
          * The launcher's own settings (Display Properties).
          *
          * Also a built-in, for a blunt reason: the desktop themes reach settings by
@@ -204,18 +215,18 @@ data class Tile(
         /**
          * The live tile one of the shell's own programs has instead of an icon.
          *
-         * Five of them, and each is that program's tile rather than a widget standing
-         * beside it: Alarms shows the time, Files the camera roll, and Weather, News and
-         * People the three things they are named after. Live in every way the shell's own
-         * two are - they draw their content instead of a mark, and the host hands it to
-         * them by kind rather than by name - but pinned, moved, resized and unpinned like
-         * any other program's tile, because that is what they are. See
+         * Six of them, and each is that program's tile rather than a widget standing
+         * beside it: Alarms shows the time, Files the camera roll, Battery the charge, and
+         * Weather, News and People the three things they are named after. Live in every way
+         * the shell's own two are - they draw their content instead of a mark, and the host
+         * hands it to them by kind rather than by name - but pinned, moved, resized and
+         * unpinned like any other program's tile, because that is what they are. See
          * WP81TileHost.PROGRAM_WIDGETS, which is where a package name becomes one of
          * these.
          */
         val isProgramWidget: Boolean
             get() = this == LIVE_CLOCK || this == LIVE_WEATHER || this == LIVE_NEWS ||
-                this == LIVE_PHOTOS || this == LIVE_PEOPLE
+                this == LIVE_PHOTOS || this == LIVE_PEOPLE || this == LIVE_BATTERY
 
         /** Whether the tile draws a reading of its own rather than a mark. */
         val isLiveWidget: Boolean

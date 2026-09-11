@@ -1,6 +1,8 @@
 package rocks.gorjan.gokixp.wp81.keyboard
 
 import android.Manifest
+import android.app.Application
+import android.content.BroadcastReceiver
 import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Intent
@@ -23,7 +25,6 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.inputmethod.EditorInfoCompat
 import androidx.core.view.inputmethod.InputConnectionCompat
 import androidx.core.view.inputmethod.InputContentInfoCompat
-import rocks.gorjan.gokixp.MainActivity
 import rocks.gorjan.gokixp.wp81.WP81Palette
 import rocks.gorjan.gokixp.wp81.keyboard.text.Bigrams
 import rocks.gorjan.gokixp.wp81.keyboard.text.Composer
@@ -189,9 +190,20 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
 
     private enum class ShiftState { OFF, ONCE, LOCKED }
 
+    /**
+     * The keyboard's own settings changing, in the keyboard's own process.
+     *
+     * Still a preference listener and not a message from anywhere, which is the point of
+     * having moved the settings page into this process along with the keyboard: dragging the
+     * key height slider writes a preference and this fires, with the keys resizing under the
+     * finger exactly as they did when there was one process for everything.
+     *
+     * The accent and the background are not here any more. They belong to the launcher and
+     * are written in the launcher's process, where a listener of this one's would never hear
+     * them - see [KeyboardAppearance], which is how they arrive instead.
+     */
     private val prefsWatcher = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         when (key) {
-            WP81Settings.KEY_WP81_ACCENT, WP81Settings.KEY_WP81_DARK -> refreshPalette()
             WP81Settings.KEY_WP81_KB_HOLD_MS,
             WP81Settings.KEY_WP81_KB_AUTOCORRECT,
             WP81Settings.KEY_WP81_KB_AUTOCAPS,
@@ -253,15 +265,30 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
     /** Whether shift comes on by itself at the start of a sentence. Off unless asked for. */
     private var autoCapitalise = false
 
+    /**
+     * The keyboard's own preferences - and only the keyboard's. See [WP81Settings].
+     *
+     * The launcher's file is deliberately not watched. Nothing this process writes goes into
+     * it, and nothing it could hear from it would arrive: a preference listener is an
+     * in-process affair, and the launcher's writes happen in the launcher.
+     */
     private val prefs: SharedPreferences by lazy {
-        getSharedPreferences(MainActivity.PREFS_NAME, MODE_PRIVATE)
+        getSharedPreferences(KEYBOARD_PREFS, MODE_PRIVATE)
     }
+
+    /** Listens for the launcher's accent and background. See [KeyboardAppearance]. */
+    private var appearanceWatch: BroadcastReceiver? = null
 
     override fun onCreate() {
         super.onCreate()
         themeManager = WP81Settings(this)
-        palette = WP81Palette.from(themeManager)
+        // Before the first setting is read, and only ever from here: this is the keyboard's
+        // process, and moving the keyboard's settings into the keyboard's file is a write
+        // that belongs to it alone. See [WP81Settings.migrateKeyboardSettings].
+        themeManager.migrateKeyboardSettings()
+        palette = KeyboardAppearance.palette(themeManager)
         prefs.registerOnSharedPreferenceChangeListener(prefsWatcher)
+        appearanceWatch = KeyboardAppearance.watch(this) { refreshPalette() }
         learned = UserDictionary.open(this)
         KeyboardLanguages.applyToSystem(this, themeManager)
 
@@ -279,8 +306,23 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         warmEmojiNames()
     }
 
+    /**
+     * The keyboard's process is going away.
+     *
+     * Rarely reached - an input method is kept alive by the system for as long as it is the
+     * chosen one - but the listeners are given back all the same. A receiver left registered
+     * on a destroyed service is the shape of leak that survives every test, because the way
+     * to see it is to have the keyboard torn down and rebuilt a few hundred times.
+     */
+    override fun onDestroy() {
+        KeyboardAppearance.stopWatching(this, appearanceWatch)
+        appearanceWatch = null
+        prefs.unregisterOnSharedPreferenceChangeListener(prefsWatcher)
+        super.onDestroy()
+    }
+
     override fun onCreateInputView(): View {
-        palette = WP81Palette.from(themeManager)
+        palette = KeyboardAppearance.palette(themeManager)
         val view = KeyboardHost(this, palette)
         view.keyboard.listener = this
         // Whatever was last in use, unless it has since been turned off in the settings.
@@ -469,6 +511,24 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
      */
     override fun onStartInput(info: EditorInfo?, restarting: Boolean) {
         super.onStartInput(info, restarting)
+        // Where the caret is before anything has been typed. The field hands this over
+        // unasked, and taking it matters because [onUpdateSelection] does not fire until
+        // something moves: without it the first press into a field would be judged by the
+        // last field's numbers, and a backspace onto text that is already selected would
+        // delete the wrong thing. See [selStart].
+        selStart = (info?.initialSelStart ?: 0).coerceAtLeast(0)
+        selEnd = (info?.initialSelEnd ?: 0).coerceAtLeast(0)
+        reportedStart = selStart
+        reportedEnd = selEnd
+        unanswered = 0
+        columnAt = -1
+        // A new field is a new application, and it does not inherit the last one's silence.
+        // Only a new one, though: an application that restarts input on every keystroke -
+        // and several do - would otherwise clear the mark as fast as it could be set.
+        if (!restarting) {
+            notAskingUntil = 0L
+            quietFor = 0L
+        }
         forgetTheSentence()
     }
 
@@ -528,6 +588,11 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         // to know. See [onCursorSlide].
         selStart = newSelStart
         selEnd = newSelEnd
+        reportedStart = newSelStart
+        reportedEnd = newSelEnd
+        // Something moved, so the moves made on the field's silence were not made against a
+        // wall after all. See [onCursorSlide].
+        unanswered = 0
         if (!composer.isComposing) return
 
         // Still ours if the region exists and the cursor sits at its end - which is exactly
@@ -666,11 +731,9 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         ) {
             return
         }
-        val caps = try {
-            currentInputConnection?.getCursorCapsMode(type) ?: 0
-        } catch (e: Exception) {
-            0
-        }
+        // Left exactly as it is when there is no answer - see [ask]. A shift the user set is
+        // not something to drop over a question the application could not be bothered with.
+        val caps = ask { currentInputConnection?.getCursorCapsMode(type) } ?: return
         setShift(if (caps != 0) ShiftState.ONCE else ShiftState.OFF)
     }
 
@@ -708,12 +771,40 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         else -> ","
     }
 
+    /**
+     * Puts the current colours on everything, if they are not on it already.
+     *
+     * The guard is not tidiness. Repainting means clearing the glyph caches and filling them
+     * again, and filling one means parsing an SVG out of the assets and building a `Path` per
+     * shape in it - the shift arrow, the smiley, the settings cog, the corner marks - which is
+     * tens of milliseconds of the main thread. This runs on every [onStartInputView], which is
+     * every single time somebody taps into a text box, and the colours had almost never
+     * changed since the last one: the accent is the launcher's and arrives by broadcast, and
+     * the settings that move it are not touched between one text field and the next.
+     *
+     * [WP81Palette] is a data class, so "already on it" is exactly what its own equality says.
+     * [paintNavigationBar] stays outside the guard, because that is a flag on a window rather
+     * than a colour on a view, and the window is torn down and built again between showings.
+     */
     private fun refreshPalette() {
-        palette = WP81Palette.from(themeManager)
-        host?.applyPalette(palette)
-        emoji?.applyPalette(palette)
+        val next = KeyboardAppearance.palette(themeManager)
+        if (next != palette || !palettePainted) {
+            palette = next
+            palettePainted = true
+            host?.applyPalette(next)
+            emoji?.applyPalette(next)
+        }
         paintNavigationBar()
     }
+
+    /**
+     * Whether anything has actually been painted in [palette] yet.
+     *
+     * The field starts out holding the colours read in [onCreate], which is the right answer
+     * and has been given to nobody, so the first refresh has to run even though nothing has
+     * changed. Every one after it can look at the colours alone.
+     */
+    private var palettePainted = false
 
     /**
      * Says which way round the system should draw the strip it puts over the keyboard.
@@ -742,6 +833,111 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
     override fun onWindowShown() {
         super.onWindowShown()
         paintNavigationBar()
+    }
+
+    // ------------------------------------------------------- asking the field
+
+    /**
+     * When the field may be asked something again, after one refused to answer promptly.
+     *
+     * Zero - the ordinary state - is a moment long past, so the test reads the same whether
+     * anything has ever gone slow or not. See [ask].
+     */
+    private var notAskingUntil = 0L
+
+    /**
+     * How long the current silence is, which is not a constant and must not be.
+     *
+     * A fixed window costs one full stall per window, for as long as the application stays
+     * slow: the silence runs out, the next question waits the system's two seconds all over
+     * again, and the phone locks up once every window until the user gives up. Two seconds
+     * every three is not a keyboard anybody can type on.
+     *
+     * So each stall in a row doubles it, up to [NOT_ASKING_MAX_MS], and the first prompt
+     * answer clears it back to nothing. An application having a bad moment is asked again
+     * almost immediately; one that is genuinely wedged is left alone, and costs a stall a
+     * minute rather than a stall a sentence. See [ask].
+     */
+    private var quietFor = 0L
+
+    /**
+     * Whether this keyboard is running on the launcher's own main thread.
+     *
+     * **A question can only be answered by somebody else.** The keyboard ships inside the
+     * launcher rather than as a separate application, so when the box being typed into is one
+     * of the launcher's own - the search on the Start screen, a folder being named, the
+     * address bar - the application that has to produce the answer and the keyboard that is
+     * blocked waiting for it are the same thread. The work to answer is posted to a handler
+     * that cannot run until this call returns, and this call does not return until the answer
+     * arrives. Nothing arrives. The system waits out its full two seconds and hands back
+     * null, and it does that for every question, every time.
+     *
+     * That is not a slow field to be given up on after the fact, it is a field that was never
+     * going to answer, and the only sound thing to do with it is not to ask. The questions all
+     * come back unknown immediately, which is exactly the state they were already reaching two
+     * seconds later - so nothing is lost here that used to work, only the waiting.
+     *
+     * The process is tested rather than the package, and the two are not the same claim. If
+     * the keyboard is ever given a process of its own, the launcher's fields become as remote
+     * as any other application's and answer as promptly, and a check written against the
+     * package name would go on treating them as unanswerable for no reason at all. Asking
+     * which process this is keeps the special case tied to the thing that actually causes it.
+     */
+    private val ownThread: Boolean by lazy { Application.getProcessName() == packageName }
+
+    /**
+     * Asks the application being typed into a question, and gives up on one that will not
+     * answer.
+     *
+     * **Every read of the field's own text belongs in here.** An input method does not hold
+     * the text it is typing into; the application does, and the only way to see any of it is
+     * to ask across a process boundary and block until the answer comes back. The answering
+     * happens on the application's main thread, which may be laying out a feed or decoding an
+     * image, and the system waits a full two seconds on it before handing back nothing.
+     *
+     * Two seconds survived once is a stutter. Two seconds paid three times over in one
+     * keystroke is not: the system allows a keyboard five to answer a touch before it decides
+     * the keyboard is at fault and offers to close it, and a single backspace used to ask
+     * three questions in a row. That is the crash this exists to prevent, and one press of
+     * one key was all it took to reach it.
+     *
+     * So a slow answer is remembered. Once the field has taken [SLOW_ANSWER_MS] to say
+     * anything, nothing is asked of it for [NOT_ASKING_MS] and every question here comes
+     * straight back null. Callers then do whatever they do when the answer is unknown, which
+     * for every one of them is the plain thing rather than the clever one: no word picked
+     * back up by backspace, no automatic capital, no suggestions from text nobody can see.
+     *
+     * Typing does not come through here and must not. Writing to the field - the letters, the
+     * deletions, the committed words - is one-way and never waits, so what the user types
+     * stays exact however far behind the application has fallen. Only the keyboard's
+     * cleverness is dropped, and only while there is nobody to be clever with.
+     */
+    private fun <T> ask(question: () -> T?): T? {
+        // The field cannot answer, because answering is this thread's job and this thread is
+        // the one that would be waiting. See [ownThread].
+        if (ownThread && currentInputEditorInfo?.packageName == packageName) return null
+        val asked = SystemClock.uptimeMillis()
+        if (asked < notAskingUntil) return null
+        return try {
+            question()
+        } catch (e: Exception) {
+            // The field can be gone by the time it is asked, and this is the one process on
+            // the phone that must never take text entry down with it.
+            null
+        } finally {
+            val took = SystemClock.uptimeMillis() - asked
+            if (took >= SLOW_ANSWER_MS) {
+                // Longer every time, because a field that has just stalled twice running is
+                // not one that is about to answer. See [quietFor].
+                quietFor = if (quietFor <= 0L) NOT_ASKING_MS
+                else minOf(quietFor * 2, NOT_ASKING_MAX_MS)
+                notAskingUntil = SystemClock.uptimeMillis() + quietFor
+            } else {
+                // Answered, and promptly. Whatever was wrong is over, and the next stall - if
+                // there ever is one - starts its count again from the short window.
+                quietFor = 0L
+            }
+        }
     }
 
     // ---------------------------------------------------------------- keys
@@ -862,7 +1058,7 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
     }
 
     /**
-     * The finger is sliding along the space bar, so the caret moves with it.
+     * The finger is dragging the caret along the line: on the space bar, or on the joystick.
      *
      * Moved with `setSelection` and **not** with `KEYCODE_DPAD_LEFT`/`RIGHT`, which is the
      * obvious way to do it and is a trap. A DPAD press is a caret move only while there is
@@ -875,6 +1071,11 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
      * Naming a position instead means naming one that exists, so the move is clamped: never
      * before the start, and never past what the field says is actually there. Running out of
      * text now stops the caret, which is what it should have done all along.
+     *
+     * What the field says, though, and not what it fails to say. A field that is not
+     * answering questions has no length, and treating that as a length of nothing is what
+     * stops the caret dead the moment anything goes quiet - see the middle of this for what
+     * is done instead.
      *
      * The word in progress is let go first, and **without being corrected**. Moving the caret
      * is not finishing a word - it is going back to look at something - and having the
@@ -892,14 +1093,45 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
             // From the near edge of any selection, so the first move out of a selected range
             // collapses it the way an arrow key would rather than jumping from its middle.
             val from = if (steps > 0) maxOf(selStart, selEnd) else minOf(selStart, selEnd)
-            val target = if (steps > 0) {
+            val target: Int
+            if (steps < 0) {
+                // Leftward has nothing to ask anybody: there is always a position zero.
+                target = maxOf(0, from + steps)
+            } else {
                 // Only as far as there is text. Asking for what is there costs one small
                 // round-trip and is the whole of the clamp - the field is the only thing that
                 // knows how long its own contents are.
-                val room = ic.getTextAfterCursor(steps, 0)?.length ?: 0
-                from + minOf(steps, room)
-            } else {
-                maxOf(0, from + steps)
+                val room = ask { ic.getTextAfterCursor(steps, 0) }?.length
+                if (room != null) {
+                    unanswered = 0
+                    target = from + minOf(steps, room)
+                } else if (unanswered >= SLIDE_SLACK) {
+                    // Enough moves have gone unanswered to call it: this is the end of the
+                    // text. The optimistic ones are taken back rather than left standing,
+                    // because a local position past the end of the text poisons the moves
+                    // *after* it as well - the field goes on ignoring positions that do not
+                    // exist, so a finger pushed the other way would appear to do nothing
+                    // until it had walked back over the overshoot.
+                    selStart = reportedStart
+                    selEnd = reportedEnd
+                    return 0
+                } else {
+                    // Silence is **not the same answer as none**, and reading it as none is
+                    // what left the caret unable to move right at all in a field that had
+                    // stalled once: one slow answer stops the keyboard asking anything for
+                    // three seconds - see [ask] - and every rightward step in that window
+                    // came back "no room" while every leftward one worked. A caret that only
+                    // goes one way is not a caret with a limit, it is a broken control.
+                    //
+                    // So the move is made anyway and the field is left to refuse it. A
+                    // position past the end is ignored rather than clamped, which means the
+                    // caret stays where it was and no report comes back - and that silence is
+                    // the only signal there is, so what is counted here is how many moves
+                    // have gone without one. [onUpdateSelection] clears the count the moment
+                    // anything actually moves, so it can only ever build up against a wall.
+                    unanswered++
+                    target = from + steps
+                }
             }
             if (target == selStart && target == selEnd) return 0
             ic.setSelection(target, target)
@@ -911,6 +1143,111 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         } catch (e: Exception) {
             return 0
         }
+        updateAutoCaps()
+        return moved
+    }
+
+    /**
+     * The finger is pushing the joystick up or down, so the caret changes line.
+     *
+     * Worked out here rather than sent as `KEYCODE_DPAD_UP`/`DOWN`, for the reason given in
+     * [onCursorSlide] - and the reason bites harder on this axis than on that one. A field
+     * that has run out of lines treats those keys as what they really are, a request to move
+     * the focus, and *most fields have exactly one line*: an arrow key up would walk out of
+     * the search box and take the keyboard with it the first time anybody tried it. Naming a
+     * position cannot do that. The worst it can do is nothing.
+     *
+     * Which is exactly what it does when the field will not answer, and that is the honest
+     * cost of doing it this way: the line above is somewhere in the text, and the text belongs
+     * to the application. A field that is not answering - see [ask] - has no lines as far as
+     * this is concerned, and the dot stalls rather than guessing. It is the same bargain the
+     * automatic capitals and the suggestions already strike with the same fields.
+     *
+     * The lines are the ones the *text* has, not the ones the field has drawn. A paragraph
+     * wrapped across three rows of the screen is one line here, so pushing up from the middle
+     * of it goes to the line above the whole paragraph. That is a real difference from what a
+     * hardware arrow key does and it is not a corner cut: where the wrapping falls is a fact
+     * about a layout this side of the process boundary has never seen, and a guess at it would
+     * put the caret somewhere nobody could have predicted. Hard line endings are the part that
+     * is genuinely known, so they are the part that is offered.
+     */
+    override fun onCursorLines(view: View, lines: Int): Int {
+        if (lines == 0) return 0
+        val ic = currentInputConnection ?: return 0
+        if (composer.isComposing) finishWord(appending = "", correcting = false)
+        phantomSpace = false
+
+        val head = minOf(selStart, selEnd)
+        val tail = maxOf(selStart, selEnd)
+        // Back to the start of the line the caret is on, which is what says which column it is
+        // in - and, going up, holds the line it is moving to as well.
+        val before = ask { ic.getTextBeforeCursor(LINE_LOOK, 0) }?.toString() ?: return 0
+        val lineStart = before.lastIndexOf('\n') + 1
+
+        // Which column to aim for. Remembered from the last vertical move rather than measured
+        // afresh every time, because measuring afresh is what makes a caret walk diagonally
+        // down a page: a long line, a short one and a long one again should end where it
+        // started, and it only does if the short line is somewhere the caret passed through
+        // rather than somewhere it decided to be.
+        val column = if (columnAt == head) caretColumn else before.length - lineStart
+
+        val target: Int
+        val moved: Int
+        if (lines < 0) {
+            // Up, where the line to land on is in the text before the caret and so is the end
+            // of it - so the one question already asked answers the whole move.
+            var at = lineStart
+            var left = -lines
+            while (left > 0 && at > 0) {
+                // Searching from two back rather than one, so the newline that ends the line
+                // above is stepped over instead of being found again. A blank line is one
+                // character long and this walks over it correctly, which is the case worth
+                // checking.
+                at = before.lastIndexOf('\n', at - 2) + 1
+                left--
+            }
+            // Nowhere to go: the top of the text, or the top of as much of it as can be seen.
+            if (at == lineStart) return 0
+            // The line ends at the newline that closes it, and the caret goes no further along
+            // it than that however long a column it was keeping.
+            val ends = before.indexOf('\n', at)
+            target = head - before.length + minOf(at + column, ends)
+            // Asked for, less however many there turned out not to be. Both are negative
+            // going up, which is why this reads as an addition.
+            moved = lines + left
+        } else {
+            // Down, which needs the other half of the text and cannot borrow anything from the
+            // question above: the line below the caret is entirely in what comes after it.
+            val after = ask { ic.getTextAfterCursor(LINE_LOOK, 0) }?.toString() ?: return 0
+            var at = after.indexOf('\n')
+            if (at < 0) return 0
+            at++
+            var left = lines - 1
+            while (left > 0) {
+                val next = after.indexOf('\n', at)
+                if (next < 0) break
+                at = next + 1
+                left--
+            }
+            val next = after.indexOf('\n', at)
+            val ends = if (next < 0) after.length else next
+            target = tail + minOf(at + column, ends)
+            moved = lines - left
+        }
+
+        if (target == selStart && target == selEnd) return 0
+        try {
+            ic.setSelection(target, target)
+        } catch (e: Exception) {
+            return 0
+        }
+        selStart = target
+        selEnd = target
+        // Kept against the position it was worked out for, so that anything else which moves
+        // the caret - a letter typed, a tap in the text, a push sideways - leaves it stale and
+        // it is measured again. Nothing anywhere has to remember to clear it.
+        caretColumn = column
+        columnAt = target
         updateAutoCaps()
         return moved
     }
@@ -1101,7 +1438,12 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         loads.execute {
             if (emojiNames != null) return@execute
             emojiNames = try {
-                EmojiData.load(this)
+                EmojiData.load(this).also {
+                    // And its indices, here, rather than under the first keystroke that asks
+                    // for one. See [EmojiData.warm]: the lookup the bar makes reads through a
+                    // lazy, and a lazy is built by whoever asks first.
+                    it.warm()
+                }
             } catch (e: Exception) {
                 // No emoji suggestions. Everything else about the keyboard still works.
                 null
@@ -1162,18 +1504,17 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
      * So the field is asked. Two characters, on a path that runs when the bar has nothing to
      * show anyway - not on every keystroke, which is where round trips have to be counted.
      */
-    private fun atSentenceStart(): Boolean = try {
-        val before = currentInputConnection?.getTextBeforeCursor(2, 0)
-        when {
-            before.isNullOrEmpty() -> true
+    private fun atSentenceStart(): Boolean {
+        // No answer is not a reason to guess that a sentence is starting. An empty answer is:
+        // that is a field with nothing in it, which is where a sentence begins.
+        val before = ask { currentInputConnection?.getTextBeforeCursor(2, 0) } ?: return false
+        return when {
+            before.isEmpty() -> true
             // A sentence that has ended, and the space after it.
             before.length == 2 && before[1] == ' ' && before[0] in SENTENCE_END -> true
             before.last() == '\n' -> true
             else -> false
         }
-    } catch (e: Exception) {
-        // No answer is not a reason to guess that a sentence is starting.
-        false
     }
 
     /** Whether what has been typed is itself a word, which stops it being corrected away. */
@@ -1205,6 +1546,36 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
      */
     private var selStart = 0
     private var selEnd = 0
+
+    /**
+     * And where the field itself last said it was, which is not always the same thing.
+     *
+     * The two part company while a slide is running, because [onCursorSlide] moves the local
+     * pair ahead of the reports rather than waiting for them. This is the pair that is only
+     * ever written by the field, and it is what the local one is put back to when a run of
+     * moves turns out to have been made against the end of the text.
+     */
+    private var reportedStart = 0
+    private var reportedEnd = 0
+
+    /**
+     * How many caret moves have been made without the field reporting any of them.
+     *
+     * Only ever counts up while the field is not answering questions, because that is the only
+     * time a move is made without knowing there is room for it. See [onCursorSlide].
+     */
+    private var unanswered = 0
+
+    /**
+     * Which column an up-and-down push is aiming for, and where the caret was when it decided.
+     *
+     * Two numbers rather than one because the second is what makes the first expire: the
+     * column is only meaningful while the caret is still where the vertical move left it, and
+     * comparing against that position means everything else which moves the caret invalidates
+     * it without having to know about it. See [onCursorLines].
+     */
+    private var caretColumn = 0
+    private var columnAt = -1
 
     /** A suggestion was tapped. */
     private fun takeSuggestion(index: Int) {
@@ -1393,7 +1764,7 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
      * `getSurroundingText` answers both halves at once and has been there since Android 12,
      * which is most phones. Below that it is two calls, as it always was.
      */
-    private fun around(ic: InputConnection): Pair<String, CharSequence?>? = try {
+    private fun around(ic: InputConnection): Pair<String, CharSequence?>? = ask {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val text = ic.getSurroundingText(RESUME_LOOKBACK, 1, 0)
             if (text == null) {
@@ -1406,8 +1777,6 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
             ic.getTextBeforeCursor(RESUME_LOOKBACK, 0)?.toString().orEmpty() to
                 ic.getTextAfterCursor(1, 0)
         }
-    } catch (e: Exception) {
-        null
     }
 
     /**
@@ -1424,9 +1793,12 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         val attaching = phantomSpace && text.length == 1 && text[0] in ATTACHING
         phantomSpace = false
         if (!attaching) return
+        val ic = currentInputConnection ?: return
+        // Through [ask], so a field that has stopped answering costs one stray space rather
+        // than the wait that insisting on an answer would cost.
+        if (ask { ic.getTextBeforeCursor(1, 0)?.toString() } != " ") return
         try {
-            val ic = currentInputConnection ?: return
-            if (ic.getTextBeforeCursor(1, 0)?.toString() == " ") ic.deleteSurroundingText(1, 0)
+            ic.deleteSurroundingText(1, 0)
         } catch (e: Exception) {
             // The field can go away mid-keystroke. The punctuation still gets typed.
         }
@@ -1566,11 +1938,9 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
     }
 
     /** True when what is behind the cursor is a space with a letter before it. */
-    private fun endsWithLetter(ic: InputConnection): Boolean = try {
-        val before = ic.getTextBeforeCursor(2, 0)
-        before != null && before.length == 2 && before[1] == ' ' && before[0].isLetterOrDigit()
-    } catch (e: Exception) {
-        false
+    private fun endsWithLetter(ic: InputConnection): Boolean {
+        val before = ask { ic.getTextBeforeCursor(2, 0) } ?: return false
+        return before.length == 2 && before[1] == ' ' && before[0].isLetterOrDigit()
     }
 
     /**
@@ -1578,17 +1948,21 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
      *
      * @param repeating true while the key is being held down and firing many times a second.
      *
-     * The distinction matters a great deal, and getting it wrong locked the phone up. A
-     * single press can afford to ask the application questions: is anything selected, should
-     * the next letter be a capital. Those are **synchronous round trips** to the app being
-     * typed into - the keyboard sends the question and blocks its own main thread until an
-     * answer comes back. Once per press that is nothing. Twenty-five times a second, into an
-     * application that may be busy drawing or may not answer promptly, it is the keyboard
-     * waiting on somebody else's main thread over and over, which is exactly what a frozen
-     * phone looks like.
+     * The distinction matters a great deal, and getting it wrong locked the phone up. Every
+     * question put to the application being typed into is a **synchronous round trip** - the
+     * keyboard asks and then blocks its own main thread until the answer comes back, or until
+     * the system gives up waiting on the application two seconds later. Twenty-five times a
+     * second that is a frozen phone, so a held backspace asks nothing and tells: it deletes,
+     * and it defers the questions and the dictionary work until the finger comes off. See
+     * [finishRepeating].
      *
-     * So a held backspace asks nothing and tells: it deletes, and it defers the questions and
-     * the dictionary work until the finger comes off. See [finishRepeating].
+     * A single press is not free either, which is the half that had to be learned twice. It
+     * used to ask three questions in a row - what is around the caret, what is selected,
+     * should the next letter be a capital - and three two-second waits is past the five
+     * seconds the system allows a keyboard to answer a touch in before it decides the
+     * keyboard has hung. Whether anything is selected is now read from the field's own last
+     * report instead of asked for, and the two questions left go through [ask], which stops
+     * asking a field that has stopped answering.
      */
     private fun backspace(repeating: Boolean = false) {
         phantomSpace = false
@@ -1633,19 +2007,17 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         try {
             if (repeating) {
                 // One-way, and no questions. `deleteSurroundingText` is dispatched and
-                // forgotten where `getSelectedText` waits for a reply.
+                // forgotten where a question waits for a reply.
                 ic.deleteSurroundingText(1, 0)
+            } else if (selStart == selEnd) {
+                // Sent as a key event rather than as a deletion so that fields which watch
+                // for the key - a search box that closes on an empty backspace, a chip field
+                // that removes a chip - still see it.
+                ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL))
+                ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL))
             } else {
-                val selected = ic.getSelectedText(0)
-                if (selected.isNullOrEmpty()) {
-                    // Sent as a key event rather than as a deletion so that fields which
-                    // watch for the key - a search box that closes on an empty backspace, a
-                    // chip field that removes a chip - still see it.
-                    ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL))
-                    ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL))
-                } else {
-                    ic.commitText("", 1)
-                }
+                // Something is selected, and backspace takes the whole of it.
+                ic.commitText("", 1)
             }
         } catch (e: Exception) {
             return
@@ -1955,16 +2327,14 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
      * something was about to be said inside of, and the words go straight in; anything else -
      * a letter, a full stop, the end of the last thing dictated - and they need separating.
      */
-    private fun leadForDictation(): String = try {
-        val before = currentInputConnection?.getTextBeforeCursor(1, 0)
-        if (before.isNullOrEmpty() || before[0].isWhitespace() || before[0] in OPENING) {
+    private fun leadForDictation(): String {
+        // Nothing said back means nothing to butt against.
+        val before = ask { currentInputConnection?.getTextBeforeCursor(1, 0) }
+        return if (before.isNullOrEmpty() || before[0].isWhitespace() || before[0] in OPENING) {
             ""
         } else {
             " "
         }
-    } catch (e: Exception) {
-        // Nothing said back means nothing to butt against.
-        ""
     }
 
     private fun stopVoice() {
@@ -2425,6 +2795,37 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         /** How long a message stays on the bar before the suggestions come back. */
         const val MESSAGE_MS = 2_500L
 
+        /**
+         * How long an answer may take before the field counts as not answering. See [ask].
+         *
+         * A field that is keeping up answers in single figures of milliseconds, because the
+         * work behind the question is reading a few characters out of a string it already
+         * holds. A quarter of a second is not a slow answer, it is a stalled one, and there
+         * is no third case to be careful of.
+         */
+        const val SLOW_ANSWER_MS = 250L
+
+        /**
+         * How long the keyboard goes without asking, once an answer has taken too long.
+         *
+         * Long enough to cover the burst of keystrokes that would otherwise queue up behind
+         * the same wait one after another, and short enough that a moment's stutter does not
+         * cost the automatic capital at the start of the next sentence.
+         */
+        const val NOT_ASKING_MS = 3_000L
+
+        /**
+         * And the longest that silence ever grows to, however many stalls there have been.
+         *
+         * Half a minute. Everything given up while a field is not answering degrades to the
+         * plain behaviour rather than to a broken one - no automatic capital, no word picked
+         * back up by a backspace, no full stop from a double space - so a long silence costs
+         * cleverness and nothing else, where each probe that breaks one costs two seconds of
+         * a phone that will not type. The cap exists at all so that an application which
+         * recovers quietly is eventually noticed. See [quietFor].
+         */
+        const val NOT_ASKING_MAX_MS = 30_000L
+
         const val DOUBLE_TAP_MS = 400L
         /**
          * Punctuation that belongs against the word before it, with no space between.
@@ -2442,6 +2843,28 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
          * for the paragraph. The dictionary builder caps words at 32 characters.
          */
         const val RESUME_LOOKBACK = 48
+
+        /**
+         * And how far to look for the line the caret is on, in either direction.
+         *
+         * Two or three lines of a message rather than the whole of one, because that is all
+         * an up-and-down push ever needs: it moves one line at a time and each move asks
+         * again. A paragraph longer than this is one the caret cannot see the start of, and
+         * the push stops rather than landing somewhere invented. See [onCursorLines].
+         */
+        const val LINE_LOOK = 512
+
+        /**
+         * How many unanswered moves it takes to conclude the caret is at the end of the text.
+         *
+         * Only reached in a field that is not answering questions at all, where a move is
+         * made on spec and the field's silence afterwards is the only evidence there is. Small
+         * because the evidence is weak in both directions: too many and the caret goes on
+         * pretending to move for a noticeable moment after it has stopped, too few and an
+         * ordinary report arriving a frame late is mistaken for the end of the text. Three is
+         * a tenth of a second at the fastest the caret ever runs. See [onCursorSlide].
+         */
+        const val SLIDE_SLACK = 3
 
         const val ATTACHING = ".,!?:;)]}%\u2026\"'\u2019@/"
 

@@ -29,6 +29,14 @@ class MediaSessions(private val context: Context) {
         val isPlaying: Boolean,
         val canSkipNext: Boolean,
         val canSkipPrevious: Boolean,
+        /**
+         * Whether the app will accept being moved to a position.
+         *
+         * Asked before a scrubber is allowed to move: a bar that can be dragged on a
+         * player that ignores it snaps back under the finger, which reads as the launcher
+         * having dropped the gesture rather than as the app having refused it.
+         */
+        val canSeek: Boolean,
         /** Position at [positionUpdatedAtMs], in milliseconds. */
         val positionMs: Long,
         val positionUpdatedAtMs: Long,
@@ -249,6 +257,7 @@ class MediaSessions(private val context: Context) {
                 isPlaying = state?.state == PlaybackState.STATE_PLAYING,
                 canSkipNext = actions and PlaybackState.ACTION_SKIP_TO_NEXT != 0L,
                 canSkipPrevious = actions and PlaybackState.ACTION_SKIP_TO_PREVIOUS != 0L,
+                canSeek = actions and PlaybackState.ACTION_SEEK_TO != 0L,
                 positionMs = state?.position ?: 0L,
                 positionUpdatedAtMs = state?.lastPositionUpdateTime
                     ?: android.os.SystemClock.elapsedRealtime(),
@@ -276,6 +285,15 @@ class MediaSessions(private val context: Context) {
 
     fun previous(packageName: String) = withTransport(packageName) { transport, _ ->
         transport.skipToPrevious()
+    }
+
+    /** Moves playback to [positionMs]. Only where the session said it would take it. */
+    fun seekTo(packageName: String, positionMs: Long) = withTransport(packageName) { transport, _ ->
+        transport.seekTo(positionMs.coerceAtLeast(0L))
+        // The snapshot still holds the position the session last reported, and the session
+        // will not report the new one for a beat: read again on the next ask, or the bar
+        // springs back to where it was and travels out to the new place a second later.
+        dirty = true
     }
 
     /**

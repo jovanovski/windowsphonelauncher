@@ -303,6 +303,10 @@ class CarStartScreen(carContext: CarContext) : Screen(carContext) {
                 // The weather is a face of its own rather than a reading off the tile, so
                 // it arrives separately from the rest - see WP81TileHost.weatherFace.
                 setWeatherFace(tileHost.weatherFace())
+                // And the charge, on the same terms. Read once, when the wall is built:
+                // this screen has no ticker and no broadcast of its own, and a phone on a
+                // car's charger is the case where a stale level matters least.
+                setBatteryFace(tileHost.batteryFace())
             }
             show.setContentView(
                 view,

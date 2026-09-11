@@ -68,7 +68,7 @@ class WP81InputDialog(
 
         field.setSingleLine()
         field.textSize = 18f
-        field.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+        field.inputType = SENTENCE
         field.typeface = ResourcesCompat.getFont(context, R.font.segoeui_regular)
         // Air inside the box rather than around it: the fill is the field's edge now, and
         // text against a white edge reads as text that has escaped.
@@ -110,9 +110,25 @@ class WP81InputDialog(
     private fun wide() = LinearLayout.LayoutParams(
         LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
 
-    fun show(title: String, initial: String, onAccept: (String) -> Unit) {
+    /**
+     * Asks for a value.
+     *
+     * [hint] is what the empty field says it wants, for a prompt whose heading is a
+     * command rather than a description of what to type - "add a feed" says nothing about
+     * what goes in the box. [inputType] is for the prompts that are not asking for prose:
+     * an address wants the keyboard's slash and no capital at the front of it.
+     */
+    fun show(
+        title: String,
+        initial: String,
+        hint: String? = null,
+        inputType: Int = SENTENCE,
+        onAccept: (String) -> Unit
+    ) {
         this.onAccept = onAccept
         heading.text = title.lowercase()
+        field.hint = hint
+        field.inputType = inputType
         field.setText(initial)
         field.setSelection(field.text.length)
         message.visibility = GONE
@@ -193,5 +209,11 @@ class WP81InputDialog(
 
     companion object {
         private const val SCRIM = 0xCC000000.toInt()
+
+        /** What the field asks for unless told otherwise: a line of prose. */
+        const val SENTENCE = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+
+        /** And what an address asks for: no capital, and the keyboard's slash to hand. */
+        const val ADDRESS = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
     }
 }

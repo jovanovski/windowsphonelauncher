@@ -128,9 +128,16 @@ class WeatherFaceView(
         // much of a cell as every other reading on the wall takes, and never more of this
         // tile than it has.
         val basis = if (cell > 0) cell.toFloat() else minOf(width.toFloat(), depth)
+        // A tile two cells across and two deep has room the ladder does not ask for, and
+        // the figure is the thing somebody opens the tile to read: it takes a little of
+        // that room back. Measured against the whole tile rather than the span it was
+        // built with, so a tile resized under the face gets the right answer without
+        // being told. Not the strips or the 1x1, where the words above the figure have
+        // every point of it already.
+        val roomy = cell > 0 && width >= 2 * cell && height >= 2 * cell
         figurePaint.textSize = minOf(
             sp(FIGURE_MAX_SP),
-            basis * FIGURE_CELL_SHARE,
+            basis * FIGURE_CELL_SHARE + if (roomy) sp(FIGURE_ROOM_SP) else 0f,
             // Against the height a line of it actually stands, not against its size: a
             // figure is a third taller than the size it is set at, so a share of the tile
             // read as a size is half again as much of the tile as it says. Which is what
@@ -226,6 +233,18 @@ class WeatherFaceView(
             return wide
         }
 
+        // Down the tile before across it. The pair stands one at either end of the
+        // figure's own digits, so what it has to go in is the figure's height - and the
+        // figure is drawn from the tile in pixels where the range is set in points, which
+        // is how a phone asked for larger text came to have the day's ceiling drawn
+        // straight through its floor. Asked first, so a range that has gone is not
+        // something the row is measured around and a range that has come down is measured
+        // at the size it came down to.
+        if (high != null && low != null && !fitRange(-figurePaint.ascent())) {
+            high = null
+            low = null
+        }
+
         // The range goes before anything is squeezed. A 1x1 has room across it for a
         // figure and its scale and nothing else, and three readings shrunk until they fit
         // side by side is three numbers nobody can read rather than the one worth having.
@@ -243,6 +262,15 @@ class WeatherFaceView(
             figurePaint.textSize = (figurePaint.textSize * squeeze).coerceAtLeast(sp(MIN_SP))
             unitPaint.textSize = (unitPaint.textSize * squeeze).coerceAtLeast(sp(MIN_SP))
             rangePaint.textSize = (rangePaint.textSize * squeeze).coerceAtLeast(sp(MIN_SP))
+        }
+
+        // Both of those are held above a floor of their own, so a squeeze hard enough to
+        // put the range on its floor and not the figure leaves the pair taller than the
+        // digits again. Cheap to ask a second time, and the answer is the tile's either
+        // way.
+        if (high != null && low != null && !fitRange(-figurePaint.ascent())) {
+            high = null
+            low = null
         }
 
         canvas.drawText(reading.temperature, left, baseline, figurePaint)
@@ -265,6 +293,28 @@ class WeatherFaceView(
                 baseline + rangePaint.ascent()) / 2f
             canvas.drawRect(x, ruleY, x + rangeWidth(), ruleY + dp(RULE_DP), rulePaint)
         }
+    }
+
+    /**
+     * Brings the day's two ends down until the pair of them stands inside [span].
+     *
+     * [span] is the figure's own height above its baseline, which is all the room the two
+     * have: the ceiling is set on the top of the digits and the floor on the line under
+     * them - see [drawReading]. Where they will not go in at the size they are set at they
+     * come down to the size they will, and where even the smallest the tile sets is too
+     * tall this answers false and the range is dropped. A range drawn through itself says
+     * neither of the two numbers in it.
+     */
+    private fun fitRange(span: Float): Boolean {
+        // The two lines, less the descent of the upper one, which the lower one's ascent
+        // is measured from the other side of.
+        val needed = 2f * -rangePaint.ascent() + rangePaint.descent()
+        if (needed <= span) return true
+        if (needed <= 0f || span <= 0f) return false
+        val size = rangePaint.textSize * span / needed
+        if (size < sp(MIN_SP)) return false
+        rangePaint.textSize = size
+        return true
     }
 
     /** One line's height in this paint. */
@@ -320,6 +370,16 @@ class WeatherFaceView(
         private const val FIGURE_CELL_SHARE = 0.4f
 
         /**
+         * What the figure gains once the tile is at least two cells each way.
+         *
+         * The one place the wall's size ladder is stepped off, and only upwards: a 2x2
+         * carries a name, a sky and a range around a figure sized for a tile a quarter
+         * the area, and the room left over went to the air between them rather than to
+         * the number.
+         */
+        private const val FIGURE_ROOM_SP = 5f
+
+        /**
          * And never more of a short tile than this, whatever the cell says.
          *
          * Set against the line's own height. Just over half, so that a 1x1 - where this is
@@ -331,11 +391,23 @@ class WeatherFaceView(
         /** The scale, as a share of the figure it is a footnote to. */
         private const val UNIT_SHARE = 0.34f
 
-        // The name of the place and the caption sizes the rest of the wall's second lines
-        // use. The range is set as a caption too: it is what the figure is measured
-        // against, not a reading of its own.
+        // The name of the place, and the caption size the rest of the wall's second lines
+        // use. The pair belongs to the wall rather than to this tile - a name over a line
+        // saying something about it - and the calendar and the media tile are headed in
+        // the same two: see TileView.FACE_TITLE_SP and TileView.LIVE_CAPTION_SP, which are
+        // this size and this weight, and where the pair is reasoned about.
         private const val PLACE_SP = 14f
-        private const val CONDITION_SP = 13f
+        private const val CONDITION_SP = 12f
+
+        /**
+         * The day's two ends, which stay where the caption was.
+         *
+         * It was filed with the captions and took their size, being what the figure is
+         * measured against rather than a reading of its own. But it stands beside the
+         * figure, not under a title, so when the wall's second lines came down a point it
+         * stayed: brought with them it would have been the smallest thing on the tile,
+         * shrunk for a reason that has nothing to do with where it sits.
+         */
         private const val RANGE_SP = 13f
 
         /** However little room there is, what is in it is still meant to be read. */

@@ -47,6 +47,15 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!--
+      Whether wi-fi is on, for the Action Center's first quick action.
+
+      Reading only, and it is all this permission has ever been: turning wi-fi on and off
+      has not been an app's to do since Android 10, so the tile says where things stand and
+      hands the tap to the platform's own wi-fi panel. Normal level, granted at install.
+      See WP81ActionCenter.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" />
     <uses-permission android:name="android.permission.READ_CALENDAR"/>
     <uses-permission android:name="android.permission.WRITE_CALENDAR"/>
@@ -147,11 +156,17 @@
         tools:ignore="ScopedStorage" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!--
-        Which app the phone was in last, for back-back on the Windows Phone Start screen.
-        Granted by hand on the phone's Usage access screen, not by a prompt: without it the
-        launcher falls back to the last app it opened itself, which misses the ones opened
-        from a notification or from inside another app.
+        How long each app has been on screen, which is what the Battery program divides the
+        day's drain by. Granted by hand on the phone's Usage access screen, not by a
+        prompt - the program says as much, and offers the tap that goes there.
+
+        Declared even though the platform will not grant it on request: the app-op the
+        Settings page flips is only readable for an app that asks for the permission, so
+        without this line the switch has nothing to switch. Nothing breaks while it is off;
+        the usage section says why it is empty and how to fill it. See AppDrain.
     -->
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
 
     <!-- Attribution tag declarations -->
     <attribution android:tag="weather"
@@ -159,6 +174,25 @@
     <attribution android:tag="system"
                  android:label="@string/attribution_system" />
 
+    <!--
+      Deliberately not android:persistent.
+
+      It was here, and it is not a flag for an app like this one: "persistence mode is
+      intended only for certain system applications", and a launcher installed from an APK
+      is not one. What it bought was three things, none of them wanted. The process was
+      started during boot, ahead of the home screen, in the very window the system's
+      "Preparing app" dialog covers. A crash was restarted at once rather than backed off
+      the way an ordinary app's is, so one startup failure became a loop the phone sat in
+      instead of a launcher that failed once and could be uninstalled. And whether any of
+      that happens at all varies by Android version and by vendor, which is why it was
+      reported by some people and reproducible by nobody who looked for it.
+
+      Nothing here needs it. Alarms survive a reboot through AlarmBootReceiver below and
+      AlarmScheduler.sync on the way into MainActivity; the notification listener, the
+      keyboard, GokiInCallService and the car service are all bound by the system when it
+      wants them. The home process is kept resident by the platform on its own account -
+      being the launcher is what earns that, not this attribute.
+    -->
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
@@ -167,8 +201,7 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_wp8"
         android:supportsRtl="true"
-        android:theme="@style/Base.Theme.GokiXP"
-        android:persistent="true">
+        android:theme="@style/Base.Theme.GokiXP">
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -553,11 +586,33 @@
           this app requests. Declaring it is what promises that nothing else can bind to the
           service and impersonate the system, and an input method without it is refused.
 
-          Left in the app's own process deliberately. The launcher is the home app and is
-          always running, so the keyboard comes up warm rather than starting a process on
-          the first tap, and it sees theme changes the moment they are written because the
-          preferences are the same instance. The cost is that a crash in here takes the
-          launcher with it.
+          Given a process of its own, and it has to have one.
+
+          An input method reads the text box it is typing into by asking across a process
+          boundary and waiting for the reply, and the reply is worked out on the *editor's*
+          thread. Share a process with the launcher and every one of the launcher's own text
+          boxes - the Start screen search, a folder being named, the address bar - becomes a
+          box whose answers have to come from the very thread that is sitting waiting for
+          them. Nothing arrives. The framework waits out its full two seconds, hands back
+          nothing, and does it again for the next question, which is a keyboard that stops
+          dead for two seconds at a time and, three questions into one keystroke, an ANR.
+
+          That is the whole reason, and it is not a tuning decision that can be reconsidered
+          on a slow morning: it is the difference between the keyboard working in this app
+          and not. Two processes is two threads and the question is answered in microseconds,
+          the same as it always was for every other application on the phone.
+
+          What it costs, and what pays for it:
+          - The settings page and the permission shim come along, so that everything the
+            keyboard reads and writes is read and written on this side of the line. A
+            preference file belongs to one process - see WP81Settings - and the keyboard's
+            own settings moved into the keyboard's own file to keep that true.
+          - The accent and the background stay the launcher's, and are sent across when they
+            change. See KeyboardAppearance.
+          - The first tap on a text box after a reboot may start this process rather than
+            find it warm. That is what every other keyboard on the phone does.
+          - A crash in the keyboard no longer takes the launcher with it, which was the other
+            half of the old arrangement and never a good half.
         -->
         <!--
           The keyboard's settings, as a page of its own.
@@ -573,12 +628,14 @@
         -->
         <activity
             android:name=".wp81.keyboard.VoicePermissionActivity"
+            android:process=":keyboard"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
             android:excludeFromRecents="true"
             android:exported="false" />
 
         <activity
             android:name=".wp81.keyboard.KeyboardSettingsActivity"
+            android:process=":keyboard"
             android:label="@string/keyboard_name"
             android:theme="@style/Base.Theme.GokiXP"
             android:windowSoftInputMode="adjustResize"
@@ -586,6 +643,7 @@
 
         <service
             android:name=".wp81.keyboard.WP81KeyboardService"
+            android:process=":keyboard"
             android:label="@string/keyboard_name"
             android:permission="android.permission.BIND_INPUT_METHOD"
             android:exported="true">

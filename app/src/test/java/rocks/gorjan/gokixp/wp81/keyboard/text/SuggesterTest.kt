@@ -105,12 +105,82 @@ class SuggesterTest {
     @Test
     fun aMissingApostropheIsOffered() {
         assertOffers("shell", "she'll")
-        assertOffers("ill", "i'll")
         assertOffers("dont", "don't")
-        assertOffers("im", "i'm")
         assertOffers("cant", "can't")
         assertOffers("shes", "she's")
         assertOffers("were", "we're")
+        // `ill` and `im` are the same shortcut and belong here too, but they come back with a
+        // capital and are checked next door - see [thePronounIsOfferedWithItsCapital].
+    }
+
+    /**
+     * And the pronoun comes back with its capital.
+     *
+     * `i'll` is not a word. Offering it as the correction for `ill` is the keyboard putting a
+     * misspelling into somebody's sentence on their behalf, which is worse than offering
+     * nothing at all - and the dictionary cannot help here, because it is lowercase by
+     * construction so that the search can fold the case of everything typed into it.
+     */
+    @Test
+    fun thePronounIsOfferedWithItsCapital() {
+        assertOffers("ill", "I'll")
+        assertOffers("im", "I'm")
+        assertOffers("ive", "I've")
+        assertOffers("id", "I'd")
+        // However it was typed: a sentence's first word arrives here already capitalised.
+        assertOffers("Ill", "I'll")
+    }
+
+    /** Everything else keeps the spelling the dictionary has for it. */
+    @Test
+    fun ordinaryWordsAreNotCapitalised() {
+        assertOffers("teh", "the")
+        assertOffers("shell", "she'll")
+        assertTrue(
+            "a search for 'ill' capitalised something that was not the pronoun",
+            suggester.candidates("ill").none { it.word.first().isUpperCase() && it.word != "I'll" }
+        )
+    }
+
+    /**
+     * A capital the user typed is a capital the suggestion keeps.
+     *
+     * The dictionary is lowercase by construction - that is what lets the search fold the
+     * case of everything typed into it - so every word that comes back out of it arrives in
+     * lower case, and handing that straight back undoes a shift somebody pressed on purpose.
+     * `Skop` being corrected to `skopje` is the case that makes it plain: the keyboard was
+     * told the word was a name in the only way a keyboard can be told, and corrected the
+     * capital away.
+     */
+    @Test
+    fun typedCapitalsSurviveTheCorrection() {
+        assertOffers("Teh", "The")
+        assertOffers("Hel", "Hello")
+        assertTrue(
+            "a word typed with a capital must not be offered back without one",
+            suggester.candidates("Teh").all { it.word.first().isUpperCase() }
+        )
+    }
+
+    /** Block capitals come back shouting, pronoun and all. */
+    @Test
+    fun blockCapitalsSurviveTheCorrection() {
+        assertOffers("TEH", "THE")
+        assertOffers("IM", "I\'M")
+    }
+
+    /**
+     * But one capital in a two-letter word is a sentence starting, not somebody shouting.
+     *
+     * `Hi` is both at once as far as the letters go, and reading it as shouting would put a
+     * bar full of block capitals in front of anybody who simply began a sentence.
+     */
+    @Test
+    fun aCapitalisedShortWordIsNotShouting() {
+        assertTrue(
+            "'Th' was read as shouting",
+            suggester.candidates("Th").none { it.word == it.word.uppercase() }
+        )
     }
 
     /** But a word with one already is not given a second. */

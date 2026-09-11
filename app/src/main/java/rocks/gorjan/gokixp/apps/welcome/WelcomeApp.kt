@@ -2,6 +2,7 @@ package rocks.gorjan.gokixp.apps.welcome
 
 import android.content.Context
 import android.graphics.Typeface
+import android.util.Log
 import android.text.method.LinkMovementMethod
 import android.text.util.Linkify
 import android.view.View
@@ -300,7 +301,7 @@ class WelcomeApp(
             row.addView(labels, LinearLayout.LayoutParams(0, WRAP, 1f))
 
             val toggle = MetroToggle(context, palette).apply {
-                set(permission.isOn(), animated = false)
+                set(permission.isOnSafely(), animated = false)
                 onChanged = {
                     // The switch is a request, not a fact. It is put back to whatever the
                     // system says the moment the page is looked at again - see refresh -
@@ -344,7 +345,30 @@ class WelcomeApp(
      * has been off answering one of Android's own prompts.
      */
     fun refresh() {
-        switches.forEach { (toggle, permission) -> toggle.set(permission.isOn(), animated = true) }
+        switches.forEach { (toggle, permission) ->
+            toggle.set(permission.isOnSafely(), animated = true)
+        }
+    }
+
+    /**
+     * Whether a permission is granted, on a page that cannot afford to be asked twice.
+     *
+     * Asking is the host's code running inside this build, and it can throw: a check that
+     * names an API newer than the phone dies on the call with NoSuchMethodError, and a
+     * settings value can be unreadable for reasons of its own. Anywhere else that would be
+     * a broken row. Here it is the launcher, because this page opens by itself on a first
+     * run and the marker saying it has been seen is written after it is drawn - so a throw
+     * takes the home screen down a second after every start, with nothing left to get back
+     * in with.
+     *
+     * A permission that cannot answer reads as off, which is the safe way round: the row
+     * still says what it is for and its switch still opens the screen that owns it.
+     */
+    private fun Permission.isOnSafely(): Boolean = try {
+        isOn()
+    } catch (e: Throwable) {
+        Log.w("WelcomeApp", "Could not tell whether $name is granted", e)
+        false
     }
 
     private fun buildNotes(): View {

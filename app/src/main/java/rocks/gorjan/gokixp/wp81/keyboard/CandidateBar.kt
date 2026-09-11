@@ -95,10 +95,10 @@ class CandidateBar(
     /**
      * How many of the words are emoji, sitting at indices 1 upwards.
      *
-     * The bar has to be told rather than work it out. Two things about an emoji entry differ
-     * from a word and neither can be guessed from the string: it is drawn with no typeface at
-     * all - see [styleFor] - and it is drawn larger. Sniffing the code points for "is this an
-     * emoji" is a question with no good answer and one the caller already knows.
+     * The bar has to be told rather than work it out. An emoji entry is drawn with no
+     * typeface at all - see [styleFor] - and that cannot be guessed from the string.
+     * Sniffing the code points for "is this an emoji" is a question with no good answer and
+     * one the caller already knows.
      */
     private var emojiCount = 0
 
@@ -432,19 +432,16 @@ class CandidateBar(
      * no colour table for these code points. The emoji panel does the same, for the same
      * reason.
      *
-     * And a little larger than the words, because they are read as pictures rather than as
-     * text - at the words' own size an emoji on this bar is a smudge. The line they all sit
-     * on is worked out once from the words' font, so a difference in size does not become a
-     * difference in height. See [baseline].
+     * At the same size as the words beside them. They were set half again as large for a
+     * while, on the reasoning that a picture read at the size of the letters around it is a
+     * smudge; on the bar it read instead as one entry shouting over the rest of the row, and
+     * a suggestion is a suggestion whether it is a word or a picture. The line they all sit
+     * on is worked out once from the words' font, so the emoji font's own metrics do not
+     * become a difference in height. See [baseline].
      */
     private fun styleFor(slot: Int) {
-        if (slot in 1..emojiCount) {
-            ink.typeface = null
-            ink.textSize = keyW * EMOJI_TEXT
-        } else {
-            ink.typeface = font
-            ink.textSize = keyW * TEXT
-        }
+        ink.typeface = if (slot in 1..emojiCount) null else font
+        ink.textSize = keyW * TEXT
     }
 
     // ---------------------------------------------------------------- touch
@@ -699,10 +696,9 @@ class CandidateBar(
         ink.textAlign = Paint.Align.CENTER
 
         // One line for everything on the bar, taken from the words' own font before anything
-        // is drawn in any other. An emoji is bigger than the text beside it and would
-        // otherwise sit on a line of its own, half a character below the words - see
-        // [baseline], which is about exactly this and which answers differently the moment
-        // the paint is restyled.
+        // is drawn in any other. The emoji font has metrics of its own and would otherwise
+        // put its entries on a line slightly below the words - see [baseline], which is about
+        // exactly this and which answers differently the moment the paint is restyled.
         val line = baseline()
         val start = contentLeft()
 
@@ -860,15 +856,6 @@ class CandidateBar(
          * points on every screen - only the ratio carries across.
          */
         const val TEXT = 0.383f
-
-        /**
-         * An emoji among the words, half again their size.
-         *
-         * It is a picture and they are text, and a picture set at the size of the letters
-         * beside it reads as a smudge rather than as a thing you can recognise without
-         * looking twice. Still well inside [HEIGHT], so the bar does not grow to hold it.
-         */
-        const val EMOJI_TEXT = 0.57f
 
         /**
          * The microphone, at twice the size it started.

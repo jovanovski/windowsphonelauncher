@@ -8,6 +8,108 @@ import android.util.Log
 
 class NotificationListenerService : NotificationListenerService() {
 
+    /**
+     * One notification, as a tile shows it.
+     *
+     * [image] is whatever the app put on its own notification - the photograph in a
+     * post, the avatar of whoever is messaging - already scaled down to tile size. A
+     * notification with none simply has none; most do not. [opening] is where it goes
+     * when the tile showing it is tapped.
+     */
+    data class NotificationLine(
+        val title: String,
+        val text: String,
+        val image: android.graphics.Bitmap? = null,
+        val opening: Opening? = null
+    )
+
+    /**
+     * Where a notification goes when it is opened, and how to be rid of it after.
+     *
+     * [intent] is the app's own content intent - the one the shade sends when the
+     * notification is tapped there, which is what lands on the conversation a message
+     * came from rather than on the app's front page. Some notifications carry none;
+     * those have nowhere to go but the app itself.
+     *
+     * [key] names the notification to the listener, so a tile that has just opened one
+     * can retire it exactly as the shade does - [autoCancel] is whether the app asked
+     * for that. [ours] marks the notifications this launcher posted itself, which the
+     * shell's own tiles are the only ones to follow. See MainActivity.
+     */
+    data class Opening(
+        val key: String,
+        val intent: android.app.PendingIntent,
+        val autoCancel: Boolean,
+        val ours: Boolean
+    )
+
+    /**
+     * One notification as the Action Center lists it.
+     *
+     * A wider net than [NotificationLine] casts, and deliberately: a tile is a mark on the
+     * Start screen that has to mean "something new is waiting", so the quiet ones and the
+     * ones that never go away are filtered out of it - see [shouldShowNotification]. The
+     * Action Center is a shade. What the phone's own shade would show, this shows, silent
+     * and ongoing alike, because a list of notifications that leaves some of them out is
+     * not a list of notifications.
+     *
+     * [postedAt] is the app's own idea of when this happened, which is what the right-hand
+     * column of the list is written from, and [clearable] is whether the row can be swiped
+     * away at all - a running download or a playing track cannot be, exactly as in the
+     * shade.
+     */
+    data class ShadeEntry(
+        val packageName: String,
+        val key: String,
+        val title: String,
+        val text: String,
+        /**
+         * The whole of what the notification says, which is what a row shows once it has
+         * been opened out. The same as [text] wherever the app had nothing longer to add.
+         */
+        val fullText: String,
+        /**
+         * How many separate things this one notification is carrying: messages in a
+         * conversation, lines in a list. One for the ordinary kind.
+         *
+         * A row cannot say this for itself. An app with several things to show posts one
+         * notification and puts the rest inside it, so two messages from the same contact
+         * and one message from them are the same single row - and the only way to tell them
+         * apart was to open it. See [fullText].
+         */
+        val messageCount: Int,
+        /**
+         * The picture the notification is *about* - the photograph in a post, the artwork
+         * on a track - or null, which is most of them.
+         *
+         * Only `EXTRA_PICTURE`. The large icon is not this: it is whoever sent the message,
+         * and blowing an avatar up to the width of the panel would be a portrait of nobody
+         * where the content should be.
+         */
+        val image: android.graphics.Bitmap?,
+        val postedAt: Long,
+        val clearable: Boolean,
+        /**
+         * Whether this is something in progress rather than something that has happened -
+         * a running download, a playing track, a foreground service saying it is there.
+         *
+         * The panel lists these; the status strip does not mark them. A mark up there means
+         * "something is waiting for you", and a media player that has been running all
+         * afternoon is not waiting for anybody.
+         */
+        val ongoing: Boolean,
+        /**
+         * Whether this is a player's own notification - the transport controls a media app
+         * posts while it holds a session.
+         *
+         * The panel does not list these: what is playing is drawn as a player of its own
+         * at the top, with the cover and the controls, and a row saying the same thing
+         * underneath it would be the same track twice. See WP81ActionCenter.setMedia.
+         */
+        val media: Boolean,
+        val opening: Opening?
+    )
+
     companion object {
         private const val TAG = "NotificationListener"
         private var instance: NotificationListenerService? = null
@@ -37,22 +139,36 @@ class NotificationListenerService : NotificationListenerService() {
          */
         private val notificationText = mutableMapOf<String, List<NotificationLine>>()
 
-        /** One notification, reduced to what a tile can show. */
-        /**
-         * One notification, as a tile shows it.
-         *
-         * [image] is whatever the app put on its own notification - the photograph in a
-         * post, the avatar of whoever is messaging - already scaled down to tile size. A
-         * notification with none simply has none; most do not.
-         */
         /** Longest edge a notification picture is kept at. A tile is not a gallery. */
         private const val IMAGE_MAX_PX = 256
 
-        data class NotificationLine(
-            val title: String,
-            val text: String,
-            val image: android.graphics.Bitmap? = null
-        )
+        /** The same, for the Action Center, where an opened row is the width of the panel. */
+        private const val SHADE_IMAGE_MAX_PX = 512
+
+        /**
+         * The same lines with the ones that say the same thing collapsed into one.
+         *
+         * By what a line *shows* rather than by the whole of it: some apps re-post
+         * identical content under several ids, and two of those are one thing to read even
+         * though they are two notifications with two different intents behind them.
+         */
+        private fun List<NotificationLine>.distinctContent(): List<NotificationLine> =
+            distinctBy { Triple(it.title, it.text, it.image) }
+
+        /**
+         * Retires a notification the user has just opened from a tile.
+         *
+         * The shade does this itself for anything posted with FLAG_AUTO_CANCEL; a tile
+         * that sends the same intent has to do it by hand, or the mark stays on the tile
+         * for something the user has already read.
+         */
+        fun dismiss(key: String) {
+            try {
+                instance?.cancelNotification(key)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not dismiss notification $key", e)
+            }
+        }
 
         /**
          * The missed calls the user has not dealt with, newest first.
@@ -82,6 +198,35 @@ class NotificationListenerService : NotificationListenerService() {
         private var messageLines: List<NotificationLine> = emptyList()
 
         fun messages(): List<NotificationLine> = messageLines
+
+        /**
+         * Everything currently posted, newest first, for the Action Center.
+         *
+         * Volatile because it is written on the listener's own thread and read on the
+         * main one - an immutable list swapped in whole, so a reader either sees the old
+         * snapshot or the new one and never a half-built list.
+         */
+        @Volatile
+        private var shadeEntries: List<ShadeEntry> = emptyList()
+
+
+        /** The shade as it stands, newest first. See [ShadeEntry]. */
+        fun shade(): List<ShadeEntry> = shadeEntries
+
+        /**
+         * Retires everything the user is allowed to retire - the shade's "clear all".
+         *
+         * The platform decides what that covers: a notification the posting app marked
+         * ongoing or no-clear stays exactly where it is, which is why the Action Center's
+         * command is worded as the shade's is rather than promising an empty list.
+         */
+        fun clearAll() {
+            try {
+                instance?.cancelAllNotifications()
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not clear notifications", e)
+            }
+        }
 
         /** Notification lines for [packageName], newest first, or empty. */
         fun getNotificationLines(packageName: String): List<NotificationLine> =
@@ -164,6 +309,18 @@ class NotificationListenerService : NotificationListenerService() {
         if (isMissedCall(sbn)) notifyMainActivity()
 
         if (!shouldShowNotification(sbn)) {
+            // It changes no tile - that filter is what a tile means by a notification -
+            // but it is on the Action Center's list, and until this was here it was on no
+            // list at all: the whole shade is rebuilt inside notifyMainActivity, and
+            // returning before it meant an ongoing or a silent notification was never
+            // read at all unless some *other* app happened to post while it was up. Which
+            // is why the music player, the download and the navigation were missing.
+            //
+            // The text alone, without waking the wall behind it: a playing track re-posts
+            // its notification every second or so, and handing every tile on Start a fresh
+            // glyph at that rate is a repaint nobody asked for. The panel reads this list
+            // on its own two-second tick. See WP81ActionCenter.setNotifications.
+            refreshNotificationText()
             return
         }
 
@@ -207,6 +364,11 @@ class NotificationListenerService : NotificationListenerService() {
             notifyMainActivity()
         } else {
             Log.d(TAG, "Keeping $packageName in active notifications")
+            // The tile stays marked, so the wall has nothing to redraw - but one of this
+            // app's notifications has just gone, and the Action Center lists them one by
+            // one rather than one per app. Without this the row it withdrew stayed on the
+            // panel until something else moved.
+            refreshNotificationText()
         }
     }
     
@@ -314,6 +476,9 @@ class NotificationListenerService : NotificationListenerService() {
             val grouped = mutableMapOf<String, MutableList<NotificationLine>>()
             val missed = mutableListOf<NotificationLine>()
             val texts = mutableListOf<NotificationLine>()
+            // Paired with what they were read from, because whether a summary is worth
+            // keeping cannot be decided one notification at a time. See below.
+            val shade = mutableListOf<Pair<StatusBarNotification, ShadeEntry>>()
             for (sbn in getActiveNotifications() ?: emptyArray()) {
                 // Gathered here for the same reason the missed calls are: the People tile
                 // has no package to read them from, and these are wanted whole rather than
@@ -325,7 +490,8 @@ class NotificationListenerService : NotificationListenerService() {
                     val what = bundle?.getCharSequence(android.app.Notification.EXTRA_TEXT)
                         ?.toString()?.trim().orEmpty()
                     if (who.isNotEmpty() || what.isNotEmpty()) {
-                        texts.add(NotificationLine(who, if (what == who) "" else what))
+                        texts.add(NotificationLine(
+                            who, if (what == who) "" else what, opening = openingOf(sbn)))
                     }
                 }
                 // Gathered before the filter below rather than after it: a missed call is
@@ -340,9 +506,16 @@ class NotificationListenerService : NotificationListenerService() {
                     if (who.isNotEmpty() || what.isNotEmpty()) {
                         // Telecom's own says "Missed call" in both lines. Repeating it
                         // under itself on a tile is a tile saying one thing twice.
-                        missed.add(NotificationLine(who, if (what == who) "" else what))
+                        missed.add(NotificationLine(
+                            who, if (what == who) "" else what, opening = openingOf(sbn)))
                     }
                 }
+                // The Action Center's own list, taken before the filter below rather than
+                // after it: what it leaves out is the quiet and the ongoing, and a shade
+                // that hid those would be missing the download that is running and the
+                // track that is playing. See [ShadeEntry].
+                shadeEntryOf(sbn)?.let { shade.add(sbn to it) }
+
                 if (!shouldShowNotification(sbn)) continue
 
                 // Skip the group summary. Mail and messaging apps post one summary
@@ -358,19 +531,216 @@ class NotificationListenerService : NotificationListenerService() {
                     ?.toString()?.trim().orEmpty()
                 if (title.isEmpty() && text.isEmpty()) continue
                 grouped.getOrPut(sbn.packageName) { mutableListOf() }
-                    .add(NotificationLine(title, text, notificationImage(sbn.notification)))
+                    .add(NotificationLine(
+                        title, text, notificationImage(sbn.notification), openingOf(sbn)))
             }
-            missedCallLines = missed.asReversed().distinct()
-            messageLines = texts.asReversed().distinct()
+            // A group summary is dropped only where the group it summarises is on the
+            // list too. Mail and messaging apps post one alongside each real notification,
+            // and listing both shows the user their inbox twice - but some apps post a
+            // summary and nothing else, and dropping that one on sight lost the whole
+            // notification. Reddit is one of them.
+            val summarised = shade.mapNotNull { (sbn, _) ->
+                if (isGroupSummary(sbn)) null else sbn.groupKey
+            }.toSet()
+
+            // Newest first, and one row per thing being said: the same content posted
+            // under several ids is one notification to read, exactly as it is on a tile.
+            shadeEntries = shade
+                .filterNot { (sbn, _) -> isGroupSummary(sbn) && sbn.groupKey in summarised }
+                .map { (_, entry) -> entry }
+                .sortedByDescending { it.postedAt }
+                .distinctBy { Triple(it.packageName, it.title, it.text) }
+            missedCallLines = missed.asReversed().distinctContent()
+            messageLines = texts.asReversed().distinctContent()
             notificationText.clear()
             for ((pkg, lines) in grouped) {
                 // Some apps re-post the same content under several ids; identical lines
                 // would otherwise show up as separate notifications to cycle through.
-                notificationText[pkg] = lines.asReversed().distinct()
+                notificationText[pkg] = lines.asReversed().distinctContent()
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error reading notification text", e)
         }
+    }
+
+    /**
+     * [sbn] as a row of the Action Center, or null if there is nothing to write there.
+     *
+     * Group summaries are kept here and weeded out by the caller, which is the only place
+     * that can tell a summary standing in front of its group from one standing alone.
+     *
+     * The text is looked for in three places because apps differ about where they put it.
+     * `EXTRA_TEXT` is the ordinary answer; a notification whose body is longer than one
+     * line often carries `EXTRA_BIG_TEXT` and leaves the short one empty; and a few - the
+     * media ones especially - say what they have to say in `EXTRA_SUB_TEXT`. Taking only
+     * the first of those left a column of titles with nothing underneath them.
+     */
+    private fun shadeEntryOf(sbn: StatusBarNotification): ShadeEntry? {
+        val notification = sbn.notification
+        val extras = notification.extras ?: return null
+        val title = extras.getCharSequence(android.app.Notification.EXTRA_TITLE)
+            ?.toString()?.trim().orEmpty()
+        val text = sequenceOf(
+            android.app.Notification.EXTRA_TEXT,
+            android.app.Notification.EXTRA_BIG_TEXT,
+            android.app.Notification.EXTRA_SUB_TEXT
+        ).mapNotNull { extras.getCharSequence(it)?.toString()?.trim() }
+            .firstOrNull { it.isNotEmpty() }
+            .orEmpty()
+        if (title.isEmpty() && text.isEmpty()) return null
+        val body = bodyOf(sbn.notification, extras, text)
+        return ShadeEntry(
+            packageName = sbn.packageName,
+            key = sbn.key,
+            title = title,
+            text = text,
+            fullText = body.text,
+            messageCount = body.count,
+            image = shadePicture(sbn.notification),
+            postedAt = sbn.postTime,
+            clearable = sbn.isClearable,
+            ongoing = notification.flags and
+                android.app.Notification.FLAG_ONGOING_EVENT != 0,
+            media = isMediaNotification(extras),
+            opening = openingOf(sbn)
+        )
+    }
+
+    /**
+     * Whether a notification is a player's transport controls.
+     *
+     * Two marks, because apps reach the same look by two routes: `MediaStyle` names itself
+     * in `EXTRA_TEMPLATE`, and anything that hands the shade a session token - which is
+     * what makes the platform draw media controls at all - carries `EXTRA_MEDIA_SESSION`.
+     * Either is enough, and neither costs anything: the extras have already been unparcelled
+     * for the title by the time this is asked.
+     */
+    private fun isMediaNotification(extras: android.os.Bundle): Boolean = try {
+        extras.containsKey(android.app.Notification.EXTRA_MEDIA_SESSION) ||
+            extras.getString(android.app.Notification.EXTRA_TEMPLATE)
+                ?.contains("MediaStyle") == true
+    } catch (e: Exception) {
+        // A bundle that will not unparcel is a notification we simply know less about.
+        false
+    }
+
+    /**
+     * The whole of what a notification says, and how many separate things that is.
+     *
+     * Four places to look, because an app with more than one line to show does not post
+     * more than one notification - it posts one and puts the rest inside it, and which
+     * field it uses depends on which style it chose:
+     *
+     *  - **MessagingStyle** is a conversation, and every message in it is in there. This is
+     *    the one that matters most: WhatsApp, Signal and the rest post *one* notification
+     *    per thread and update it in place, so two messages from the same contact are one
+     *    notification with two messages in it. Reading only the summary line showed the
+     *    newest and silently dropped the rest, which looked like the older one having never
+     *    arrived.
+     *  - **InboxStyle** is a list - several mails, several missed calls - in EXTRA_TEXT_LINES.
+     *  - **BigTextStyle** is one long passage the summary line was cut out of.
+     *  - and failing all three, the summary line is the whole of it.
+     *
+     * The sender's name goes in front of a message only where the thread has more than one
+     * of them: a conversation with one other person in it is already named by the row's own
+     * title, and repeating it down the left of every line is a column of the same word.
+     */
+    private data class Body(val text: String, val count: Int)
+
+    private fun bodyOf(
+        notification: android.app.Notification,
+        extras: android.os.Bundle,
+        summary: String
+    ): Body {
+        try {
+            androidx.core.app.NotificationCompat.MessagingStyle
+                .extractMessagingStyleFromNotification(notification)
+                ?.messages
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { messages ->
+                    val senders = messages.mapNotNull { it.person?.name?.toString() }.toSet()
+                    return Body(
+                        messages.joinToString("\n") { message ->
+                            val who = message.person?.name?.toString()
+                            val what = message.text?.toString().orEmpty()
+                            if (who != null && senders.size > 1) "$who: $what" else what
+                        }.trim(),
+                        messages.size
+                    )
+                }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not read a conversation out of a notification", e)
+        }
+
+        extras.getCharSequenceArray(android.app.Notification.EXTRA_TEXT_LINES)
+            ?.mapNotNull { it?.toString()?.trim() }
+            ?.filter { it.isNotEmpty() }
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { return Body(it.joinToString("\n"), it.size) }
+
+        extras.getCharSequence(android.app.Notification.EXTRA_BIG_TEXT)
+            ?.toString()?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { return Body(it, 1) }
+
+        return Body(summary, 1)
+    }
+
+    /**
+     * The picture a notification is carrying, for a row that has been opened out.
+     *
+     * Kept larger than the tile's copy because it is shown larger - a tile is two hundred
+     * pixels across and an opened row is the width of the panel - but nowhere near the size
+     * the app posted it at, which on a photograph is whatever came off the camera.
+     *
+     * Only where there is one, which is not often: most notifications carry no picture at
+     * all, and this is read on every refresh, so what it does in the common case is return
+     * null without touching anything.
+     */
+    private fun shadePicture(notification: android.app.Notification): android.graphics.Bitmap? =
+        try {
+            val extras = notification.extras
+            // Through BundleCompat: the typed getParcelable is API 33, and calling it on
+            // anything older throws NoSuchMethodError rather than falling back.
+            extras?.let {
+                androidx.core.os.BundleCompat.getParcelable(
+                    it,
+                    android.app.Notification.EXTRA_PICTURE,
+                    android.graphics.Bitmap::class.java
+                )
+            }?.let { scaleLongestTo(it, SHADE_IMAGE_MAX_PX) }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not read a notification's picture", e)
+            null
+        }
+
+    private fun isGroupSummary(sbn: StatusBarNotification): Boolean =
+        sbn.notification.flags and android.app.Notification.FLAG_GROUP_SUMMARY != 0
+
+    /**
+     * Where [sbn] points, for a tile that is showing it.
+     *
+     * The content intent is the notification's own answer to "what is this about": a
+     * messaging app puts the conversation there, a mail app the message, and tapping the
+     * notification in the shade is how the user would normally get to it. A tile showing
+     * that notification is showing the same thing and should go to the same place.
+     */
+    private fun openingOf(sbn: StatusBarNotification): Opening? {
+        val intent = sbn.notification.contentIntent ?: return null
+        // Somewhere to go, and not merely something to fire: a few apps hang a broadcast
+        // off their notification and deal with the tap silently, which from a tile would
+        // be the Start screen turning itself out for a launch that never comes.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S &&
+            !intent.isActivity) {
+            return null
+        }
+        return Opening(
+            key = sbn.key,
+            intent = intent,
+            autoCancel =
+                sbn.notification.flags and android.app.Notification.FLAG_AUTO_CANCEL != 0,
+            ours = sbn.packageName == packageName
+        )
     }
 
     /**
@@ -385,8 +755,10 @@ class NotificationListenerService : NotificationListenerService() {
     private fun notificationImage(notification: android.app.Notification): android.graphics.Bitmap? {
         try {
             val extras = notification.extras ?: return null
-            val picture = extras.getParcelable(
-                android.app.Notification.EXTRA_PICTURE, android.graphics.Bitmap::class.java)
+            // Through BundleCompat: the typed getParcelable is API 33, and calling it on
+            // anything older throws NoSuchMethodError rather than falling back.
+            val picture = androidx.core.os.BundleCompat.getParcelable(
+                extras, android.app.Notification.EXTRA_PICTURE, android.graphics.Bitmap::class.java)
             if (picture != null) return scaleForTile(picture)
 
             val large = notification.getLargeIcon() ?: return null
@@ -409,10 +781,17 @@ class NotificationListenerService : NotificationListenerService() {
         }
     }
 
-    private fun scaleForTile(source: android.graphics.Bitmap): android.graphics.Bitmap {
-        val longest = maxOf(source.width, source.height)
-        if (longest <= IMAGE_MAX_PX) return source
-        val scale = IMAGE_MAX_PX.toFloat() / longest
+    private fun scaleForTile(source: android.graphics.Bitmap): android.graphics.Bitmap =
+        scaleLongestTo(source, IMAGE_MAX_PX)
+
+    /** [source] with its longer side brought down to [longest], or as it is if smaller. */
+    private fun scaleLongestTo(
+        source: android.graphics.Bitmap,
+        longest: Int
+    ): android.graphics.Bitmap {
+        val was = maxOf(source.width, source.height)
+        if (was <= longest) return source
+        val scale = longest.toFloat() / was
         return android.graphics.Bitmap.createScaledBitmap(
             source,
             (source.width * scale).toInt().coerceAtLeast(1),

@@ -95,13 +95,29 @@ class KeyView(
          *   "one to the left" and lets the field work out what that means.
          * @return how many characters the caret **actually** moved, which is not always what
          *   was asked for: the field runs out of text. The caller wants this because it is the
-         *   one that decides about feedback, and a keyboard still ticking against the end of
-         *   the text would be saying the caret was moving when it was not. The two callers
-         *   want different things from the same fact - the space bar ticks per character, the
-         *   joystick only while it is running slowly enough for a tick to mean something - so
-         *   the answer is returned rather than acted on here.
+         *   one that decides about feedback, and both of them decide the same way - a tick per
+         *   character that moves, and nothing at all against the end of the text, where a
+         *   keyboard still ticking would be saying the caret was moving when it was not. It is
+         *   still returned rather than acted on here, because what a control does about it is
+         *   the control's own business.
          */
         fun onCursorSlide(view: View, steps: Int): Int
+
+        /**
+         * And the same finger pushing the joystick up or down, so the caret changes line.
+         *
+         * Only the joystick: a space bar reports one axis because it is already using the
+         * other one to be a key.
+         *
+         * @param lines lines to move, negative for up. The column the caret lands in is the
+         *   one it came from, which is the far end's business rather than this one's - it is
+         *   the only side that can see the text.
+         * @return how many lines it **actually** moved, on the same terms as [onCursorSlide]
+         *   and for the same reason. Zero at the top and the bottom of the text, and zero in
+         *   a field that will not say where its own lines are, which is a state the caller
+         *   cannot tell from a wall and does not need to.
+         */
+        fun onCursorLines(view: View, lines: Int): Int
     }
 
     var listener: Listener? = null
@@ -530,32 +546,45 @@ class KeyView(
      * Both greys are the foreground colour at a low alpha over the background rather than
      * two fixed values, which is what lets one keyboard answer for both the Dark and the
      * Light setting: on Dark they come out the `#333333` and `#4D4D4D` the phone used, and
-     * on Light they come out the matching pair the other way up. The pressed fill is one
-     * more step along that same line, so it lightens on Dark and darkens on Light without
-     * either being spelled out - and it works on the accent key too, which is not a grey.
+     * on Light they come out the matching pair the other way up.
      */
     @ColorInt
     private fun fillFor(pressed: Boolean): Int {
-        // A pressed key sinks rather than lights up.
+        // A pressed key lights up in the accent, which is what the phone did and what
+        // everything else on this keyboard was already doing: the suggestion under a finger,
+        // the emoji under a finger and the chosen cell of the alternates row are all painted
+        // [WP81Palette.accent] at the moment they are touched. A key that answered a thumb
+        // with a grey instead was the one pressable surface here speaking a different
+        // language, and it is the surface people touch most.
         //
-        // It was the accent for a while, which is a defensible reading of what the phone did
-        // and turned out to be wrong in the hand: at typing speed a saturated colour flashing
-        // under every letter is the brightest thing on the screen, over and over, and the eye
-        // goes to it instead of to the words. Going the other way - toward the page's own
-        // background - reads as the key being pushed in, which is what a pressed key is meant
-        // to look like, and is quiet enough to type in front of.
-        //
-        // Toward it, and not all the way to it. Landing on the background itself made a
-        // pressed key black on the Dark setting, which is not a key that has been pushed in
-        // but a hole where a key was. See [PRESSED_FILL_ALPHA], which stops short of both the
-        // background and the gutter, so a key under a thumb is still plainly a key.
-        if (pressed) return blend(PRESSED_FILL_ALPHA)
+        // It is loud - a saturated colour flashing under every letter at typing speed is the
+        // brightest thing on the screen, over and over - and that is a fair description of
+        // the phone this keyboard is of. Quiet was tried and is not what was asked for.
+        if (pressed) return pressedFill()
         return when (key.style) {
             Style.ACCENT -> palette.accent
             Style.LETTER -> blend(LETTER_FILL_ALPHA)
             Style.FUNCTION -> blend(FUNCTION_FILL_ALPHA)
         }
     }
+
+    /**
+     * The accent, except on a key that is already wearing it.
+     *
+     * Shift while shift is on is painted the accent standing still - see
+     * `KeyboardView.applyShift` - so pressing it in the same colour it already is would be a
+     * key that does not answer at all, and shift is precisely the key somebody presses when
+     * they are unsure whether it took. It sinks toward the page's own background instead:
+     * still plainly the accent, visibly pushed in, and it moves the right way on both the
+     * Dark setting and the Light one without either being spelled out.
+     */
+    @ColorInt
+    private fun pressedFill(): Int =
+        if (key.style == Style.ACCENT) {
+            ColorUtils.blendARGB(palette.accent, palette.background, PRESSED_ACCENT_SINK)
+        } else {
+            palette.accent
+        }
 
     @ColorInt
     private fun blend(alpha: Float): Int =
@@ -564,13 +593,14 @@ class KeyView(
     /**
      * What colour the letter, glyph or hint on this key is.
      *
-     * White on an accent key, and otherwise the page's own foreground - which is the right
-     * answer for a pressed key too, because a pressed key is painted the page's background
-     * and the foreground is by definition what reads against it.
+     * White on the accent, and the page's own foreground on a grey. Which of the two a key is
+     * wearing is not a property of the key but of the moment: an accent-styled key is on the
+     * accent always, an ordinary one only while a thumb is on it, and both want the same
+     * white when they are.
      */
     @ColorInt
     private fun onFace(): Int =
-        if (key.style == Style.ACCENT && !lit) palette.onAccent() else palette.foreground
+        if (lit || key.style == Style.ACCENT) palette.onAccent() else palette.foreground
 
     private fun tintGlyph() {
         glyph?.setTint(onFace())
@@ -807,19 +837,14 @@ class KeyView(
         const val FUNCTION_FILL_ALPHA = 0.302f    // #4D4D4D on Dark
 
         /**
-         * The third grey: a key with a thumb on it.
+         * How far a key that is already the accent sinks when it is pressed. See [pressedFill].
          *
-         * Chosen to sit between the keyboard's ground and the paler of the two key fills -
-         * 0.102 and 0.200 - so a pressed key is darker than any key beside it and still
-         * lighter than the gutter around it. Both halves of that matter. Going past the
-         * ground is how it ended up at the background and read as a hole; landing exactly on
-         * the ground would be a key that merges into the board and reads as one too.
-         *
-         * Stated as an alpha over the page rather than as a colour, like the other two, which
-         * is what makes one number answer for the Dark setting and the Light one: it is a
-         * step toward the background either way, #242424 on black and #DBDBDB on white.
+         * A third of the way to the page, which is enough to be unmistakable at a glance and
+         * little enough that the key is still obviously the same colour it was. It cannot be
+         * a step toward white or toward black, because it has to darken the accent on the
+         * Dark setting and lighten it on the Light one; toward the background is both.
          */
-        const val PRESSED_FILL_ALPHA = 0.14f
+        const val PRESSED_ACCENT_SINK = 0.33f
 
         /**
          * Text and glyph sizes, as fractions of one key's width.

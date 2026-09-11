@@ -6,8 +6,11 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Rect
+import android.graphics.RenderEffect
+import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
+import android.os.Build
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -118,8 +121,29 @@ class TileView(
      */
     private var weatherFace: WeatherFaceView? = null
 
+    /**
+     * The forecast the tile was last handed, shown or not.
+     *
+     * The counterpart to [liveReading] for the one widget that is laid out rather than
+     * read: a 1x1 keeps it and puts it up when it is grown. See [showsLive].
+     */
+    private var weatherReading: WeatherFaceView.Reading? = null
+
     /** Whether [weatherFace] is the front face right now. */
     private var hasWeatherFace = false
+
+    /**
+     * The charge, drawn into the cell that holds it. See [setBatteryFace].
+     *
+     * Built on first use, like the faces above it.
+     */
+    private var batteryFace: BatteryFaceView? = null
+
+    /** The charge the tile was last handed. */
+    private var batteryReading: BatteryFaceView.Reading? = null
+
+    /** Whether [batteryFace] is the front face right now. */
+    private var hasBatteryFace = false
 
     /**
      * Who the mosaic fills itself from: the people the user starred, and the rest of the
@@ -263,7 +287,23 @@ class TileView(
     data class Line(
         val title: String,
         val text: String
-    )
+    ) {
+        /**
+         * Where a tap on this line goes, when it has somewhere of its own to go.
+         *
+         * A notification knows what it is about - the conversation, the message, the
+         * order being delivered - and this is the host's way of handing that down to the
+         * tile showing it. Null for a line with nothing behind it, and for anything the
+         * shell writes itself; those open their program as they always did.
+         *
+         * Outside the constructor on purpose. Two lines are the same line when they say
+         * the same thing, which is what [setNotifications] compares to know whether the
+         * queue has changed - and a lambda is never equal to the one built for the same
+         * line a tick earlier, so carrying it in the constructor would reset the tile to
+         * the top of its queue on every refresh.
+         */
+        var open: (() -> Unit)? = null
+    }
 
     /** Notification lines to cycle through on the flip face, newest first. */
     private var notifications: List<Line> = emptyList()
@@ -374,7 +414,9 @@ class TileView(
      */
     val hasPicture: Boolean
         get() = if (media != null) mediaArt != null
-        else rotation.any { it.washed && it.image.isNotBlank() }
+        // A 1x1 draws no story picture at all, so there is nothing there to turn off
+        // either. See [showsLive].
+        else showsLive() && rotation.any { it.washed && it.image.isNotBlank() }
 
     /** Fetches a story's picture. Set by the host, which owns the network. */
     var backdropLoader: ((String, (Bitmap?) -> Unit) -> Unit)? = null
@@ -470,8 +512,9 @@ class TileView(
         // tile that spent half its time face-down would be showing them to nobody.
         if (hasPeopleMosaic) return false
         // And a tile showing the whole of the weather at once has nothing to turn over
-        // *to*: everything it would have turned through is already on the front.
-        if (hasWeatherFace) return false
+        // *to*: everything it would have turned through is already on the front. The
+        // battery is the same - the charge is one reading, drawn.
+        if (hasWeatherFace || hasBatteryFace) return false
         if (!hasFlipContent()) return false
         // A 1x1 app tile has no room for a title and a body; it carries the dot instead.
         // A widget's reverse is a bare reading, which fits anywhere.
@@ -628,7 +671,6 @@ class TileView(
         set(value) {
             if (field == value) return
             field = value
-            applyFolderPreviewGround()
             invalidate()
         }
 
@@ -645,7 +687,6 @@ class TileView(
         set(value) {
             if (field == value) return
             field = value
-            applyFolderPreviewGround()
             invalidate()
         }
 
@@ -661,7 +702,6 @@ class TileView(
             val clamped = value.coerceIn(0f, 1f)
             if (field == clamped) return
             field = clamped
-            applyFolderPreviewGround()
             invalidate()
         }
 
@@ -886,7 +926,9 @@ class TileView(
         liveHeadline.typeface = segoe(TITLE_FONT)
         liveHeadline.maxLines = 1
         liveHeadline.ellipsize = android.text.TextUtils.TruncateAt.END
-        liveHeadline.includeFontPadding = false
+        // Whether it keeps the font's own padding depends on what the face turns out to be
+        // showing, so it is settled with the rest of the typesetting - see
+        // [applyLiveTextSizes].
         liveDetail.typeface = segoe(SUBTITLE_FONT)
         liveDetail.maxLines = 2
         liveDetail.ellipsize = android.text.TextUtils.TruncateAt.END
@@ -953,11 +995,21 @@ class TileView(
             android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
         ).apply { gravity = Gravity.BOTTOM })
 
+        // The title first, the rest under it - which is how a story is set on the front
+        // (see [arrangeFace], where a face of words is a title with the rest under it) and
+        // therefore how a notification is set here. The two are the same kind of thing: a
+        // line naming what arrived, and a line of it. Built the other way round, they were
+        // the same two sizes in the opposite order - the small line heading the tile and
+        // the large one under it - so a News tile and a message tile side by side read as
+        // having been laid out by different hands.
+        //
+        // A widget's reverse is re-ordered from here anyway, this being the default the
+        // reading layout starts from; see [applyReadingLayout].
         backBox.orientation = android.widget.LinearLayout.VERTICAL
-        backBox.addView(backText, android.widget.LinearLayout.LayoutParams(
+        backBox.addView(backRow, android.widget.LinearLayout.LayoutParams(
             android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
             android.widget.LinearLayout.LayoutParams.WRAP_CONTENT))
-        backBox.addView(backRow, android.widget.LinearLayout.LayoutParams(
+        backBox.addView(backText, android.widget.LinearLayout.LayoutParams(
             android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
             android.widget.LinearLayout.LayoutParams.WRAP_CONTENT))
 
@@ -1014,9 +1066,10 @@ class TileView(
         // not both be up, and the tile that carries this mark is now the tile that carries
         // its program's name. Nothing contends for the corner - the two tiles that wear
         // this mark are the clock and the calendar, and neither turns over or carries a
-        // widget mark of its own. Sized and inset by [applyCornerMark].
+        // widget mark of its own. Sized and inset by [applyCornerMark], a couple of
+        // points under the rest - see [SMALL_MARK_DP].
         addView(alarmMark, LayoutParams(
-            dp(CORNER_MARK_DP), dp(CORNER_MARK_DP),
+            dp(SMALL_MARK_DP), dp(SMALL_MARK_DP),
             Gravity.TOP or Gravity.END).apply {
             topMargin = dp(CORNER_INSET_DP)
             marginEnd = dp(CORNER_INSET_DP)
@@ -1055,25 +1108,33 @@ class TileView(
     private fun buildMediaFace() {
         mediaTitle.maxLines = 2
         mediaTitle.ellipsize = android.text.TextUtils.TruncateAt.END
-        mediaTitle.typeface = segoe(TITLE_FONT)
+        mediaTitle.typeface = segoe(FACE_TITLE_FONT)
 
         mediaArtist.maxLines = 1
         mediaArtist.ellipsize = android.text.TextUtils.TruncateAt.END
-        // The same pair the News tile sets its story in: the title in the semilight face
-        // and the line under it in the regular one, both at the sizes the wall shares. A
-        // track and a headline are the same kind of thing on a tile - a line of somebody
-        // else's words with its source under it - and they were being set in two different
-        // faces on tiles standing next to each other.
+        // The pair the weather tile and the calendar are set in - see [FACE_TITLE_SP]: the
+        // name of the thing heading the face, and the line saying something about it
+        // underneath. A track with its artist under it is the same shape as a place with
+        // its sky or an appointment with its hour, and the three were being set in three
+        // different faces on tiles standing next to each other.
         mediaArtist.typeface = segoe(SUBTITLE_FONT)
         for (text in listOf(mediaTitle, mediaArtist)) tightenLines(text)
 
         mediaText.orientation = android.widget.LinearLayout.VERTICAL
-        mediaText.addView(mediaTitle)
+        // Both lines take the width they need rather than the width they are offered. The
+        // ceiling that keeps them clear of the clock and the mark is a maxWidth (see
+        // onMeasure), and a text view told exactly how wide to be ignores its maxWidth
+        // outright - as MATCH_PARENT here told them to. That is the title running under
+        // the elapsed time on a strip.
+        mediaText.addView(mediaTitle, android.widget.LinearLayout.LayoutParams(
+            android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+            android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
         // Pulled up under the title. The two are one thing - a track - and the line boxes
         // either side of the gap leave more air between them than there is between the
         // title's own two lines.
         mediaText.addView(mediaArtist, android.widget.LinearLayout.LayoutParams(
-            android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+            android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
             android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = -dp(MEDIA_TEXT_TIGHTEN_DP) })
         mediaFace.addView(mediaText, LayoutParams(
@@ -1204,9 +1265,10 @@ class TileView(
         mediaArtist.visibility =
             if (tile.size.hasTwoTextLines && mediaArtist.text.isNotEmpty()) VISIBLE else GONE
 
-        // What is playing is a title and who it is by is a caption; they are set like every
-        // other title and caption on the wall rather than to the tile they land on.
-        mediaTitle.textSize = LIVE_TITLE_SP
+        // What is playing is a name and who it is by is the line under it; they are set
+        // like every other name and line on the wall rather than to the tile they happen
+        // to land on. See [FACE_TITLE_SP].
+        mediaTitle.textSize = FACE_TITLE_SP
         mediaArtist.textSize = LIVE_CAPTION_SP
 
         // A strip runs the text and the transport side by side rather than stacked, which
@@ -1289,7 +1351,12 @@ class TileView(
             (mediaControls.layoutParams as LayoutParams).gravity =
                 Gravity.END or Gravity.BOTTOM
             (mediaText.layoutParams as LayoutParams).apply {
-                gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                // The top corner, as on every other tile that names something - see
+                // [FACE_TITLE_SP]. Centring it was the strip reading its own height as
+                // permission to float: a name and the line under it start where the tile
+                // starts, and a strip whose text sat a few points lower than the tile
+                // beside it was the pair set in one hand and placed in another.
+                gravity = Gravity.START or Gravity.TOP
                 // Reserve exactly what the transport occupies - each control is `edge`
                 // wide and carries `gap` after it - plus a clearance, so the title
                 // ellipsises short of the first button instead of sliding under it. None
@@ -1418,6 +1485,9 @@ class TileView(
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
+    private fun sp(v: Float) = android.util.TypedValue.applyDimension(
+        android.util.TypedValue.COMPLEX_UNIT_SP, v, resources.displayMetrics)
+
     // ---------------------------------------------------------------- content
 
     /**
@@ -1429,9 +1499,6 @@ class TileView(
     fun setTileColor(color: Int?) {
         if (customAccent == color) return
         customAccent = color
-        // A painted tile is a solid block, not a window, so nothing under its squares is
-        // being dimmed any more - see [drawFace].
-        applyFolderPreviewGround()
         invalidate()
     }
 
@@ -1484,8 +1551,10 @@ class TileView(
         val preview = requireFolderPreview()
         hasFolderPreview = show
         preview.setEntries(entries)
-        preview.visibility = if (show && !isEmptied) VISIBLE else GONE
-        applyFolderPreviewGround()
+        // Visible even while the folder is open: what an emptied one drops is the apps and
+        // the name, not the scoring the tile is divided by. See [applyEmptied].
+        preview.visibility = if (show) VISIBLE else GONE
+        preview.setContentsHidden(isEmptied)
         iconRow.visibility = if (show || isEmptied) GONE else VISIBLE
         applyFolderPreviewGrid()
         // Re-derives the whole front: on a one-row tile the folder's name steps aside for
@@ -1569,7 +1638,11 @@ class TileView(
         favourites: List<ContactFeed.Person>,
         others: List<ContactFeed.Person> = emptyList()
     ) {
-        val show = favourites.isNotEmpty() || others.isNotEmpty()
+        // Held before anything else is decided, so that a wall arriving at a 1x1 is still
+        // there to go up when the tile is grown. See [showsLive].
+        this.favourites = favourites
+        this.otherPeople = others
+        val show = (favourites.isNotEmpty() || others.isNotEmpty()) && showsLive()
         // Nothing to show and nothing built to show it in, which is every tile that is
         // not the People tile. Asked on every refresh, so it answers before it builds.
         //
@@ -1581,8 +1654,6 @@ class TileView(
         if (!show && peopleMosaic == null && !hasLiveContent()) return
         val mosaic = requirePeopleMosaic()
         hasPeopleMosaic = show
-        this.favourites = favourites
-        this.otherPeople = others
         mosaic.visibility = if (show) VISIBLE else GONE
         if (show) {
             // The mosaic *is* the tile: neither the glyph nor the reading that stood in
@@ -1711,15 +1782,19 @@ class TileView(
      * turn to is already on the front. See [canTurnOver].
      */
     fun setWeatherFace(reading: WeatherFaceView.Reading?) {
+        // Held before anything else is decided, so a forecast that arrived at a 1x1 is
+        // still there to lay across the tile once it is grown. See [showsLive].
+        weatherReading = reading
+        val show = reading != null && showsLive()
         // Nothing to show and nothing built to show it in, which is every tile but one.
         // Asked on every weather refresh, so it answers before it builds anything.
-        if (reading == null && weatherFace == null) return
+        if (!show && weatherFace == null) return
         val face = requireWeatherFace()
-        hasWeatherFace = reading != null
+        hasWeatherFace = show
         face.setReading(reading)
         face.cell = cellSize()
-        face.visibility = if (reading != null && !isEmptied) VISIBLE else GONE
-        if (reading != null) {
+        face.visibility = if (show && !isEmptied) VISIBLE else GONE
+        if (show) {
             // The face *is* the tile: neither the icon nor anything it was turning through
             // has anywhere left to sit.
             iconRow.visibility = GONE
@@ -1754,6 +1829,61 @@ class TileView(
     private fun requireWeatherFace(): WeatherFaceView =
         weatherFace ?: WeatherFaceView(context, palette).also { face ->
             weatherFace = face
+            face.visibility = GONE
+            frontFace.addView(face, LayoutParams(
+                LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        }
+
+    /**
+     * The charge, laid across the tile in place of the mark it would otherwise wear.
+     *
+     * The one live face that goes up at every footprint, the 1x1 included, where every
+     * other widget stands down to its icon - see [showsLive]. It can, because what it
+     * draws *is* a mark: a battery with the level painted inside it says how full the
+     * phone is in a square one cell across, which is precisely what a headline, a
+     * photograph or a bare number cannot do at that size. The figure beside it is the part
+     * that needs room, and the face drops it when there is none. See BatteryFaceView.
+     *
+     * Null puts the tile back to its icon, which is what it gets on a phone that will not
+     * say what the battery is doing.
+     */
+    fun setBatteryFace(reading: BatteryFaceView.Reading?) {
+        batteryReading = reading
+        val show = reading != null
+        if (!show && batteryFace == null) return
+        val face = requireBatteryFace()
+        hasBatteryFace = show
+        face.setReading(reading)
+        face.cell = cellSize()
+        face.visibility = if (show && !isEmptied) VISIBLE else GONE
+        if (show) {
+            // The face is the whole tile: neither the icon nor anything it was turning
+            // through has anywhere left to sit.
+            iconRow.visibility = GONE
+            liveBox.visibility = GONE
+            // A reading can arrive at a tile that is face-down or halfway through a turn,
+            // and this is on the front. It is brought back rather than left showing a
+            // blank reverse.
+            flipAnimator?.cancel()
+            rotationX = 0f
+            if (showingBack) {
+                showingBack = false
+                applyNotificationState()
+            }
+        } else {
+            iconRow.visibility = if (isEmptied) GONE else VISIBLE
+            applyNotificationState()
+        }
+        applyLabelVisibility()
+        // Everything the tile could have turned to is on the front while the charge is
+        // laid across it, so the corner goes with it. See [canFlip].
+        applyFlipCornerSize()
+    }
+
+    /** The battery face, made on first use. Fills the tile, as the weather's does. */
+    private fun requireBatteryFace(): BatteryFaceView =
+        batteryFace ?: BatteryFaceView(context, palette).also { face ->
+            batteryFace = face
             face.visibility = GONE
             frontFace.addView(face, LayoutParams(
                 LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
@@ -1829,8 +1959,10 @@ class TileView(
      * over left the corner as the last refresh had it until the next one came round.
      */
     private fun applyWidgetGlyphVisibility() {
+        // Nor on a tile standing down to its icon: the mark in the corner and the mark in
+        // the middle would be the same mark twice. See [showsLive].
         widgetGlyph.visibility =
-            if (widgetGlyph.drawable != null && !isEditMode) VISIBLE else GONE
+            if (widgetGlyph.drawable != null && !isEditMode && showsLive()) VISIBLE else GONE
     }
 
     /**
@@ -1908,7 +2040,7 @@ class TileView(
                 ?.let { MonochromeIconProvider.measureContentRatio(it) } ?: 1f
         }
         applyAlarmMarkVisibility()
-        applyCornerMark(alarmMark, alarmMarkRatio)
+        applyCornerMark(alarmMark, alarmMarkRatio, SMALL_MARK_DP)
     }
 
     /**
@@ -1945,8 +2077,8 @@ class TileView(
      * inflation is capped: an icon that is mostly empty would otherwise be given a box
      * bigger than the corner it sits in.
      */
-    private fun applyCornerMark(view: View, contentRatio: Float) {
-        val target = dp(CORNER_MARK_DP)
+    private fun applyCornerMark(view: View, contentRatio: Float, markDp: Int = CORNER_MARK_DP) {
+        val target = dp(markDp)
         val box = (target / contentRatio.coerceIn(MIN_CORNER_RATIO, 1f)).toInt()
         val inset = dp(CORNER_INSET_DP) - (box - target) / 2
         val params = view.layoutParams as? LayoutParams ?: return
@@ -1989,6 +2121,9 @@ class TileView(
 
     /** Whether turning this tile over would show anything different. */
     fun hasFlipContent(): Boolean = when {
+        // A widget standing down to its icon has nothing on either face - the reading and
+        // the run of stories are both being held rather than shown. See [showsLive].
+        tile.kind.isLiveWidget && !showsLive() -> false
         rotation.isNotEmpty() -> rotation.size > 1
         tile.kind.isLiveWidget -> widgetBack != null
         else -> notifications.isNotEmpty()
@@ -2201,6 +2336,10 @@ class TileView(
         val same = faces == rotation
         rotation = faces
         liveStyle = style
+        // A run of faces takes the place of a reading, and on a tile too small to show
+        // either it still has to take the icon's side of the question - see [showsLive].
+        if (faces.isNotEmpty()) liveReading = null
+        applyLiveFace()
         // Both of those decide whether the tile carries a name - a run of stories is
         // somebody else's words and says whose, a reading is its own caption - so the
         // question is put again here, empty run included.
@@ -2240,8 +2379,7 @@ class TileView(
             backText.visibility = if (detail.isNullOrEmpty()) GONE else VISIBLE
             backAside.text = face.aside.orEmpty()
         } else {
-            iconRow.visibility = GONE
-            liveBox.visibility = VISIBLE
+            applyLiveFace()
             liveHeadline.text = title
             setLiveCaption(detail.orEmpty())
             liveDetail.visibility = if (detail.isNullOrEmpty()) GONE else VISIBLE
@@ -2267,14 +2405,16 @@ class TileView(
         }
         // The still is still asked for below, clip or not: it is the frame the tile shows
         // while the clip opens, and what it keeps if the clip will not play at all.
-        if (face.motion && face.image.isNotBlank() && showsBackdrop) playVideo(face.image)
-        else stopVideo()
+        if (face.motion && face.image.isNotBlank() && showsBackdrop && showsLive()) {
+            playVideo(face.image)
+        } else stopVideo()
         val loader = backdropLoader ?: return
         // Nothing is fetched for a tile that has been told not to show it. The whole cost
         // of a picture - the request, the decode, the bitmap held for as long as the face
         // is up - belongs to the drawing, so switching it off has to switch that off too
         // rather than quietly go on paying for a picture nobody can see.
-        if (face.image.isBlank() || !showsBackdrop) return
+        // Nor for a tile standing down to its icon, which has no face to put one behind.
+        if (face.image.isBlank() || !showsBackdrop || !showsLive()) return
         val wanted = face.image
         loader(wanted) { bitmap ->
             if (bitmap == null) return@loader
@@ -2491,11 +2631,19 @@ class TileView(
         val aside: String? = null
     )
 
+    /**
+     * The reading the widget was last handed, whether or not it is being shown.
+     *
+     * Kept for the same reason the run of faces is: the tile can be resized after it
+     * arrives, and the smallest footprint shows no reading at all. See [showsLive].
+     */
+    private var liveReading: Reading? = null
+
     fun setLiveWidget(reading: Reading) {
         liveStyle = LiveStyle.READING
         rotation = emptyList()
-        iconRow.visibility = GONE
-        liveBox.visibility = VISIBLE
+        liveReading = reading
+        applyLiveFace()
         liveHeadline.text = reading.number
         setLiveCaption(reading.caption.orEmpty())
         liveDetail.visibility = if (reading.caption.isNullOrEmpty()) GONE else VISIBLE
@@ -2558,12 +2706,57 @@ class TileView(
         // this exists to survive.
         val room = (width - box.paddingLeft - box.paddingRight).toFloat()
         if (room <= 0f) return text
-        return text.split('\n').joinToString("\n") { line ->
+        // The first of those lines is a name where the rest are not - see [namesItsHead] -
+        // and it is cut against the paint it will be drawn in rather than the caption's.
+        // Measured two points short of the size it is set at, a title runs off the tile.
+        val head = if (namesItsHead()) headPaint(view) else null
+        val lines = text.split('\n').mapIndexed { index, line ->
             android.text.TextUtils.ellipsize(
-                line, view.paint, room, android.text.TextUtils.TruncateAt.END
+                line, if (index == 0 && head != null) head else view.paint, room,
+                android.text.TextUtils.TruncateAt.END
             ).toString()
         }
+        val fitted = lines.joinToString("\n")
+        return if (head == null) fitted else headed(fitted, lines.first().length)
     }
+
+    /**
+     * Whether the head of this widget's caption is the name of something.
+     *
+     * The calendar alone. Every other widget heads its caption with a word for the number
+     * underneath - a weekday, the name of an index - where the calendar heads it with an
+     * appointment's own title and puts the hour under that: a name with a line about it,
+     * which is the pair the media and weather tiles are set in. See [FACE_TITLE_SP], and
+     * [captionHeadDp], which is the air the same line already asked for.
+     */
+    private fun namesItsHead(): Boolean = tile.kind == Tile.Kind.LIVE_CALENDAR
+
+    /** The caption's own paint, at the size and weight a name is set in. */
+    private fun headPaint(view: TextView): android.text.TextPaint =
+        android.text.TextPaint(view.paint).apply {
+            textSize = sp(FACE_TITLE_SP)
+            segoe(FACE_TITLE_FONT)?.let { typeface = it }
+        }
+
+    /**
+     * [text] with its first [head] characters set as a name.
+     *
+     * Spans rather than a view of its own: the caption arrives as one string, wraps as one
+     * block and is re-cut as one thing every time the tile is resized - see [fitCaption] -
+     * and splitting it would mean keeping two views in step to draw what is written as
+     * one.
+     */
+    private fun headed(text: String, head: Int): CharSequence =
+        android.text.SpannableString(text).apply {
+            setSpan(
+                android.text.style.AbsoluteSizeSpan(sp(FACE_TITLE_SP).toInt()),
+                0, head, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            segoe(FACE_TITLE_FONT)?.let {
+                setSpan(
+                    android.text.style.TypefaceSpan(it),
+                    0, head, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+        }
 
     private fun applyLiveTextSizes() {
         // No size ladder at all. Scaling the headline to the footprint is what made the
@@ -2572,16 +2765,25 @@ class TileView(
         // bigger tile buys is room - more lines, and a caption that has somewhere to go -
         // not bigger type. The 1x1 sets the size, being the tile with the least room: a
         // size that does not fit there is not a size the wall can share.
-        // A story is prose - wrapped over as many lines as the tile has rather than
-        // ellipsised onto one - but it is set in the same face at the same size as every
-        // other title. Being longer is the only thing that makes it different.
-        val lines = if (liveStyle == LiveStyle.STORY) storyLines() else 1
-
         // A reading is set large and in the corner; everything else keeps the one size the
         // wall shares. See [applyReadingLayout].
         val reading = liveStyle == LiveStyle.READING
         applyReadingLayout(reading)
-        liveHeadline.maxLines = lines
+        // One line, unless the face is telling a story - and how many lines a story gets
+        // is settled at the foot of this method, against the tile rather than here. See
+        // [fitStory].
+        liveHeadline.maxLines = 1
+        // A reading is measured against the floor of the tile and the font's own padding
+        // would be measured along with it - see [sizeAsNumber] - so it comes off. Words
+        // keep it, and what it amounts to is the air between a title and the line under
+        // it. The notification face has been leaving exactly that much between the message
+        // and who sent it, where a story had it stripped along with the reading's: which
+        // was the whole of why a News tile and a message tile standing side by side were
+        // set to two different rhythms.
+        //
+        // Before the sizing below, which measures against it.
+        liveHeadline.includeFontPadding = !reading
+        backTitle.includeFontPadding = !reading
         if (reading) {
             sizeAsNumber(liveHeadline)
             sizeAsNumber(backTitle)
@@ -2593,8 +2795,7 @@ class TileView(
         // the index, the next story - so it is typeset the same way rather than as
         // notification body text, which set the number it exists to show at the size of a
         // message preview.
-        backTitle.includeFontPadding = false
-        backTitle.maxLines = lines
+        backTitle.maxLines = 1
         applyWidgetGlyphSize()
         // One caption size for every widget on the screen, the 1x1 included. Shrinking it
         // there made a row of widgets look like it had been set by three different people:
@@ -2614,6 +2815,15 @@ class TileView(
         // Last, because where a line has to be cut depends on the size it is set in, and
         // that is what this method has just decided.
         applyCaptionFit()
+        // And a story after even that. It is the one face whose lines are counted against
+        // the tile rather than declared, and the counting is done in the sizes everything
+        // above has just settled - the source's included, that being the line it decides
+        // the fate of. Both faces: a widget's stories alternate across the pair of them.
+        if (liveStyle == LiveStyle.STORY) {
+            val most = storyLines()
+            fitFace(liveBox, liveHeadline, liveDetail, most)
+            fitFace(backBox, backTitle, backText, most)
+        }
     }
 
     /**
@@ -2643,6 +2853,31 @@ class TileView(
             reading && widget, anchor
         )
     }
+
+    /**
+     * The air over a caption heading a tile.
+     *
+     * The calendar takes two hairs more than the rest of the wall. What heads that tile is
+     * an appointment's own title - somebody's writing, and often two lines of it - where
+     * every other widget heads itself with a word that names the number under it. A line
+     * of writing wants the room a label does not, and set at the label's height it reads
+     * as having been pushed up against the border.
+     */
+    private fun captionHeadDp(): Int =
+        if (tile.kind == Tile.Kind.LIVE_CALENDAR) CAPTION_HEAD_DP + CALENDAR_HEAD_EXTRA_DP
+        else CAPTION_HEAD_DP
+
+    /**
+     * What the calendar's reading takes on top of the size the wall shares.
+     *
+     * The shared size is worked out for the longest reading the shell sets - a time, four
+     * digits and a colon - so a date, which is one or two digits with a weekday beside it,
+     * is handed room it never uses. Two points back into the number and the word, and the
+     * tile reads as the date it is for. See [sizeAsNumber] and [sizeAside], both of which
+     * still fit what they are given to the tile it is on.
+     */
+    private fun readingExtraSp(): Float =
+        if (tile.kind == Tile.Kind.LIVE_CALENDAR) CALENDAR_READING_EXTRA_SP else 0f
 
     private fun arrangeFace(
         box: android.widget.LinearLayout,
@@ -2682,7 +2917,7 @@ class TileView(
         // edge by a hair when it heads the tile: type set hard against a border reads as
         // having been cut off by it.
         caption.gravity = Gravity.START
-        caption.setPadding(0, if (reading) dp(CAPTION_HEAD_DP) else 0, 0, 0)
+        caption.setPadding(0, if (reading) dp(captionHeadDp()) else 0, 0, 0)
         // Set against the number rather than against the far edge of the tile: the two
         // belong to each other - the day beside the date, the descriptor beside the index -
         // and a word marooned in the opposite corner reads as a caption for the tile.
@@ -2742,6 +2977,11 @@ class TileView(
             if (wide > cellRoom) size *= cellRoom / wide
         }
 
+        // The calendar's own couple of points, on top of the size the wall shares - see
+        // [readingExtraSp]. Added after the reference fit rather than before it: that fit
+        // is a ratio, and scaling a bumped size by it takes the bump straight back out.
+        size += readingExtraSp()
+
         // And never cropped. A reverse that says a word rather than a number - the clock's
         // says the weekday - is longer than anything the shared size was worked out for,
         // and it has this tile's own width to be long in.
@@ -2770,7 +3010,10 @@ class TileView(
      */
     private fun sizeAside(number: TextView, aside: TextView) {
         val scale = resources.displayMetrics.scaledDensity
-        aside.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, TileLabel.SIZE_SP)
+        // The wall's size, and the calendar's couple of points over it: the weekday is
+        // read with the date rather than beside it, so the two move together.
+        val base = TileLabel.SIZE_SP + readingExtraSp()
+        aside.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, base)
         if (aside.visibility != VISIBLE) return
         val text = aside.text?.toString().orEmpty()
         if (text.isEmpty()) return
@@ -2781,13 +3024,13 @@ class TileView(
         val room = inner - taken - dp(ASIDE_GAP_DP)
         if (room <= 0f) return
         val paint = android.text.TextPaint(aside.paint)
-        paint.textSize = TileLabel.SIZE_SP * scale
+        paint.textSize = base * scale
         // The widest of its lines: the clock's stands two deep.
         val wide = text.split('\n').maxOf { paint.measureText(it) }
         if (wide <= room) return
         aside.setTextSize(
             android.util.TypedValue.COMPLEX_UNIT_SP,
-            (TileLabel.SIZE_SP * room / wide).coerceAtLeast(TileLabel.MIN_SP))
+            (base * room / wide).coerceAtLeast(TileLabel.MIN_SP))
     }
 
     /**
@@ -2839,6 +3082,75 @@ class TileView(
     }
 
     /**
+     * Sets a face of words to the room the tile turned out to have.
+     *
+     * A story and a notification are the same face - a title over as many lines as the
+     * tile allows, with one small line under it saying where it came from - and
+     * [storyLines] and [BODY_LINES] are the ladders they are allowed by: what a footprint
+     * is worth in lines, worked out from the shape of the tile and nothing else. The type
+     * is not. It is set in points, so a wall packed into six columns of a small screen, or
+     * a phone whose owner has asked for larger text, stands the same three lines in a tile
+     * a third shorter than the one they were drawn for. The column is centred and free to
+     * grow, so what did not fit was never dropped - it was laid over the app's own name
+     * along the foot, which is exactly what the News tile did.
+     *
+     * So the ladder is a ceiling and the tile has the last word. The title is served
+     * first, being what the tile is for, and the line under it keeps its place only where
+     * there is one to spare under the title the story actually needs. A tile with room for
+     * one of the two shows the story rather than the story's source.
+     */
+    private fun fitFace(
+        box: android.widget.LinearLayout,
+        title: TextView,
+        source: TextView,
+        most: Int
+    ) {
+        title.maxLines = most
+        // Before the tile has been measured there is nothing to fit to, and the ladder is
+        // the best answer there is. Asked again the moment there is one - see [postSettle].
+        val room = height - paddingTop - paddingBottom - box.paddingTop - box.paddingBottom
+        val across = width - paddingLeft - paddingRight - box.paddingLeft - box.paddingRight
+        if (height <= 0 || room <= 0 || across <= 0) return
+        // A line at a time rather than by division: what a line costs depends on whether
+        // the font's own padding is kept, and the last of them does not cost what the ones
+        // above it do.
+        var lines = most
+        var head = textHeight(title, across, lines)
+        while (lines > 1 && head > room) {
+            lines--
+            head = textHeight(title, across, lines)
+        }
+        title.maxLines = lines
+        // Against the headline in hand rather than against the lines it was allowed: a
+        // story that wanted two of its three leaves the third to say where it came from.
+        source.visibility =
+            if (source.text.isNullOrEmpty() ||
+                head + textHeight(source, across, source.maxLines) > room) GONE
+            else VISIBLE
+    }
+
+    /**
+     * How tall [view]'s own text stands, wrapped to [across] and cut off after [lines].
+     *
+     * Laid out rather than counted. What a line of type comes to is the face it is set in,
+     * the leading the wall gives it and whether the font's padding is kept, and a story is
+     * fitted at the margin where a few pixels either way is the difference between a line
+     * going in and being laid over the tile's name.
+     */
+    private fun textHeight(view: TextView, across: Int, lines: Int): Int {
+        val text = view.text
+        if (text.isNullOrEmpty() || across <= 0 || lines <= 0) return 0
+        return android.text.StaticLayout.Builder
+            .obtain(text, 0, text.length, android.text.TextPaint(view.paint), across)
+            .setLineSpacing(0f, LINE_SPACING)
+            .setIncludePad(view.includeFontPadding)
+            .setMaxLines(lines)
+            .setEllipsize(android.text.TextUtils.TruncateAt.END)
+            .build()
+            .height
+    }
+
+    /**
      * Notifications this tile should surface, newest first.
      *
      * The tile keeps showing its icon and flips to each of these in turn, so a glance at
@@ -2853,6 +3165,22 @@ class TileView(
             applyNotificationState()
         }
         if (lines.isNotEmpty()) bindNotification(notificationIndex)
+    }
+
+    /**
+     * Where a tap on this tile should go, when what it is showing came from a notification.
+     *
+     * The line being read if the tile is turned over to one, and the newest if it is not:
+     * a tile on its icon face with something waiting is a tile *about* that thing - the
+     * mark in its corner says so - and it is the face it is on its way to showing anyway.
+     *
+     * Null when there is nothing waiting, or when what is waiting has nowhere of its own
+     * to go, which is the tile's ordinary launch. See [Line.open].
+     */
+    fun notificationOpening(): (() -> Unit)? {
+        if (notifications.isEmpty()) return null
+        val index = if (showingBack) notificationIndex else 0
+        return notifications.getOrNull(index)?.open
     }
 
     /**
@@ -2911,9 +3239,56 @@ class TileView(
      * which used to set the faces directly and leave this untouched, so turning a tile over
      * to its notification silently dropped the name of the app the notification was from.
      */
-    /** Whether a live widget has been handed anything to show yet. */
+    /**
+     * Whether a live widget has anything of its own on the front.
+     *
+     * Handed *and* shown: a 1x1 holds its content without putting it up (see [showsLive]),
+     * and a tile that is showing its icon is an icon tile in every way that matters here -
+     * it carries a name, and a notification arriving on it is counted beside the mark
+     * rather than turned to.
+     */
     private fun hasLiveContent(): Boolean =
-        liveBox.visibility == VISIBLE || rotation.isNotEmpty()
+        showsLive() && (liveBox.visibility == VISIBLE || rotation.isNotEmpty())
+
+    /**
+     * Whether the tile has the room to be live at all.
+     *
+     * The 1x1 has not. A square that size is one glyph across: a headline set in it is
+     * three words and an ellipsis, a photograph behind it is a smudge, a wall of faces is
+     * four thumbnails the size of a fingernail, and a reading fills it corner to corner
+     * with nothing left over to say what the number means. Windows Phone shipped its
+     * smallest tiles as marks for that reason, and so does this one - the 1x1 is the
+     * program's icon and nothing else, whichever program it belongs to.
+     *
+     * Only the showing of it waits. Everything a widget has been handed is kept - see
+     * [liveReading], [rotation], [favourites] and [weatherReading] - so growing a tile
+     * back out of the smallest footprint puts its face up again on the spot rather than
+     * leaving an icon there until whatever feeds it next comes round.
+     */
+    private fun showsLive(): Boolean = tile.size.canShowText
+
+    /**
+     * Puts the widget's own face up, or hands the tile back to its icon.
+     *
+     * One place decides it, because three things can be on the front - a reading, a run of
+     * faces, or neither - and the footprint can change under any of them. See [showsLive].
+     */
+    private fun applyLiveFace() {
+        // The mosaic, the weather and the battery are the whole tile when they are up, so
+        // nothing else on the front is showing whatever it was last handed.
+        val taken = hasPeopleMosaic || hasWeatherFace || hasBatteryFace
+        val live = showsLive() && !taken && (liveReading != null || rotation.isNotEmpty())
+        liveBox.visibility = if (live) VISIBLE else GONE
+        iconRow.visibility = if (live || taken || isEmptied) GONE else VISIBLE
+        // The picture goes with the face it stood behind. A widget standing down to its
+        // icon wears the tile's own colour rather than the last story's photograph, and a
+        // clip left playing under an icon is paying for frames nobody can see.
+        if (!live && (faceBackdrop != null || videoPlayer != null)) {
+            faceBackdrop = null
+            stopVideo()
+            invalidate()
+        }
+    }
 
     /**
      * Whether a live widget is behaving as an ordinary app tile.
@@ -2926,7 +3301,7 @@ class TileView(
      */
     private fun standingIn(): Boolean =
         tile.kind.isLiveWidget && notifications.isNotEmpty() &&
-            !hasLiveContent() && !hasPeopleMosaic && !hasWeatherFace
+            !hasLiveContent() && !hasPeopleMosaic && !hasWeatherFace && !hasBatteryFace
 
     private fun applyLabelVisibility() {
         val contentShowing = showingBack || mediaFace.visibility == VISIBLE
@@ -2944,6 +3319,15 @@ class TileView(
             // corner over to a name while one of them has the whole tile. The 1x1 has room
             // for neither.
             hasPeopleMosaic -> if (tile.size.canShowText) VISIBLE else GONE
+            // Except the weather, which has already said what it is. The face heads itself
+            // with the name of a place - see WeatherFaceView - and a place over a
+            // temperature is not a number the wall has to account for: "Amsterdam" and
+            // "12°" say between them what the tile is without a third word under them
+            // repeating it. Only while the face is actually up; a weather tile still
+            // waiting for its first forecast is an icon like any other, and names itself
+            // like one. The band it gives back goes to the reading - see
+            // [applyContentFooter], which asks this question again to size it.
+            hasWeatherFace -> GONE
             // A program's live tile says which program it is, exactly as its icon tile
             // would: the clock is Alarms', the pictures are Files', and a reading with no
             // name under it is a number the wall does not account for. Two cells and up,
@@ -2988,8 +3372,15 @@ class TileView(
      * - the name sits on them over a scrim, exactly as a story's source does.
      */
     private fun applyContentFooter() {
-        val band = if (label.visibility == VISIBLE) dp(8) + dp(NOTIFICATION_LABEL_GAP_DP) else 0
+        val band = labelBand()
         weatherFace?.let {
+            if (it.paddingBottom != band) it.setPadding(0, 0, 0, band)
+        }
+        // The battery keeps its name where the weather gives one up - a cell with a number
+        // beside it says how full without saying what of - so the face is held clear of
+        // the same band. The band is nothing on the footprints that carry no name, which
+        // is what puts the charge in the middle of a 1x1 rather than above a gap.
+        batteryFace?.let {
             if (it.paddingBottom != band) it.setPadding(0, 0, 0, band)
         }
         if (!tile.kind.isLiveWidget) return
@@ -3004,6 +3395,31 @@ class TileView(
             liveBox.paddingBottom != band) {
             liveBox.setPadding(side, 0, pad, band)
         }
+        // And the reverse the same way. It is the same face turned over - a widget's
+        // stories and its readings alternate across the pair of them - and it was left
+        // running to the foot of the tile, which is why the source line on the back of a
+        // story was printed through the app's own name.
+        if (backBox.paddingLeft != side || backBox.paddingRight != pad ||
+            backBox.paddingBottom != band) {
+            backBox.setPadding(side, 0, pad, band)
+        }
+    }
+
+    /**
+     * The band along the foot of a tile that its name occupies.
+     *
+     * The name's own line, and the air under it. Measured rather than restated:
+     * [NOTIFICATION_LABEL_GAP_DP] is what a line of the label comes to at the system's
+     * ordinary text size, and it is in dp where the name it is holding room for is in
+     * points. A phone asked for larger text therefore has a name taller than the band
+     * being kept for it, and whatever sits above - a reading, a story's source - comes
+     * down onto the word naming it. The constant stays as the floor, so nothing on a
+     * phone at the ordinary size moves at all.
+     */
+    private fun labelBand(): Int {
+        if (label.visibility != VISIBLE) return 0
+        val floor = dp(8) + dp(NOTIFICATION_LABEL_GAP_DP)
+        return maxOf(floor, label.lineHeight + label.paddingTop + label.paddingBottom)
     }
 
     /**
@@ -3156,10 +3572,39 @@ class TileView(
 
     private fun bindNotification(index: Int) {
         val line = notifications.getOrNull(index) ?: return
-        backTitle.text = line.title
-        backTitle.visibility = if (line.title.isEmpty()) GONE else VISIBLE
-        setBackCaption(line.text)
-        backText.visibility = if (line.text.isEmpty()) GONE else VISIBLE
+        // What arrived heads the tile, and who it came from is the small line under it -
+        // the same way round as a story, whose headline heads the tile and whose source
+        // goes underneath. The message is the thing being read and the sender is the label
+        // on it, so the message takes the large line: a tile that led with the name set it
+        // in the size the message should have had, and the message itself came out as the
+        // caption for a person.
+        //
+        // A notification with nothing but a title - an app saying it has three of
+        // something - puts that on the large line rather than leaving it empty and setting
+        // the whole tile small.
+        val said = line.text.ifEmpty { line.title }
+        val from = if (line.text.isEmpty()) "" else line.title
+        backTitle.text = said
+        backTitle.visibility = if (said.isEmpty()) GONE else VISIBLE
+        setBackCaption(from)
+        backText.visibility = if (from.isEmpty()) GONE else VISIBLE
+        fitNotification()
+    }
+
+    /**
+     * The notification face, fitted to the tile the way a story is.
+     *
+     * The two are laid out alike and crowd alike: the three lines of message the ladder
+     * allows, with the sender under them, is more type than a tile on a densely packed
+     * wall has - and the sender is the line that gives way, exactly as a story's source
+     * is. Only for app tiles; a widget standing in on this face is fitted along with the
+     * rest of its typesetting. See [applyLiveTextSizes].
+     */
+    private fun fitNotification() {
+        if (tile.kind.isLiveWidget) return
+        fitFace(
+            backBox, backTitle, backText,
+            if (tile.size.isStrip) STRIP_BODY_LINES else BODY_LINES)
     }
 
     /** The app's mark for the notification face. Drawn untinted if it is a real icon. */
@@ -3203,6 +3648,7 @@ class TileView(
         folderPreview?.applyPalette(p)
         peopleMosaic?.applyPalette(p)
         weatherFace?.applyPalette(p)
+        batteryFace?.applyPalette(p)
     }
 
     /**
@@ -3216,7 +3662,6 @@ class TileView(
         startBackground = bitmap
         backgroundSrc = src
         backgroundDest = dest
-        applyFolderPreviewGround()
         invalidate()
     }
 
@@ -3253,7 +3698,7 @@ class TileView(
         get() = backFace.visibility == VISIBLE ||
             mediaFace.visibility == VISIBLE ||
             (frontFace.visibility == VISIBLE &&
-                (liveBox.visibility == VISIBLE || hasWeatherFace))
+                (liveBox.visibility == VISIBLE || hasWeatherFace || hasBatteryFace))
 
     /**
      * How much black goes over the photograph on this tile's face, 0 to 1.
@@ -3270,19 +3715,6 @@ class TileView(
         }
 
     /**
-     * Tells a folder's squares whether they are sitting on a darkened photograph.
-     *
-     * The wash goes down in [drawFace], under this view's children, so the preview draws
-     * over it and its mini tiles would otherwise lighten the dim straight back out of the
-     * squares they cover. See FolderPreviewView.setDarkGround.
-     */
-    private fun applyFolderPreviewGround() {
-        folderPreview?.setDarkGround(
-            customAccent == null && startBackground != null && faceWash > 0f
-        )
-    }
-
-    /**
      * Repaints the face after what the tile is showing has changed.
      *
      * The scrim in [drawFace] is decided from the faces that are up, and a child changing
@@ -3292,7 +3724,6 @@ class TileView(
      * a wall of forty.
      */
     private fun invalidateContentScrim() {
-        applyFolderPreviewGround()
         if (tileColorsHidden && customAccent == null && startBackground != null) invalidate()
     }
 
@@ -3400,7 +3831,16 @@ class TileView(
         // The column is centred and free to grow, so a third line was not dropped - it was
         // laid out past the bottom edge and cut through, leaving half a line of letters.
         // Capping it at what fits puts the ellipsis where the text actually stops.
-        backText.maxLines = if (tile.size.isStrip) STRIP_BODY_LINES else BODY_LINES
+        val body = if (tile.size.isStrip) STRIP_BODY_LINES else BODY_LINES
+        if (tile.kind.isLiveWidget) {
+            backText.maxLines = body
+        } else {
+            // The notification face leads with the message - see [bindNotification] - so
+            // the lines it has are the message's, and the sender under it keeps one, the
+            // way a story's source does.
+            backTitle.maxLines = body
+            backText.maxLines = 1
+        }
         // Set whatever the tile is: a widget showing stories names the source of them.
         // A folder's name may carry a mark in front of it - see applyFolderLabel.
         applyFolderLabel()
@@ -3410,6 +3850,27 @@ class TileView(
         // meant showing the app's name on a tile that should never carry one.
         applyLabelVisibility()
         if (tile.kind.isLiveWidget) {
+            // Growing out of the smallest footprint - or shrinking into it - decides
+            // whether the tile is live at all, and everything it was handed is still here
+            // to put up or take down. See [showsLive].
+            //
+            // A tile shrunk into it comes back to its front first: a widget that stands
+            // down to its icon has no reverse to be left on, and one caught face-up would
+            // have shown the back of a story on a tile that is no longer telling one.
+            if (!showsLive() && showingBack) {
+                flipAnimator?.cancel()
+                rotationX = 0f
+                showingBack = false
+            }
+            if (weatherFace != null || weatherReading != null) setWeatherFace(weatherReading)
+            // The battery face is up at every footprint, so what a resize changes for it
+            // is only how much room it has - but the cell it sizes itself from has moved,
+            // and it is the setter that hands that over.
+            if (batteryFace != null || batteryReading != null) setBatteryFace(batteryReading)
+            if (peopleMosaic != null || favourites.isNotEmpty() || otherPeople.isNotEmpty()) {
+                setPeopleMosaic(favourites, otherPeople)
+            }
+            applyLiveFace()
             // Its side padding, and whatever the name at the foot has left it.
             applyContentFooter()
             applyLiveTextSizes()
@@ -3418,8 +3879,13 @@ class TileView(
             // except on a one-row tile, where the name gives way to the content instead
             // (see applyLabelVisibility). Holding the space anyway pushed a notification
             // up against the top of the tile to clear a label that was not there.
-            val bottom = if (tile.size.isStrip) pad else pad + dp(NOTIFICATION_LABEL_GAP_DP)
+            val bottom =
+                if (tile.size.isStrip) pad
+                else maxOf(pad + dp(NOTIFICATION_LABEL_GAP_DP), labelBand())
             backBox.setPadding(pad + dp(2), pad, pad, bottom)
+            // The lines set just above are the ladder, which is a ceiling; what the tile
+            // can actually hold of them is measured.
+            fitNotification()
         }
         // Resizing changes what the tile is capable of showing - growing out of small makes
         // it able to turn over, shrinking into small takes that away - so the notification
@@ -3439,14 +3905,19 @@ class TileView(
         // heavily-padded glyph cannot scale up and outgrow the tile.
         val fraction = (GLYPH_FRACTION / glyphContentRatio).coerceAtMost(MAX_GLYPH_FRACTION)
         val target = (basis * fraction).toInt().coerceAtLeast(1)
-        // A widget shows a reading rather than a glyph, so there is nothing here to size:
-        // its mark is the corner one, which is sized against the tile in
-        // applyWidgetGlyphSize. Unless it is standing in as an ordinary tile, in which case
-        // the glyph in the middle is the whole of what it is showing and wants sizing like
-        // anybody else's - left out, the People tile's icon sat at the size an ImageView
-        // gives an unmeasured drawable, which is a fraction of what the wall around it was
-        // wearing.
-        if (tile.kind.isLiveWidget && !standingIn()) {
+        // A widget showing a reading has no glyph in the middle to size: its mark is the
+        // corner one, which is sized against the tile in applyWidgetGlyphSize.
+        //
+        // Only while it is showing one. A widget standing in as an ordinary tile - and a
+        // widget on the 1x1, where every one of them stands down to its mark (see
+        // [showsLive]) - has the glyph in the middle as the whole of what it is showing,
+        // and it wants sizing like anybody else's. Left out, the icon sat at whatever an
+        // ImageView gives an unmeasured drawable, which is a fraction of what the wall
+        // around it was wearing: the People tile was the first case, and the 1x1 widgets
+        // are the rest of it.
+        // The battery is the exception to the exception: its face is up at 1x1 as well, so
+        // there is no mark in the middle to size there either. See [setBatteryFace].
+        if (tile.kind.isLiveWidget && !standingIn() && (showsLive() || hasBatteryFace)) {
             super.onMeasure(widthMeasureSpec, heightMeasureSpec)
             return
         }
@@ -3519,7 +3990,10 @@ class TileView(
         val leftBlank = (target - visible) / 2f
         iconRow.translationX = if (counting) -(leftBlank - countTrailing) / 2f else 0f
         // The app's mark is placed by the same rule as the widget's - see applyCornerMark.
-        applyCornerMark(notificationIcon, glyphContentRatio)
+        // Smaller on the media face, which is the one face that has something else in the
+        // corner with it - see [SMALL_MARK_DP].
+        val markDp = if (mediaFace.visibility == VISIBLE) SMALL_MARK_DP else CORNER_MARK_DP
+        applyCornerMark(notificationIcon, glyphContentRatio, markDp)
 
         // A quarter of the tile, in from the top and the right. A fixed 44dp corner is more
         // than half of a 1x1, which is why it had none at all; a quarter of whatever the
@@ -3541,10 +4015,13 @@ class TileView(
         // Measured against what the mark *looks* like rather than the box it is given: the
         // box is inflated to correct for the padding an icon was drawn with and pulled back
         // by the same amount, so whatever its size, the visible mark always occupies the
-        // band from CORNER_INSET_DP to CORNER_INSET_DP + CORNER_MARK_DP. Matching the box
+        // band from CORNER_INSET_DP to CORNER_INSET_DP + [markDp]. Matching the box
         // instead made the clock as tall as the inflation and sat it below the mark.
-        val markSlot = dp(CORNER_INSET_DP) + dp(CORNER_MARK_DP) + dp(CLOCK_GAP_DP)
-        val markBand = dp(CORNER_MARK_DP)
+        //
+        // [markDp] rather than the shared size: the clock is only ever up on the media
+        // face, so it follows the mark that face actually has.
+        val markSlot = dp(CORNER_INSET_DP) + dp(markDp) + dp(CLOCK_GAP_DP)
+        val markBand = dp(markDp)
         // Clear of the mark's slot, and then a little further in: the digits are ranged
         // right, and sitting exactly on the slot's edge put them tight against the mark
         // above them rather than under it.
@@ -3559,16 +4036,30 @@ class TileView(
         }
 
         // Hard ceiling on the media text, rather than a margin the layout is free to
-        // interpret: on a one-row tile the title and the transport share the row, and a
-        // title that overruns lands on top of the buttons.
-        if (tile.size.isStrip) {
-            // A strip is short enough that the corner and the transport are both beside
-            // the text rather than above it, so it keeps clear of whichever reaches
-            // further in.
-            val corner = timeEnd + mediaTime.paint.measureText("00:00").toInt()
-            val reserve = maxOf(transportReservePx, corner)
-            val room = w - mediaFace.paddingStart - mediaFace.paddingEnd - reserve
-            val cap = room.coerceAtLeast(dp(MEDIA_TEXT_MIN_DP))
+        // interpret: a track title is one long word as often as not, and left to its own
+        // width it runs under whatever else the face is carrying.
+        //
+        // The mark and the elapsed time have the top corner on every size, and the first
+        // line of the title is level with them on every size too - the text starts at the
+        // top of the face, and the corner band starts eight points above that. On a strip
+        // the transport is beside the text as well rather than under it.
+        if (mediaFace.visibility == VISIBLE) {
+            // A flat push off the right edge - see [MEDIA_CORNER_PUSH_DP]. Measuring the
+            // corner to the point, the mark's band plus the widest reading the clock can
+            // show, was right about where the corner ends and still took too much: it is
+            // the title's first line that meets the clock, and holding the whole column
+            // back for it cut titles that had the room.
+            val push = dp(MEDIA_CORNER_PUSH_DP)
+            val inner = w - mediaFace.paddingStart - mediaFace.paddingEnd
+            // The transport only stands beside the text on a strip. Anywhere taller it is
+            // along the foot of the tile with the text above it, and holding its width
+            // back there would crop a title for a row it never shares.
+            val reserve = if (tile.size.isStrip) maxOf(transportReservePx, push) else push
+            // However tight the tile, the title keeps something to be read in - but never
+            // at the cost of the push, which is the one thing this is here for.
+            val cap = (inner - reserve)
+                .coerceAtLeast(dp(MEDIA_TEXT_MIN_DP))
+                .coerceAtMost((inner - push).coerceAtLeast(1))
             mediaTitle.maxWidth = cap
             mediaArtist.maxWidth = cap
         } else {
@@ -3622,12 +4113,14 @@ class TileView(
     }
 
     /**
-     * Empties the tile of everything but its colour.
+     * Empties the tile of everything but its colour and its scoring.
      *
      * For a folder that has been opened into the wall: its contents are on screen a row
      * below, so repeating them in miniature on the tile itself would be the same list
-     * twice. The block of colour stays, because it is what marks where the folder that is
-     * open actually is.
+     * twice, and its name is at the head of what opened. The block of colour stays,
+     * because it is what marks where the folder that is open actually is - and so do the
+     * lines across it, which are what say the block is a folder rather than a tile that
+     * has lost its icon.
      */
     fun setEmptied(emptied: Boolean) {
         if (isEmptied == emptied) return
@@ -3638,8 +4131,10 @@ class TileView(
     private var isEmptied = false
 
     private fun applyEmptied() {
-        folderPreview?.visibility =
-            if (isEmptied || !hasFolderPreview) GONE else VISIBLE
+        folderPreview?.let {
+            it.visibility = if (hasFolderPreview) VISIBLE else GONE
+            it.setContentsHidden(isEmptied)
+        }
         iconRow.visibility = if (isEmptied || hasFolderPreview) GONE else VISIBLE
         // Asked rather than told: emptying a tile hides its name, but filling it again
         // does not simply show it - whether there is room for a name is a question about
@@ -3649,6 +4144,95 @@ class TileView(
             notificationDot.visibility = GONE
             notificationIcon.visibility = GONE
         }
+    }
+
+    /**
+     * Pushes what this tile is saying out of focus while the wall's attention is elsewhere.
+     *
+     * For the wall behind an opened folder: what is in the folder is sharp, and what is
+     * around it is the suggestion of a wall rather than a wall. Blur rather than a fade,
+     * because a faded tile is still a tile to be read and reading them is exactly what is
+     * not on offer - a tap on any of them closes the folder instead of opening anything.
+     * See StartScreenView.animateWallBlur.
+     *
+     * [amount] runs 0 (sharp) to 1, and is handed over a frame at a time by the animation
+     * that puts the wall back, so this has to be cheap to call repeatedly.
+     */
+    fun setBlur(amount: Float) {
+        val clamped = amount.coerceIn(0f, 1f)
+        if (blurAmount == clamped) return
+        blurAmount = clamped
+        applyBlur()
+    }
+
+    /** How far out of focus this tile currently is. See [setBlur]. */
+    private var blurAmount = 0f
+
+    /** The radius the effect was last built at, so frames that change nothing don't. */
+    private var blurRadius = 0f
+
+    /**
+     * Puts the blur on what the tile is showing, or takes it off.
+     *
+     * On the children rather than on the tile, because the tile itself is not what is
+     * meant to soften: its face is the wallpaper seen through a window - see [drawFace] -
+     * and blurring that put a smeared, offset slice of the photograph in every tile, so a
+     * wall of windows onto one picture became a wall of little pictures. The face stays as
+     * it is; the glyph, the words, the counts and the covers laid over it are what go out
+     * of focus, which is also all there is to read.
+     *
+     * Nothing happens below API 31. Blurring a live view needs the renderer's own effect
+     * and there is none before it; [Blur] cannot stand in, because it works on a bitmap
+     * and these are views that turn over, count and tick. The wall stays sharp on those,
+     * and the tap that closes the folder still closes it.
+     */
+    private fun applyBlur() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        val radius = blurAmount * BLUR_MAX_DP * resources.displayMetrics.density
+        // A change too small to see is a RenderEffect built for nothing - on every tile on
+        // the wall, for every frame of the animation.
+        if (radius > 0f && kotlin.math.abs(radius - blurRadius) < BLUR_STEP_PX) return
+        blurRadius = radius
+        // A blur spreads: what comes out is larger than what went in, by the radius, on
+        // every side. The wall does not clip its children - a tile's edit handles have to
+        // hang over its neighbours - so nothing downstream stopped that, and every blurred
+        // tile wore a halo of itself over the ones beside it. Clipped to its own edges
+        // while it is blurred, and only while: a clip is exactly what the handles must not
+        // have, and they are only ever out in edit mode, which is sharp.
+        val clip = radius >= BLUR_STEP_PX
+        if (clipToOutline != clip) {
+            outlineProvider =
+                if (clip) BLUR_CLIP else android.view.ViewOutlineProvider.BACKGROUND
+            clipToOutline = clip
+        }
+        // Zero is not a radius the renderer will take, and anything under half a pixel is
+        // not one worth taking: below that the effect comes off entirely, which is also
+        // what puts a sharp tile back on the cheap drawing path.
+        val effect =
+            if (radius < BLUR_STEP_PX) null
+            // Clamped rather than decayed: what is at the edge of a face carries on past
+            // it, so a cover or a mosaic that fills the tile still reaches its corners
+            // instead of fading out short of them. Where a face is transparent at the edge
+            // - which is most of them, a glyph in the middle of nothing - there is nothing
+            // to carry, so it costs those none of their softness.
+            else RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP)
+        for (i in 0 until childCount) getChildAt(i).setRenderEffect(effect)
+    }
+
+    /**
+     * A face built while the wall is out of focus arrives out of focus with it.
+     *
+     * A tile behind an open folder is still live: it turns over, and the far side is made
+     * when it is first needed rather than with the tile. Without this the tile would come
+     * back sharp on the turn, and stay sharp, while the wall around it was still blurred.
+     */
+    override fun onViewAdded(child: View) {
+        super.onViewAdded(child)
+        if (blurRadius < BLUR_STEP_PX) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        child.setRenderEffect(
+            RenderEffect.createBlurEffect(blurRadius, blurRadius, Shader.TileMode.CLAMP)
+        )
     }
 
     /**
@@ -3803,6 +4387,32 @@ class TileView(
          * with almost nothing in its canvas.
          */
         private const val MAX_GLYPH_FRACTION = 0.72f
+        /**
+         * The blur radius at full strength, in dp. See [setBlur].
+         *
+         * Read against a tile rather than against the screen: what a blur has to do here
+         * is take the glyph and the words off a square about a finger wide, and it is the
+         * square that says how far that is.
+         */
+        private const val BLUR_MAX_DP = 16f
+
+        /** Radius changes smaller than this are not worth a new effect, nor is a blur. */
+        private const val BLUR_STEP_PX = 0.5f
+
+        /**
+         * Holds a blurred tile's spread inside the tile. See [applyBlur].
+         *
+         * Cuts without casting: the outline is here to clip, and the provider a tile wears
+         * otherwise - BACKGROUND, over a tile that has no background drawable - throws no
+         * shadow either, so a tile lifted in edit mode goes on looking as it did.
+         */
+        private val BLUR_CLIP = object : android.view.ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: android.graphics.Outline) {
+                outline.setRect(0, 0, view.width, view.height)
+                outline.alpha = 0f
+            }
+        }
+
         // How far the wall stands back from the tile being arranged, and how far it fades.
         private const val DIM_SCALE = 0.92f
         private const val DIM_ALPHA = 0.7f
@@ -3840,13 +4450,33 @@ class TileView(
         private const val FLIP_MS = 500L
 
         /**
-         * Every mark in the top-right corner: the app's, a widget's, the media clock's
-         * neighbour. One size on every tile, and the same distance in from the edge.
+         * Every mark in the top-right corner: the app's, a widget's, the one on a tile
+         * turned over. One size on every tile, and the same distance in from the edge.
          */
         private const val CORNER_MARK_DP = 18
 
+        /**
+         * The same mark a couple of points down, where the corner is not the mark's alone.
+         *
+         * Two tiles are in that position. The clock and the calendar carry the alarm mark
+         * over a face that is a reading corner to corner, where at the shared size it read
+         * as part of what the tile was showing rather than as a note about the phone. The
+         * media face carries the app's mark with the elapsed time ranged up against it and
+         * a title and an artist underneath, which is the busiest corner on the wall.
+         */
+        private const val SMALL_MARK_DP = 16
+
         /** However tight the row, the title keeps this much to be read in. */
         private const val MEDIA_TEXT_MIN_DP = 48
+
+        /**
+         * How far the media title and its line are held off the tile's right edge.
+         *
+         * A flat figure rather than the corner measured: the mark and the clock sit in
+         * that band and the title's first line runs level with them, and thirty points
+         * clears both by eye without cutting the line for the sake of the last digit.
+         */
+        private const val MEDIA_CORNER_PUSH_DP = 30
 
         /**
          * Between the icon and the number of things waiting, against the icon's own box.
@@ -3944,11 +4574,75 @@ class TileView(
         /** How far in from the mark's slot the elapsed time is ranged. */
         private const val MEDIA_TIME_NUDGE_DP = 3
 
-        private const val LIVE_TITLE_SP = 16f
-        private const val LIVE_CAPTION_SP = 13f
+        /**
+         * The widest elapsed time the corner is held open for by default.
+         *
+         * Four digits and a colon, which is every track short of an hour. A longer one is
+         * measured as itself rather than pushing this to the length of the rarest case and
+         * cropping every title on the wall for it.
+         */
+
+        /**
+         * A story's headline, and the message on a notification.
+         *
+         * Two points down from where it was. At 16 it was the largest thing on the wall
+         * that was not a reading, and on a wall where an appointment, a track and a place
+         * all head themselves at 14 - see [FACE_TITLE_SP] - the News tile and the message
+         * tile were the two that shouted. A headline is the one title that is read rather
+         * than glanced at, so it is the one that loses least by coming down, and a story
+         * fits more of itself on the same tile for it.
+         */
+        private const val LIVE_TITLE_SP = 14f
+
+        /**
+         * The line under a title, wherever there is one.
+         *
+         * A story's source, a notification's sender, an artist, the hour an appointment
+         * starts, what the sky is doing - see WeatherFaceView.CONDITION_SP, which is this
+         * size on the one face that draws its own type. A point down from where it was, so
+         * that it sits two clear of the title over it rather than one: at 13 under a 14
+         * the pair read as one block of the same size set in two weights, and a caption a
+         * reader cannot tell from its title is not doing a caption's job.
+         */
+        private const val LIVE_CAPTION_SP = 12f
+
+        /**
+         * The head of a face that names something.
+         *
+         * An appointment, a track, a place: three tiles saying the same shape of thing -
+         * the name of what the tile is about, with one line under it saying when, or who
+         * by, or what the sky is doing. They were set three different ways. A track took
+         * the story size in Semilight; an appointment took the caption size in Regular and
+         * was told apart from the hour under it by nothing at all; a place took a size of
+         * its own. Three tiles standing in the same row, each heading itself in a
+         * different hand.
+         *
+         * One size for the lot of them, and it is the one the weather tile already used -
+         * see WeatherFaceView.PLACE_SP. The size a headline takes as well, [LIVE_TITLE_SP]
+         * having since come down to meet it: what tells a name from a headline is the
+         * weight it is set in and the line it is paired with, not how large it is.
+         */
+        private const val FACE_TITLE_SP = 14f
+
+        /**
+         * And the weight it is set in, a step up from the line beneath it.
+         *
+         * The wall is Semilight throughout and tells a title from its caption by size and
+         * position alone - see [TITLE_FONT], which is still how a headline is set, a
+         * headline being long enough that where it starts and where it stops says what it
+         * is. A name is two or three words, one point clear of the line under it, and one
+         * point is not a difference anybody reads: the weight is what separates them.
+         */
+        private val FACE_TITLE_FONT = R.font.segoeui_semibold
 
         /** Air over a caption heading a tile, so it is not set against the border. */
         private const val CAPTION_HEAD_DP = 4
+
+        /** What the calendar's own caption takes on top of it. See [captionHeadDp]. */
+        private const val CALENDAR_HEAD_EXTRA_DP = 2
+
+        /** What its date and weekday take on top of theirs. See [readingExtraSp]. */
+        private const val CALENDAR_READING_EXTRA_SP = 2f
 
         // A folder's unread dot and the air between it and the name. Smaller than the dot
         // in a tile's corner: that one has a whole corner and has to be seen from across a

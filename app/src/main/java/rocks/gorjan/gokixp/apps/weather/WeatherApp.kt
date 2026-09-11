@@ -202,7 +202,9 @@ class WeatherApp(
      */
     private fun buildBar(): MetroAppBar {
         val bar = MetroAppBar(context, palette)
-        refreshButtons.add(bar to bar.addCommand(REFRESH_ICON) { refresh(force = true) })
+        refreshButtons.add(
+            bar to bar.addCommand(REFRESH_ICON) { refresh(force = true, locate = true) }
+        )
         bar.addCommand(SETTINGS_ICON) { showSettings() }
         return bar
     }
@@ -222,12 +224,18 @@ class WeatherApp(
     /**
      * Asks for the forecast again, and redraws when it lands.
      *
+     * [locate] is for the ring on the strip and nothing else: tapping refresh is asking
+     * about where you are standing now, so that one goes to the radio for a fresh fix
+     * before it asks about the weather there. The refreshes the app does for itself -
+     * a place chosen, added or removed - are about a place that was named rather than
+     * found, and waiting on the radio for those would be a delay that answers nothing.
+     *
      * The redraw happens whether or not anything arrived: a failed fetch leaves the cache
      * as it was, and re-binding it costs nothing and puts the strip's rings back.
      */
-    private fun refresh(force: Boolean) {
+    private fun refresh(force: Boolean, locate: Boolean = false) {
         if (WeatherStore.isFetching()) return
-        WeatherStore.refresh(context, force) {
+        WeatherStore.refresh(context, force, locate) {
             bind()
             onWeatherChanged()
         }

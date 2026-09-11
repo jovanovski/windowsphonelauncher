@@ -18,10 +18,17 @@ import android.widget.TextView
 import androidx.core.content.res.ResourcesCompat
 import androidx.core.view.doOnPreDraw
 import rocks.gorjan.gokixp.R
+import rocks.gorjan.gokixp.wp81.MetroChoiceRow
+import rocks.gorjan.gokixp.wp81.MetroMarker
 import rocks.gorjan.gokixp.wp81.NewsFeed
+import rocks.gorjan.gokixp.wp81.NewsFeedCheck
 import rocks.gorjan.gokixp.wp81.NewsImages
+import rocks.gorjan.gokixp.wp81.NewsSource
+import rocks.gorjan.gokixp.wp81.NewsSources
 import rocks.gorjan.gokixp.wp81.NewsStory
 import rocks.gorjan.gokixp.wp81.TiltEffect
+import rocks.gorjan.gokixp.wp81.WP81ContextMenu
+import rocks.gorjan.gokixp.wp81.WP81InputDialog
 import rocks.gorjan.gokixp.wp81.WP81Palette
 import rocks.gorjan.gokixp.wp81.WP81Program
 import rocks.gorjan.gokixp.wp81.MetroPanorama
@@ -51,7 +58,10 @@ class NewsApp(
     private val onOpenStory: (NewsStory) -> Unit,
     private val onRefresh: () -> Unit,
     private val enabledFeeds: () -> Set<String>,
-    private val onFeedsChanged: (Set<String>) -> Unit
+    private val onFeedsChanged: (Set<String>) -> Unit,
+    /** The feeds the user has added themselves, and how to save that list. */
+    private val customFeeds: () -> List<NewsSource>,
+    private val onCustomFeedsChanged: (List<NewsSource>) -> Unit
 ) : WP81Program {
 
     private lateinit var root: FrameLayout
@@ -59,6 +69,18 @@ class NewsApp(
 
     /** The settings page, while it is up. */
     private var settingsPage: View? = null
+
+    /** The column of feeds on it, so adding or removing one can fill it again. */
+    private var sourceList: LinearLayout? = null
+
+    /** What the last attempt at adding a feed came to, said under the plus. */
+    private var addingNote: TextView? = null
+
+    /** Press and hold on a feed of the user's own. Over the page, so after it. */
+    private lateinit var contextMenu: WP81ContextMenu
+
+    /** Where an address is typed, and where a feed is renamed. */
+    private lateinit var dialog: WP81InputDialog
 
     /** The column each section fills, by the name across the top of it. */
     private val columns = linkedMapOf<String, LinearLayout>()
@@ -111,6 +133,12 @@ class NewsApp(
 
     fun createView(): View {
         root = FrameLayout(context).apply { setBackgroundColor(palette.background) }
+        // A change of theme rebuilds the app from here, and the settings page that was
+        // open belonged to the root that has just been thrown away. Forgotten rather than
+        // carried over, so back is not left trying to close a page nobody can see.
+        settingsPage = null
+        sourceList = null
+        addingNote = null
 
         val column = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
 
@@ -142,6 +170,14 @@ class NewsApp(
         }
         column.addView(panorama, LinearLayout.LayoutParams(MATCH, 0, 1f))
         root.addView(column, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        // Both of these dim the whole screen, so neither can live inside the page it is
+        // about. Brought to the front when shown, because a page opened later is added
+        // over them.
+        contextMenu = WP81ContextMenu(context, palette)
+        root.addView(contextMenu, FrameLayout.LayoutParams(MATCH, MATCH))
+        dialog = WP81InputDialog(context, palette)
+        root.addView(dialog, FrameLayout.LayoutParams(MATCH, MATCH))
 
         bind()
         return root
@@ -376,29 +412,18 @@ class NewsApp(
             },
             wide()
         )
-        page.addView(TextView(context).apply {
-            text = "sources"
-            typeface = font(R.font.segoeui_semibold)
-            textSize = 12f
-            setTextColor(palette.accent)
-            setPadding(0, dp(10), 0, dp(6))
-        }, wide())
 
-        val list = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-        val chosen = enabledFeeds().toMutableSet()
-        // A tickable square each, and several of them can be on at once - which is what
-        // the square says. These used to be a plain filled block that meant the same thing
-        // whether it was a switch or one of a set; the shell has one answer to that now.
-        for (source in rocks.gorjan.gokixp.wp81.NewsSources.ALL) {
-            val row = rocks.gorjan.gokixp.wp81.MetroChoiceRow(
-                context, palette, source.name, round = false)
-            row.set(source.id in chosen)
-            row.onPicked = { on ->
-                if (on) chosen.add(source.id) else chosen.remove(source.id)
-                onFeedsChanged(chosen.toSet())
-            }
-            list.addView(row, wide())
+        addingNote = TextView(context).apply {
+            typeface = font(R.font.segoeui_regular)
+            textSize = 13f
+            setTextColor(palette.foregroundSubtle)
+            setPadding(dp(MetroMarker.SIZE_DP + MetroMarker.GAP_DP), 0, 0, dp(12))
+            visibility = View.GONE
         }
+        val list = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        sourceList = list
+        fillSources()
+
         page.addView(ScrollView(context).apply {
             overScrollMode = View.OVER_SCROLL_NEVER
             addView(list, FrameLayout.LayoutParams(MATCH, WRAP))
@@ -410,14 +435,267 @@ class NewsApp(
     }
 
     /**
-     * Closes the settings page, and says whether there was one.
+     * The feeds, in two sections: the ones that came with the phone and the user's own.
+     *
+     * Built again from the top whenever the second list changes rather than having a row
+     * spliced into it. A feed that has just been added lands where it will be the next
+     * time the page is opened, which is the only place the eye will look for it later.
+     */
+    private fun fillSources() {
+        val list = sourceList ?: return
+        list.removeAllViews()
+
+        list.addView(sectionLabel("sources"), wide())
+        for (source in NewsSources.ALL) list.addView(feedRow(source, mine = false), wide())
+
+        list.addView(sectionLabel("your feeds"), wide())
+        for (source in customFeeds()) list.addView(feedRow(source, mine = true), wide())
+        list.addView(addRow(), wide())
+        addingNote?.let { list.addView(it, wide()) }
+    }
+
+    /**
+     * One feed, on or off.
+     *
+     * A tickable square each, and several of them can be on at once - which is what the
+     * square says. These used to be a plain filled block that meant the same thing whether
+     * it was a switch or one of a set; the shell has one answer to that now.
+     *
+     * A feed of the user's own carries the site under its name - two feeds from one paper
+     * are told apart by where they came from, not by what they are called - and answers a
+     * press and hold, because it is theirs to rename or be rid of.
+     */
+    private fun feedRow(source: NewsSource, mine: Boolean): View {
+        val row = MetroChoiceRow(context, palette, source.name, round = false)
+        row.set(source.id in enabledFeeds())
+        row.onPicked = { on ->
+            // Read again rather than kept: the list is rebuilt under these rows whenever a
+            // feed is added or removed, and a set captured when the page opened would put
+            // a deleted feed back the next time anything else was ticked.
+            val chosen = enabledFeeds().toMutableSet()
+            if (on) chosen.add(source.id) else chosen.remove(source.id)
+            onFeedsChanged(chosen)
+        }
+        if (!mine) return row
+
+        val column = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(row, wide())
+            addView(TextView(context).apply {
+                text = NewsFeedCheck.host(source.url)
+                typeface = font(R.font.segoeui_regular)
+                textSize = 12f
+                setTextColor(palette.foregroundSubtle)
+                setPadding(dp(MetroMarker.SIZE_DP + MetroMarker.GAP_DP), 0, 0, dp(10))
+            }, wide())
+        }
+        val hold = View.OnLongClickListener { view ->
+            showFeedMenu(source, view)
+            true
+        }
+        row.setOnLongClickListener(hold)
+        column.setOnLongClickListener(hold)
+        return column
+    }
+
+    /** What can be done to a feed the user added. */
+    private fun showFeedMenu(source: NewsSource, anchor: View) {
+        val position = IntArray(2)
+        anchor.getLocationInWindow(position)
+        contextMenu.bringToFront()
+        contextMenu.show(source.name, listOf(
+            WP81ContextMenu.Item("rename") { askForName(source) },
+            WP81ContextMenu.Item("remove") { removeFeed(source) }
+        ), position[1].toFloat())
+    }
+
+    /**
+     * The plus at the foot of the user's own feeds.
+     *
+     * On the list rather than on a strip along the bottom: this app has no app bar, for
+     * the reason given where the panorama is built, and a command that belongs to a list
+     * can sit at the end of it. The glyph stands in the column the tick boxes are in, so
+     * the words all begin at the same place.
+     */
+    private fun addRow(): View = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(0, dp(11), 0, dp(11))
+        isClickable = true
+        setOnClickListener { askForFeed() }
+        TiltEffect.apply(this)
+        addView(ImageView(context).apply {
+            setImageResource(R.drawable.wp81_nav_add)
+            imageTintList = android.content.res.ColorStateList.valueOf(palette.accent)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+        }, LinearLayout.LayoutParams(dp(MetroMarker.SIZE_DP), dp(MetroMarker.SIZE_DP)))
+        addView(TextView(context).apply {
+            text = "add a feed"
+            typeface = font(R.font.segoeui_regular)
+            textSize = 17f
+            setTextColor(palette.accent)
+        }, LinearLayout.LayoutParams(WRAP, WRAP).apply {
+            marginStart = dp(MetroMarker.GAP_DP)
+        })
+    }
+
+    /** Asks for an address, and goes and looks at what is there. */
+    private fun askForFeed() {
+        dialog.bringToFront()
+        dialog.show(
+            title = "add a feed",
+            initial = "",
+            hint = "address of an rss feed",
+            inputType = WP81InputDialog.ADDRESS
+        ) { typed -> addFeed(typed) }
+    }
+
+    /**
+     * Adds a feed, once something has answered at the address.
+     *
+     * Read before it is kept, because a bad address saved is not a bad address on screen -
+     * the sections are built from what came back, so a feed that answers with nothing is a
+     * section that silently never appears, and the user is left looking at a list with
+     * their feed ticked in it wondering where the stories are.
+     *
+     * Kept at the address that finally answered rather than the one typed, so a feed that
+     * has moved is not walked through its own redirect every half hour for the life of the
+     * phone.
+     */
+    private fun addFeed(typed: String) {
+        val address = NewsFeedCheck.normalise(typed)
+        if (address.isEmpty()) return
+        // Answered without going anywhere, for the commonest way of adding a feed twice:
+        // pasting the address it was added with the first time.
+        known(address)?.let { turnOn(it); return }
+
+        say("reading ${NewsFeedCheck.host(address)}…")
+        NewsFeedCheck.check(address) { result ->
+            when (result) {
+                is NewsFeedCheck.Result.NotAFeed -> say(result.reason)
+                is NewsFeedCheck.Result.Feed -> {
+                    // Asked again, because the address that answered need not be the one
+                    // typed - a feed already here under where it moved to is still here.
+                    val already = known(result.url)
+                    if (already != null) {
+                        turnOn(already)
+                        return@check
+                    }
+                    val mine = customFeeds()
+                    val feed = NewsSource(
+                        id = NewsSources.customId(result.url),
+                        name = uniqueName(result.name, result.url, mine),
+                        url = result.url
+                    )
+                    onCustomFeedsChanged(mine + feed)
+                    // Added and on: nobody adds a feed in order not to read it.
+                    onFeedsChanged(enabledFeeds() + feed.id)
+                    say(null)
+                    fillSources()
+                }
+            }
+        }
+    }
+
+    /** The feed at an address, if the list already holds one - the built-in ones included. */
+    private fun known(url: String): NewsSource? =
+        (NewsSources.ALL + customFeeds()).firstOrNull { it.url.equals(url, true) }
+
+    /**
+     * Turns on a feed that was added a second time.
+     *
+     * Not an error, and not a second copy of it either: asking for a feed that is already
+     * on the list is asking to read it. So it is ticked, and named, because a feed added
+     * under one name and already there under another is otherwise an add that did nothing.
+     */
+    private fun turnOn(source: NewsSource) {
+        onFeedsChanged(enabledFeeds() + source.id)
+        say("${source.name} is already in the list")
+        fillSources()
+    }
+
+    /** Renames one of the user's feeds, which is to rename its section. */
+    private fun askForName(source: NewsSource) {
+        dialog.bringToFront()
+        dialog.show(title = "rename", initial = source.name, hint = "what to call it") { typed ->
+            val wanted = typed.trim()
+            if (wanted.isEmpty()) return@show
+            val others = customFeeds().filterNot { it.id == source.id }
+            val name = uniqueName(wanted, source.url, others)
+            onCustomFeedsChanged(customFeeds().map {
+                if (it.id == source.id) it.copy(name = name) else it
+            })
+            // The stories are filed under the name they were fetched with, so the section
+            // keeps the old one until they are fetched again.
+            onFeedsChanged(enabledFeeds())
+            fillSources()
+        }
+    }
+
+    private fun removeFeed(source: NewsSource) {
+        onCustomFeedsChanged(customFeeds().filterNot { it.id == source.id })
+        onFeedsChanged(enabledFeeds() - source.id)
+        fillSources()
+    }
+
+    /**
+     * A name no other feed is using.
+     *
+     * The reader keeps each outlet's stories under its name and builds a section per name,
+     * so two feeds called the same thing are one section with both their stories mixed
+     * into it. Where the titles do not tell them apart the site does; where even that is
+     * the same - two feeds from one paper - a number at least says there are two.
+     */
+    private fun uniqueName(name: String, url: String, others: List<NewsSource>): String {
+        val taken = (NewsSources.ALL + others).map { it.name.lowercase() }.toSet() + LATEST
+        if (name.lowercase() !in taken) return name
+        val sited = "$name (${NewsFeedCheck.host(url)})"
+        if (sited.lowercase() !in taken) return sited
+        var n = 2
+        while ("$sited $n".lowercase() in taken) n++
+        return "$sited $n"
+    }
+
+    /**
+     * Says how adding a feed went, under the plus.
+     *
+     * Beside the place the feed would have appeared rather than in a prompt of its own:
+     * the answer to "add a feed" is another feed in the list, and where there is not going
+     * to be one, the reason belongs where the eye already is. Cleared by the next attempt.
+     */
+    private fun say(message: String?) {
+        val line = addingNote ?: return
+        line.text = message.orEmpty()
+        line.visibility = if (message == null) View.GONE else View.VISIBLE
+    }
+
+    private fun sectionLabel(text: String) = TextView(context).apply {
+        this.text = text
+        typeface = font(R.font.segoeui_semibold)
+        textSize = 12f
+        setTextColor(palette.accent)
+        setPadding(0, dp(16), 0, dp(6))
+    }
+
+    /**
+     * Closes whatever is open over the panorama, and says whether there was anything.
      *
      * The host asks before it closes the window: back means "out of this page" while one
      * is open, and "out of the app" only once it is not.
      */
     fun handleBack(): Boolean {
+        if (dialog.isShowing()) {
+            dialog.dismiss()
+            return true
+        }
+        if (contextMenu.isShowing()) {
+            contextMenu.dismiss()
+            return true
+        }
         val page = settingsPage ?: return false
         settingsPage = null
+        sourceList = null
+        addingNote = null
         rocks.gorjan.gokixp.wp81.MetroPageTransition(page).playOut {
             root.removeView(page)
             // Whatever was turned on or off, the sections show it now.

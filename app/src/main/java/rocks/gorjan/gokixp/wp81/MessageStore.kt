@@ -557,17 +557,48 @@ object MessageStore {
      */
     fun forget(context: Context, id: Long) {
         val app = context.applicationContext
+        executor.execute { remove(app, id) }
+    }
+
+    /**
+     * Deletes one message, because somebody asked for it to be gone.
+     *
+     * The same row removal as [forget] and a different thing entirely: that one tidies up
+     * after this app, and this one is a person deciding a message should not be on the
+     * phone any more. So it says whether it worked instead of swallowing it - a message
+     * still sitting in the conversation after it was deleted needs explaining, and the
+     * usual explanation is that some other app is the phone's messaging app.
+     *
+     * Gone from the phone, not from this app: there is one message store and every app on
+     * the device reads it. Nothing here can reach the copy on the other person's phone or
+     * the one the network kept.
+     */
+    fun delete(context: Context, id: Long, onDone: (Boolean) -> Unit) {
+        val app = context.applicationContext
         executor.execute {
-            try {
-                app.contentResolver.delete(
-                    android.content.ContentUris.withAppendedId(Telephony.Sms.CONTENT_URI, id),
-                    null,
-                    null
-                )
-            } catch (e: Exception) {
-                Log.d(TAG, "A message could not be forgotten", e)
-            }
+            val gone = remove(app, id)
+            main.post { onDone(gone) }
         }
+    }
+
+    /**
+     * Takes one row out of the message store. Always on [executor].
+     *
+     * Hands back whether a row actually went, which is the only signal there is that the
+     * write was allowed: a store write by an app that is not the phone's messaging app is
+     * not refused outright, it is quietly turned into nothing and reported as no rows
+     * touched. An already-deleted message answers the same way, which is the harmless
+     * direction - it is gone either way.
+     */
+    private fun remove(context: Context, id: Long): Boolean = try {
+        context.contentResolver.delete(
+            android.content.ContentUris.withAppendedId(Telephony.Sms.CONTENT_URI, id),
+            null,
+            null
+        ) > 0
+    } catch (e: Exception) {
+        Log.d(TAG, "A message could not be deleted", e)
+        false
     }
 
     /**

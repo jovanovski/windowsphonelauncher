@@ -197,6 +197,15 @@ class StartScreenView(
     private var pendingDragView: TileView? = null
     private var pressRawX = 0f
     private var pressRawY = 0f
+
+    /**
+     * Whether the press under way set off inside the strip the system keeps for itself.
+     *
+     * Read by everything a press can turn into. A back drag starts as a finger against the
+     * rim, held there for as long as the system takes to make up its mind, and until it
+     * does the wall is being handed the touch as if it were meant for it.
+     */
+    private var pressFromEdge = false
     private var lastMoveRawX = 0f
     private var lastMoveRawY = 0f
 
@@ -533,6 +542,20 @@ class StartScreenView(
         }
     }
 
+    /**
+     * Hands every battery tile the charge it draws into its cell.
+     *
+     * The same reading to all of them whatever size they are, exactly as the weather is
+     * handed out: what a given tile has room for is the face's own decision, and a 1x1
+     * shows the level without the figure rather than showing nothing. See BatteryFaceView
+     * and TileView.setBatteryFace.
+     */
+    fun setBatteryFace(reading: BatteryFaceView.Reading?) {
+        forEachTileView {
+            if (it.tile.kind == Tile.Kind.LIVE_BATTERY) it.setBatteryFace(reading)
+        }
+    }
+
     /** Hands every tile the loader it fetches face pictures through. */
     fun setBackdropLoader(loader: (String, (android.graphics.Bitmap?) -> Unit) -> Unit) {
         forEachTileView { it.backdropLoader = loader }
@@ -589,13 +612,18 @@ class StartScreenView(
         }
         view.setOnClickListener {
             when {
+                // The wall behind an open folder is out of focus and out of use: a tap on
+                // any of it is a tap outside the folder, so the folder closes and nothing
+                // else happens. The tile that was hit is not what the tap was for - it is
+                // only where the finger came down on the way out. See [setBlur].
+                !isEditMode && isFolderOpen() && !isBandTile(view) -> closeFolder()
                 // Nothing launches while a tile is selected: arranging and opening are
                 // different jobs, and a wall of live tiles is far too easy to open by
                 // accident while moving one.
                 // A folder does not go anywhere: it opens where it is. Turning the wall
                 // out for it would be the wall leaving for a page that never arrives.
                 !isEditMode && tile.kind == Tile.Kind.FOLDER -> toggleFolder(tile)
-                !isEditMode -> launchWithTurnstile(tile)
+                !isEditMode -> launchWithTurnstile(tile, view)
                 // Tapping a different tile moves the selection to it rather than dropping
                 // out and making the user press and hold all over again. Resizing three
                 // tiles in a row is one gesture and two taps this way, not three
@@ -606,6 +634,15 @@ class StartScreenView(
             }
         }
         view.setOnLongClickListener {
+            // Not one that began at the rim. The system's back gesture starts as a finger
+            // held still there while it decides, and that is long enough for the tile
+            // underneath to call it a press and hold - so the wall picked a tile up, and
+            // put its handles on it, on the way out of Start.
+            //
+            // Claimed rather than declined, which is the opposite of what the other tiles
+            // do below: declining leaves the release to land as a tap, and a tap is exactly
+            // what must not happen here. Same rule as the app list's rows.
+            if (pressFromEdge) return@setOnLongClickListener true
             // A hold on one of the other tiles is a tap on it: the selection moves there,
             // and it is not picked up. Holding one is how arranging *starts*, and once it
             // has started there is nothing left for a hold to mean - but a hold that did
@@ -848,7 +885,7 @@ class StartScreenView(
      * being replaced. Whatever opens - an app, a folder, a dialog - happens on the far side
      * of it.
      */
-    private fun launchWithTurnstile(tile: Tile) {
+    private fun launchWithTurnstile(tile: Tile, view: TileView) {
         // An installed app is handed over before the wall has finished leaving: the system
         // draws its own opening animation over the top, and the tail of the turnstile is
         // meant to be happening underneath it.
@@ -857,7 +894,30 @@ class StartScreenView(
         // animation to hide behind. It simply appears, so it waits for the wall to have
         // actually gone: handed over early, it arrived over a screen still visibly turning.
         val at = if (tile.kind == Tile.Kind.APP) LAUNCH_AT else 1f
-        playTurnstileOut(at) { onLaunch?.invoke(tile) }
+        // A tile with something waiting on it opens that rather than the program it came
+        // from: the tap is on the message, so it lands on the conversation. What that
+        // means is the host's to decide - see TileView.notificationOpening - and a tile
+        // with nothing waiting, or with nothing to open, launches as it always did.
+        val open = view.notificationOpening() ?: { onLaunch?.invoke(tile) }
+        // A folder is opened to get at what is inside it, so opening one of those is the
+        // end of what the folder was for. Left standing, it is what the user comes back
+        // to: a wall still parted around a folder they finished with, with their own tiles
+        // pushed a row down.
+        //
+        // Going out to an installed app is caught on the way out of the activity as well
+        // (see MainActivity.onStop); this is the same rule for the programs this shell
+        // opens in a window of its own, which never stop it.
+        //
+        // Not until the wall has gone, and without animation: a folder folding itself away
+        // underneath a launch is movement the user did not ask to watch, and by the time
+        // this runs there is nothing left on screen to watch it. Only the folder that was
+        // open at the tap, so a wall that has moved on since - a folder inside this one
+        // opened from the band - is left where the user put it.
+        val folderId = openFolderId
+        playTurnstileOut(
+            at,
+            gone = { if (openFolderId == folderId) closeFolder(animated = false) }
+        ) { open() }
     }
 
     // ---------------------------------------------------------------- inline folders
@@ -894,6 +954,65 @@ class StartScreenView(
 
     /** Which side of the folder the tile in hand started on. See [fileOnDrop]. */
     private var dragStartedInBand = false
+
+    /**
+     * Whether this tile is one of an open folder's rather than one of the wall's own.
+     *
+     * By where it hangs, not by what it is: a tile is filed into a folder by being moved
+     * into the band's own packer, and moved back out of it the same way, so the packer it
+     * is in *is* the answer. See [gridUnderTile].
+     */
+    private fun isBandTile(view: TileView): Boolean = view.parent === bandGrid
+
+    /** How far the wall behind an open folder is currently pushed out of focus. */
+    private var wallBlur = 0f
+
+    /** What is carrying it there, kept so a change of mind can interrupt it. */
+    private var blurAnimator: android.animation.ValueAnimator? = null
+
+    /**
+     * The one tile the blur leaves alone: the folder that is open.
+     *
+     * Its own tile is where the gap is anchored and is the only thing left saying which
+     * folder this is - the contents are a row below and the tile itself has been emptied -
+     * so it stays sharp. Held apart from [openFolderId] because it is still wanted while
+     * the folder is closing, and by then that is already null.
+     */
+    private var blurExempt: String? = null
+
+    /**
+     * Takes the wall out of focus behind an open folder, or brings it back.
+     *
+     * Run over the same stretch as whatever it accompanies - the gap opening, the wall
+     * standing back to be arranged - so the blur is part of that movement rather than a
+     * second one after it.
+     */
+    private fun animateWallBlur(target: Float, duration: Long = BAND_MS) {
+        blurAnimator?.cancel()
+        if (wallBlur == target) return
+        blurAnimator = android.animation.ValueAnimator.ofFloat(wallBlur, target).apply {
+            this.duration = duration
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { applyWallBlur(it.animatedValue as Float) }
+            start()
+        }
+    }
+
+    /** Hands one frame of the blur to the wall's own tiles. The band's stay sharp. */
+    private fun applyWallBlur(amount: Float) {
+        wallBlur = amount
+        val exempt = blurExempt
+        for (i in 0 until grid.childCount) {
+            val view = grid.getChildAt(i) as? TileView ?: continue
+            view.setBlur(if (view.tile.id == exempt) 0f else amount)
+        }
+    }
+
+    /** Puts the blur where the wall's state says it should be, without animating it. */
+    private fun clearWallBlur() {
+        blurAnimator?.cancel()
+        applyWallBlur(0f)
+    }
 
     // --- Holding one tile on another ---------------------------------------------------
     // Resting a tile in the middle of another for a moment offers to put the two together:
@@ -957,6 +1076,10 @@ class StartScreenView(
         grid.bandProgress = 0f
         grid.setBand(buildFolderBand(folder, contents, tileColors, glyphs), folder.id)
         setBandClipping(true)
+        // The rest of the wall goes out of focus as the gap opens, over the same stretch:
+        // one movement, the folder coming forward and everything else stepping behind it.
+        blurExempt = folder.id
+        animateWallBlur(FOLDER_BLUR)
         // Brought into view as the gap opens rather than after it. Where the wall has to
         // end up is known as soon as the band has been measured - a frame in, and long
         // before any of it is on screen - so waiting for the slide to finish and only then
@@ -988,13 +1111,18 @@ class StartScreenView(
             bandGrid = null
             bandColumn = null
             bandRules = emptyList()
+            blurExempt = null
+            clearWallBlur()
             return
         }
+        // Back into focus as the gap closes, the way it went out of it.
+        animateWallBlur(0f)
         slideBand(open = false) {
             grid.setBand(null, null)
             bandGrid = null
             bandColumn = null
             bandRules = emptyList()
+            blurExempt = null
             // The wall is a row shorter again, so the parallax has a different range.
             post { pushBackgroundToTiles() }
         }
@@ -1283,6 +1411,11 @@ class StartScreenView(
         // The wall stands back rather than the tile shrinking: the one being arranged is
         // the one that should be whole. See TileView.setDimmed.
         forEachTileView { it.setDimmed(it !== view) }
+        // And comes back into focus while it is being arranged, even with a folder open.
+        // The wall and the folder in it are one surface to drag on - a tile is filed by
+        // being carried across the band's edge - and half of that surface being a smear
+        // is half of it being somewhere you cannot see to drop.
+        animateWallBlur(0f, BLUR_EDIT_MS)
         onEditModeChanged?.invoke(true)
     }
 
@@ -1304,6 +1437,8 @@ class StartScreenView(
     private fun clearSelection() {
         editingView = null
         forEachTileView { it.setDimmed(false) }
+        // Behind a folder that is still open, the wall goes back out of focus.
+        if (isFolderOpen()) animateWallBlur(FOLDER_BLUR, BLUR_EDIT_MS)
         onEditModeChanged?.invoke(false)
     }
 
@@ -1379,8 +1514,19 @@ class StartScreenView(
     }
 
     fun unpinTile(tile: Tile) {
-        val index = tiles.indexOfFirst { it.id == tile.id }
-        if (index < 0) return
+        unpinTile(tile.id)
+    }
+
+    /**
+     * Takes one tile off the wall by id, whatever ended it.
+     *
+     * Returns whether there was one to take. A folder thrown away for being empty may have
+     * been filed inside another folder rather than standing on the wall, and its owner has
+     * to be able to tell that nothing here removed it.
+     */
+    fun unpinTile(tileId: String): Boolean {
+        val index = tiles.indexOfFirst { it.id == tileId }
+        if (index < 0) return false
         val view = grid.getChildAt(index)
         // Unpinning is the end of the job the tile was picked up for, so it is the end of
         // edit mode too - and the key strip has to be told, since it is showing the
@@ -1394,6 +1540,7 @@ class StartScreenView(
                 grid.requestLayout()
                 commit()
             }.start()
+        return true
     }
 
     fun resizeTile(tile: Tile) {
@@ -1441,8 +1588,11 @@ class StartScreenView(
         if (tiles.any { it.id == tile.id }) return
         tile.index = tiles.size
         tiles.add(tile)
+        val view = buildTileView(tile) { glyph }
+        // A tile arriving while a folder is open joins a wall that is out of focus.
+        view.setBlur(wallBlur)
         // Ahead of the band, so the wall's child order still matches its tile list.
-        grid.addTile(buildTileView(tile) { glyph })
+        grid.addTile(view)
         grid.requestLayout()
         commit()
     }
@@ -1553,8 +1703,25 @@ class StartScreenView(
                 pressRawY = ev.rawY
                 lastMoveRawX = ev.rawX
                 lastMoveRawY = ev.rawY
+                pressFromEdge = beganAtScreenEdge(ev.rawX)
             }
             MotionEvent.ACTION_MOVE -> {
+                // A drag that set off from either rim is the system's back gesture until it
+                // proves otherwise, and none of it is the wall's to read.
+                //
+                // Taken off the tile under it rather than merely left alone. A drag across
+                // the screen never leaves the tile it began on if that tile is wide enough,
+                // and a press that never leaves its view is a tap when it is let go - so
+                // swiping out of Start moved the selection to whichever tile the thumb had
+                // crossed, or, with nothing selected, opened it. Intercepting cancels that
+                // press, which is the only thing that stops the release counting.
+                //
+                // Only once it has moved: a press held still at the rim is not a back
+                // gesture and is nobody else's, so tapping the edge column still works.
+                if (pressFromEdge && moved(ev) > touchSlop) {
+                    pendingDragView = null
+                    return true
+                }
                 val pending = pendingDragView
                 if (pending != null && moved(ev) > touchSlop) {
                     startBodyDrag(pending, pressRawX, pressRawY)
@@ -1587,6 +1754,19 @@ class StartScreenView(
 
     private fun moved(ev: MotionEvent): Float =
         kotlin.math.hypot(ev.rawX - pressRawX, ev.rawY - pressRawY)
+
+    /**
+     * Whether a press at [rawX] began in the system's own gesture strip, down either side.
+     *
+     * The same strip the app list refuses to read holds in, and for the same reason - see
+     * MetroIndexList.SYSTEM_GESTURE_DP, where the width and the argument for it are
+     * written down. Measured against the screen rather than against this view: the strip
+     * is the system's and belongs to the display, whatever happens to be laid out under it.
+     */
+    private fun beganAtScreenEdge(rawX: Float): Boolean {
+        val edge = MetroIndexList.SYSTEM_GESTURE_DP * resources.displayMetrics.density
+        return rawX < edge || rawX > resources.displayMetrics.widthPixels - edge
+    }
 
     /**
      * Where a tile sits in the wall's own coordinates.
@@ -1722,9 +1902,12 @@ class StartScreenView(
      * either way: a built-in is rebuilt on every refresh and would come straight back out
      * of any folder it was put in. Neither happens inside an opened folder - there is no
      * nesting to offer there, only arranging.
+     *
+     * Also read by [reorderUnder] before any offer is made, because a tile that cannot be
+     * folded with is not an ambiguous place to be standing and the wall need not wait on
+     * it. See [FOLD_APPROACH_MS].
      */
     private fun foldKindFor(view: TileView, under: TileView): FoldKind? {
-        if (!FOLD_ON_DRAG) return null
         if (gridOf(view) !== grid || gridOf(under) !== grid) return null
         if (view.tile.kind == Tile.Kind.FOLDER || view.tile.kind.isBuiltIn) return null
         return when {
@@ -1735,18 +1918,28 @@ class StartScreenView(
     }
 
     /**
-     * Whether the finger is in the middle of [under] rather than out towards its edge.
+     * Whether the tile in hand is squarely on the middle of [under] rather than merely on it.
      *
      * The middle is what two tiles are put together over; everything round it is ordinary
-     * wall, where the finger is either passing across or asking for the slot.
+     * wall, where the drag is either passing across or asking for the slot. Both readings
+     * have to stay available on the same square, and this is the whole of what tells them
+     * apart - which is why it is a bullseye and not most of the tile. It used to be most of
+     * the tile, and the cost was that the tile could not be *aimed at* at all: the only
+     * part of it the wall would open for was the rim.
      *
      * A circle on the tile's centre, sized from its shorter side, rather than an inset
      * rectangle. Two reasons: a wide tile then keeps its ends for the wall instead of
      * being nearly all middle, and what is left over on a small one is four corners rather
      * than a thin band all the way round - a shape a thumb can actually find.
+     *
+     * [armed] widens it. A circle that decides something is a circle whose edge is worth
+     * shaking on, and an offer that has already been made and shown should not be taken
+     * back by a tremor. See [FOLD_RELEASE_SLACK].
      */
-    private fun inFoldZone(under: TileView, x: Float, y: Float): Boolean {
-        val radius = kotlin.math.min(under.width, under.height) * FOLD_RADIUS_FRACTION
+    private fun inFoldZone(under: TileView, x: Float, y: Float, armed: Boolean): Boolean {
+        val reach =
+            FOLD_RADIUS_FRACTION * (if (armed) FOLD_RELEASE_SLACK else 1f)
+        val radius = kotlin.math.min(under.width, under.height) * reach
         val dx = x - (placedLeftOf(under) + under.width / 2f)
         val dy = y - (placedTopOf(under) + under.height / 2f)
         return kotlin.math.hypot(dx, dy) < radius
@@ -1760,6 +1953,15 @@ class StartScreenView(
      * arrival in it. Returning true means the wall stands still: nothing shuffles out from
      * under a tile that is being offered something, which would move the target being
      * aimed at.
+     *
+     * The hold is the whole cost of the offer, and it is why the bullseye is small - see
+     * [inFoldZone]. It buys the aim, and it is paid for out of one circle in the middle of
+     * one tile rather than out of the wall.
+     *
+     * Letting go before the offer is armed is not a folder: it is an ordinary drop, and
+     * lands the tile on the square it is standing on. So the two readings of the same spot
+     * are told apart by how long the hand stays - a beat to put it there, a moment longer
+     * to put it *in* - and neither is reached by accident.
      */
     private fun trackFold(view: TileView, under: TileView): Boolean {
         val kind = foldKindFor(view, under)
@@ -1824,9 +2026,11 @@ class StartScreenView(
      * cannot be aimed at; how long alone means the tile being aimed at slides out from
      * under the aim before the hold is up.
      *
-     *  - Over the **middle of another tile** the two are being offered to each other. After
-     *    a beat the tile underneath shows what it would hold - the pair as a new folder, or
-     *    its own contents with the arrival added - and letting go takes the offer.
+     *  - Squarely on the **middle of another tile** the two are being offered to each
+     *    other. After a beat the tile underneath shows what it would hold - the pair as a
+     *    new folder, or its own contents with the arrival added - and letting go takes the
+     *    offer. Letting go before it appears does not: that is an ordinary drop, onto the
+     *    very square the tile is standing on.
      *  - **Everywhere else** the wall is being asked to take the tile there, and it opens
      *    once the drag has stayed long enough to mean it. Everywhere: the outer part of a
      *    tile, the gutter between two, the empty end of a row, a gap left beside a tall
@@ -1840,6 +2044,11 @@ class StartScreenView(
      * and can still be aimed at. The dwell is a beat and not a pause, though - see
      * [REORDER_DWELL_MS] - because a wall that only moves for a hand that has stopped is a
      * wall that looks like it is refusing to get out of the way.
+     *
+     * The one place it is longer is a tile that could be folded with, which is the only
+     * square on the wall where standing still means two different things - see
+     * [FOLD_APPROACH_MS]. Everywhere the ambiguity does not arise, and that is most of
+     * where arranging actually happens, the wall opens on the beat.
      */
     private fun reorderUnder(view: TileView) {
         // One surface: crossing into the folder, or out of it, before anything else.
@@ -1859,16 +2068,19 @@ class StartScreenView(
         val localX = probeX - placedLeftOf(home)
         val localY = probeY - placedTopOf(home)
 
-        // The middle of another tile first: there the two are being offered to each other
-        // rather than a slot being asked for, and while the offer stands the wall holds
-        // still so that what is being aimed at does not slide out from under the aim.
+        // The tile the drag is standing on, if it is one the two could be put together -
+        // which is the only case where where-it-is means two different things.
         val under = (home.getChildAt(home.indexAt(localX, localY)) as? TileView)
-            ?.takeIf { it !== view }
-        if (under != null && inFoldZone(under, probeX, probeY)) {
-            if (trackFold(view, under)) {
-                forgetPendingReorder()
-                return
-            }
+            ?.takeIf { it !== view && foldKindFor(view, it) != null }
+
+        // Squarely on its middle: the two are being offered to each other, and while that
+        // is being aimed at the wall holds still, or the target slides out from under the
+        // aim. The wall's own dwell is deliberately left running underneath - back out of
+        // the middle and the slot opens at once instead of starting its count again.
+        if (under != null &&
+            inFoldZone(under, probeX, probeY, armed = foldArmed && under === foldTarget)
+        ) {
+            if (trackFold(view, under)) return
         } else {
             clearFold()
         }
@@ -1890,7 +2102,14 @@ class StartScreenView(
             pendingReorderSince = now
             return
         }
-        if (now - pendingReorderSince < REORDER_DWELL_MS) return
+        // A square with a tile on it this one could go in with is the one ambiguous place
+        // on the wall - the drag might mean "take its place" or "go in with it" - so the
+        // wall waits longer there before assuming the first. That wait is the room the aim
+        // needs to reach the middle. Nowhere else is ambiguous and nowhere else waits: the
+        // gaps, the gutters, the end of a row and the room below it all open on the beat,
+        // and those are what arranging a wall is mostly done on.
+        val dwell = if (under != null) FOLD_APPROACH_MS else REORDER_DWELL_MS
+        if (now - pendingReorderSince < dwell) return
         // One reorder at a time. Without this a drag held over a boundary re-packs on every
         // frame, and the reflow animations restart faster than they can finish - which is
         // the shuffling that shows up as rows twitching.
@@ -2380,11 +2599,28 @@ class StartScreenView(
         // list that is. Nothing is rebuilt: rebuilding would take the tile the user has just
         // watched arrive and replace it with a new one, which is the pop.
         if (endedInBand != dragStartedInBand) {
-            onTileFiled?.invoke(view.tile, if (endedInBand) openFolderId else null, true)
             // Both orders changed - one list lost a tile and the other gained one - so both
             // are written, rather than whichever one commit() would have guessed at.
             reindex()
-            onTilesChanged?.invoke(tiles.toList())
+            // Which goes first is not a detail. Coming *out* of a folder the wall's order
+            // is written before the host is told, because being told is what can empty the
+            // folder - and a folder emptied is a folder thrown away, which sends the host
+            // back to the stored positions this call is what writes. Told first, the tile
+            // was still recorded where it had stood *inside* the folder, and that is the
+            // place the wall then put it: taking the last tile out of one sent it to the
+            // top of Start rather than leaving it where it was dropped.
+            //
+            // Going *in*, the order is written afterwards, for the opposite reason: the
+            // host reads a tile missing from the wall's order as an unpinning, so it has to
+            // know the tile has been filed before it sees it gone. See [absorbIntoFolder],
+            // which files first for the same reason.
+            if (!endedInBand) onTilesChanged?.invoke(tiles.toList())
+            onTileFiled?.invoke(view.tile, if (endedInBand) openFolderId else null, true)
+            if (endedInBand) onTilesChanged?.invoke(tiles.toList())
+            // Last, and after the filing either way: the folder's own list is written from
+            // what is left in the band, and the host clears out anything filed in the
+            // folder that is not in it. The tile that has just left is exactly that until
+            // the filing above has moved it.
             commitFolder()
             return true
         }
@@ -2410,20 +2646,17 @@ class StartScreenView(
             }
             return
         }
-        // Decided before the tile is sent home, not after. Springing it back to a slot it
-        // is about to leave is a beat of animation that exists only to be thrown away -
-        // which is the pause, and the rebuild landing on top of it is the snap.
-        if (fileOnDrop(view)) {
-            dragView = null
-            forgetPendingReorder()
-            return
-        }
-
         // Where the hand left it has the last word. Taken while the drag is still on, so
         // the reflow leaves the tile alone and the spring below is the only thing moving it.
         val fromX = view.left + view.translationX
         val fromY = view.top + view.translationY
         val moved = dropInPlace(view)
+        // Filed after the slot has been settled, never before. A tile that crossed the
+        // folder's edge is filed at the place it was let go, and where that is has only
+        // just been decided - filed off the release, the last move of the drag was the one
+        // the hand had aimed and the one thrown away, and the tile was left standing
+        // wherever the dwell had last put it while the wall claimed it was somewhere else.
+        val filed = fileOnDrop(view)
         dragView = null
         forgetPendingReorder()
 
@@ -2447,9 +2680,12 @@ class StartScreenView(
                 .start()
         }
         // A drop that moved the tile has to wait for the wall to be laid out again before
-        // it knows where it is springing from.
-        if (moved) view.post(settle) else settle.run()
-        commit()
+        // it knows where it is springing from - and so does one that changed hands, since
+        // a folder left empty by it closes and takes a row of the wall with it.
+        if (moved || filed) view.post(settle) else settle.run()
+        // Both lists were written down as the tile changed hands. commit() knows only one
+        // of them, and which one it would pick is the one the tile is no longer in.
+        if (!filed) commit()
     }
 
     /**
@@ -2777,10 +3013,12 @@ class StartScreenView(
 
     /**
      * Turnstile-out: tiles rotate away about their left edge in sequence, the way WP8.1
-     * cleared Start when launching an app. [after] runs once the last tile has gone.
+     * cleared Start when launching an app. [after] runs [at] the given point in the turn -
+     * early, so that what is opening and the wall leaving are one movement - and [gone]
+     * once the last tile has actually gone.
      */
-    fun playTurnstileOut(at: Float = LAUNCH_AT, after: () -> Unit) {
-        if (grid.childCount == 0) { after(); return }
+    fun playTurnstileOut(at: Float = LAUNCH_AT, gone: (() -> Unit)? = null, after: () -> Unit) {
+        if (grid.childCount == 0) { after(); gone?.invoke(); return }
         val slide = TURNSTILE_OUT_OFFSET_DP * resources.displayMetrics.density
         var maxEnd = 0L
         for (i in 0 until grid.childCount) {
@@ -2807,6 +3045,10 @@ class StartScreenView(
         // the wall clearing and an app arriving are one movement, and where the system has
         // an animation of its own to cover the join, the two are allowed to overlap.
         postDelayed({ after() }, (maxEnd * at).toLong())
+        // For whatever must not be seen happening. [after] is called partway through the
+        // turn, with the wall still on screen; [gone] waits for the last tile, so anything
+        // done here is done to a screen with nothing left on it.
+        gone?.let { postDelayed(it, maxEnd) }
     }
 
     /** Restores tiles after a [playTurnstileOut], e.g. on returning to Start. */
@@ -2939,23 +3181,6 @@ class StartScreenView(
     }
 
     companion object {
-        /**
-         * Whether holding one tile over another offers to put the two in a folder.
-         *
-         * Off, for now. The offer costs the whole middle of every tile: while one could be
-         * made the wall had to stand still, or what was being aimed at slid out from under
-         * the aim - so the only part of a tile that could be *asked for its slot* was the
-         * ring round its edge, and arranging the wall fought the folders the whole way
-         * across it.
-         *
-         * Folders are made from the app bar instead, out of the tile that is selected - see
-         * WP81SecondaryBar.Mode.EDIT_START - and a tile is put into one by opening it and
-         * dragging the tile into the band, which is a target the size of a row rather than
-         * the middle of one square. Everything the offer needs is still here and still
-         * wired; this is the switch.
-         */
-        private const val FOLD_ON_DRAG = false
-
         private const val DRAG_ELEVATION = 24f
         private const val DRAG_SCALE = 1.06f
         // The arrow under the wall: its disc, and the air kept round it.
@@ -2968,6 +3193,17 @@ class StartScreenView(
         private const val BAND_GAP_DP = 10f
         private const val BAND_TOP_DP = 14f
         private const val BAND_MS = 520L
+
+        /** How far out of focus the wall goes behind it. See TileView.setBlur. */
+        private const val FOLDER_BLUR = 0.5f
+
+        /**
+         * And how long it takes when edit mode is what moved it, rather than the folder.
+         *
+         * The length of the wall's own step back, so the two happen together. See
+         * TileView.setDimmed.
+         */
+        private const val BLUR_EDIT_MS = 140L
 
         // A tile being drawn into the folder it was dropped on.
         private const val ABSORB_MS = 190L
@@ -2990,15 +3226,38 @@ class StartScreenView(
          * A shade under half, so the middle is about half the area of a square tile and
          * the corners are the wall's.
          */
-        private const val FOLD_RADIUS_FRACTION = 0.42f
+        private const val FOLD_RADIUS_FRACTION = 0.30f
+
+        /**
+         * How much wider the bullseye is once the offer has been made, as a multiple.
+         *
+         * Hysteresis, and only outwards: getting in is exact, getting out is not, so a
+         * hand holding an offer steady does not have it flicker away and back.
+         */
+        private const val FOLD_RELEASE_SLACK = 1.35f
+
+        /**
+         * How long the wall waits before taking a drag resting on a tile to mean its slot.
+         *
+         * Longer than the beat everywhere else, and only here - see [REORDER_DWELL_MS]. It
+         * is the time the aim has to travel from the edge of a tile to its middle, and if
+         * the wall opens first then the tile being aimed at is gone before it is reached
+         * and no folder can ever be made by hand. Everywhere that is not a tile there is
+         * nothing to aim at and nothing to wait for.
+         *
+         * The same quarter-second the offer itself takes to appear: the wall gives the aim
+         * as long to arrive as it then gives the hand to change its mind. See
+         * [FOLD_DWELL_MS].
+         */
+        private const val FOLD_APPROACH_MS = 280L
 
 
-        private const val ENTRANCE_STAGGER_MS = 28L
+        private const val ENTRANCE_STAGGER_MS = 19L
         private const val ENTRANCE_OFFSET_DP = 24f
         private const val FLIP_STAGGER_MS = 220L
 
         /** How long one tile takes to swing in, and how far it comes from. */
-        private const val TURNSTILE_IN_MS = 300L
+        private const val TURNSTILE_IN_MS = 200L
 
         /** How far a leaving tile travels up and left as it turns away. */
         private const val TURNSTILE_OUT_OFFSET_DP = 40f
@@ -3071,8 +3330,8 @@ class StartScreenView(
 
         /** How far to drag past either end of Start before the gesture fires. */
         private const val EDGE_SWIPE_DP = 48f
-        private const val TURNSTILE_STAGGER_MS = 30L
-        private const val TURNSTILE_MS = 220L
+        private const val TURNSTILE_STAGGER_MS = 20L
+        private const val TURNSTILE_MS = 147L
         private const val TURNSTILE_DEGREES = 80f
 
         /**

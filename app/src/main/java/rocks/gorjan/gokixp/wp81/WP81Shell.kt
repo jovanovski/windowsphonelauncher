@@ -61,6 +61,24 @@ class WP81Shell(
     val inputDialog = WP81InputDialog(context, palette)
     val toast = WP81Toast(context, palette)
 
+    /**
+     * The strip along the top: signal, carrier, battery, clock and date.
+     *
+     * Always on screen, above everything the shell draws, and the band every page below it
+     * is laid out to stand clear of - see [setStatusBarShown]. It is the Action Center's
+     * header and does not move when the panel does, which is how the phone had it.
+     */
+    val statusBar = WP81StatusBar(context, palette, iconProvider)
+
+    /**
+     * The phone's Action Center, pulled down out of the top of the wall.
+     *
+     * What the pull-down gesture opens where the user has asked for it; where they have
+     * not, that gesture still asks the system for Android's own shade. The host owns that
+     * choice and everything the panel does - see `MainActivity.wireWP81Shell`.
+     */
+    val actionCenter = WP81ActionCenter(context, palette, iconProvider)
+
     private val windowBackdrop = View(context)
 
     /**
@@ -78,6 +96,26 @@ class WP81Shell(
      * reasons, and each is added with its own gravity and size.
      */
     private val clearsNavBar = mutableListOf<View>()
+
+    /** The same, for the status strip at the top. See [clearsNavBar] and [setStatusBarShown]. */
+    private val clearsStatusBar = mutableListOf<View>()
+
+    /** Whether the strip is on screen. See [setStatusBarShown]. */
+    private var statusBarShown = true
+
+    /** Whether the strip is carrying its second line. See [setStatusBarExpanded]. */
+    private var statusBarExpanded = false
+
+    /**
+     * The band the camera needs at the top of the display, if it needs one.
+     *
+     * Nothing while Android's own status bar is on show - the shell is already standing
+     * below it, and the lens is up there. Full screen hands the shell that band back,
+     * camera and all, and this is what stops the tiles being drawn behind the lens. The
+     * strip grows to cover it and writes *beside* it. Set by the host from the display
+     * cutout - see `MainActivity.applyWP81CornerInsets`.
+     */
+    private var cameraBand = 0
 
     /** 0 = Start screen, 1 = app list. */
     private var pageProgress = 0f
@@ -117,18 +155,21 @@ class WP81Shell(
         pages.addView(appList, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
 
         addView(pages, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT).apply {
+            topMargin = dp(WP81StatusBar.HEIGHT_DP)
             bottomMargin = dp(WP81NavBar.HEIGHT_DP)
         })
 
         // Settings is its own Metro page, not the Vista Display Properties window.
         settingsPage.visibility = GONE
         addView(settingsPage, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT).apply {
+            topMargin = dp(WP81StatusBar.HEIGHT_DP)
             bottomMargin = dp(WP81NavBar.HEIGHT_DP)
         })
 
         // Folders open as a Metro page over Start rather than in a Vista window.
         folderPage.visibility = GONE
         addView(folderPage, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT).apply {
+            topMargin = dp(WP81StatusBar.HEIGHT_DP)
             bottomMargin = dp(WP81NavBar.HEIGHT_DP)
         })
 
@@ -160,12 +201,28 @@ class WP81Shell(
 
         // The icon picker is a page, so it clears the navigation bar like the others.
         addView(iconPicker, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT).apply {
+            topMargin = dp(WP81StatusBar.HEIGHT_DP)
             bottomMargin = dp(WP81NavBar.HEIGHT_DP)
         })
 
         // The switcher clears the keys too, unlike the real one - which filled a display
         // that had the three keys in hardware below it. Here they are drawn, and back is
         // how the switcher is left, so covering them would leave no way out of it.
+
+        // The status strip, over everything below it - the pages, the keys, and the
+        // backdrop a windowed program sits on. A status bar that a program could cover
+        // would be one that vanished for most of the time the phone was in use.
+        addView(statusBar, LayoutParams(
+            LayoutParams.MATCH_PARENT, dp(WP81StatusBar.HEIGHT_DP)
+        ).apply { gravity = android.view.Gravity.TOP })
+
+        // The Action Center covers the whole shell below the strip, keys included - the
+        // phone's did, and the accent grabber along its foot is what it is closed with.
+        // Under the menus and prompts below, which are the only things that should ever be
+        // drawn over it.
+        addView(actionCenter, LayoutParams(
+            LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT
+        ).apply { topMargin = dp(WP81StatusBar.HEIGHT_DP) })
 
         // Added last so they dim and cover everything, navigation bar included - WP8.1's
         // context menus and prompts take over the whole screen.
@@ -186,6 +243,23 @@ class WP81Shell(
         // is the thing being hidden - and neither are the context menu, the colour picker
         // or the prompt, which deliberately cover the keys as well.
         clearsNavBar += listOf(pages, settingsPage, folderPage, secondaryBar, iconPicker, toast)
+
+        // And the same again for the strip at the other end. A shorter list: the app bar
+        // and the toast are laid out against the bottom edge and never reach the top, and
+        // the context menu, the colour picker and the prompt deliberately cover the strip
+        // the way they cover the keys - a prompt takes the whole screen.
+        clearsStatusBar += listOf(pages, settingsPage, folderPage, iconPicker, actionCenter)
+
+        // The strip's second line is only out while the Action Center is, so the panel
+        // says when. See setStatusBarExpanded.
+        actionCenter.onOpenChanged = { out -> setStatusBarExpanded(out) }
+
+        // And the strip wears the marks of whatever the panel is holding, in the panel's
+        // own order - which is the strip saying what is down there before it is pulled.
+        actionCenter.onMarkedAppsChanged = { packages ->
+            statusBar.setNotificationMarks(
+                packages.map { it to actionCenter.markFor(it) })
+        }
 
         // The Start key means Start, wherever the user is not already: a key with a
         // Windows flag on it that took you *away* from the Start screen read as broken.
@@ -249,9 +323,137 @@ class WP81Shell(
         }
     }
 
+    /**
+     * Draws the status strip, or takes it off the screen and gives the pages its height.
+     *
+     * The mirror of [setNavBarShown] and for the same reason: the strip is a band this
+     * shell reserves rather than space the system hands it, so everything laid out to begin
+     * below it has to be let back up to the top edge when it goes, or it leaves a band of
+     * nothing behind where it was.
+     *
+     * Off is the state the shell was in before there was a strip at all - Android's own
+     * status bar above and the wall starting directly under it. The switch is the Action
+     * Center's, because the strip is its header: turning the panel off and leaving its
+     * header on the screen would be a bar that says the time and nothing else. See
+     * `WP81Settings.getWP81ActionCenter`.
+     */
+    fun setStatusBarShown(shown: Boolean) {
+        if (statusBarShown == shown) return
+        statusBarShown = shown
+        statusBar.visibility = if (shown) VISIBLE else GONE
+        if (!shown) actionCenter.close()
+        statusBar.layoutParams = statusBar.layoutParams.apply { height = statusBarHeightPx() }
+        val inset = statusBarInsetPx
+        for (view in clearsStatusBar) {
+            val params = view.layoutParams as? ViewGroup.MarginLayoutParams ?: continue
+            if (params.topMargin == inset) continue
+            params.topMargin = inset
+            view.layoutParams = params
+        }
+    }
+
+    /**
+     * Grows the strip to carry its second line, or folds it back to one.
+     *
+     * Only the Action Center moves for it. Everything else below the strip keeps the height
+     * it was laid out against - by the time the second line is out the panel is covering
+     * the pages, so shifting them down would be sixteen dp of work nobody can see, and
+     * shifting them back as it left would be a wall that twitches every time the shade is
+     * closed.
+     */
+    private fun setStatusBarExpanded(expanded: Boolean) {
+        if (!statusBarShown) return
+        statusBarExpanded = expanded
+        statusBar.setExpanded(expanded)
+        val height = statusBarHeightPx()
+        statusBar.layoutParams = statusBar.layoutParams.apply { this.height = height }
+        (actionCenter.layoutParams as? ViewGroup.MarginLayoutParams)?.let {
+            it.topMargin = height
+            actionCenter.layoutParams = it
+        }
+    }
+
+    /**
+     * How tall the strip is drawn right now: the band it always has, plus the second line
+     * when that is out.
+     *
+     * Grown downwards by exactly one line rather than to a second fixed height, so that the
+     * first line does not move for it. A phone with a camera punched through the display
+     * has a band taller than either figure, and asking for the larger of the two was then
+     * the same answer both times - the strip stayed the height it was and centred one more
+     * line inside it, which lifted the clock and the signal every time the Action Center
+     * was pulled down. See [WP81StatusBar.contentTopPx].
+     *
+     * Not the same as [statusBarInsetPx], which is what everything *below* stands clear of
+     * and is always the one-line figure - the second line only appears with the Action
+     * Center out, and by then the panel is covering the pages anyway.
+     */
+    private fun statusBarHeightPx(): Int {
+        if (!statusBarShown) return 0
+        val collapsed = statusBarInsetPx
+        if (!statusBarExpanded) return collapsed
+        return collapsed +
+            dp(WP81StatusBar.EXPANDED_HEIGHT_DP - WP81StatusBar.HEIGHT_DP)
+    }
+
+    /**
+     * Grows the strip to cover the camera's band, so nothing below is drawn behind the lens.
+     *
+     * The writing inside it centres itself down the band and so ends up level with the
+     * camera rather than under it. See [WP81StatusBar].
+     */
+    fun setStatusBarTopInset(px: Int) {
+        if (cameraBand == px) return
+        cameraBand = px
+        // The strip places its own first line inside the band, so it needs the figure too.
+        statusBar.setCameraBand(px)
+        statusBar.layoutParams = statusBar.layoutParams.apply { height = statusBarHeightPx() }
+        val reserved = statusBarInsetPx
+        (actionCenter.layoutParams as? ViewGroup.MarginLayoutParams)?.let {
+            it.topMargin = statusBarHeightPx()
+            actionCenter.layoutParams = it
+        }
+        for (view in clearsStatusBar) {
+            if (view === actionCenter) continue
+            val params = view.layoutParams as? ViewGroup.MarginLayoutParams ?: continue
+            if (params.topMargin == reserved) continue
+            params.topMargin = reserved
+            view.layoutParams = params
+        }
+    }
+
+    /**
+     * Stands the two edge bars clear of the display's rounded corners.
+     *
+     * Only these two, because they are the only things the shell draws hard against an edge:
+     * everything between them is a page with its own margins and is nowhere near an arc. The
+     * host works the numbers out - see `MainActivity.cornerSideInsetPx` - because they depend
+     * on what the system bars are doing, which is not this view's to know.
+     */
+    fun setCornerInsets(topPx: Int, bottomPx: Int) {
+        statusBar.setCornerInset(topPx)
+        navBar.setCornerInset(bottomPx)
+    }
+
+    /** How much room the strip is taking at the head of the shell, which is none when hidden. */
+    val statusBarInsetPx: Int
+        get() = if (statusBarShown) maxOf(cameraBand, dp(WP81StatusBar.HEIGHT_DP)) else 0
+
+    /**
+     * How far below the strip's own top edge its writing begins.
+     *
+     * The strip's own answer rather than a second copy of the sum: on a phone whose camera
+     * has made the band taller than a line needs, the writing sits well down from the edge,
+     * and how far down is what decides how much of a rounded corner is still in the way of
+     * it. See [WP81StatusBar.contentTopPx] and `MainActivity.applyWP81CornerInsets`.
+     */
+    val statusBarContentTopPx: Int
+        get() = if (statusBarShown) statusBar.contentTopPx else 0
+
     // ---------------------------------------------------------------- paging
 
     fun goToStart(animated: Boolean = true) {
+        actionCenter.close()
         appList.hideJumpList()
         if (appList.isSearching()) appList.endSearch()
         folderPage.hide()
@@ -410,6 +612,17 @@ class WP81Shell(
         startScreen.setStartBackground(bitmap, focusX)
     }
 
+    /**
+     * Whether swiping across to the app list arrives in its search box.
+     *
+     * The swipe is the only way in that opens search with it - the arrow and the Start key
+     * are for looking through what is there, and the button at the top of the rail is for
+     * saying so on purpose - so this is the only thing that reads it. Set by the host from
+     * WP81Settings.getWP81AppListSearchFocus, where the reasoning is; on, which is what the
+     * gesture has always done.
+     */
+    var searchOnAppListOpen: Boolean = true
+
     /** Pages to the app list and drops straight into search, keyboard up. */
     fun openAppSearch() {
         folderPage.hide()
@@ -532,7 +745,7 @@ class WP81Shell(
         // Don't hijack gestures while a tile is being dragged, the jump list is up, or a
         // folder page is open - none of those are paged left-right.
         if (startScreen.isEditMode || appList.isJumpListVisible() ||
-            isFolderOpen() || isSettingsOpen() ||
+            isFolderOpen() || isSettingsOpen() || actionCenter.isOpen() ||
             contextMenu.isShowing() || iconPicker.isShowing() || inputDialog.isShowing()
         ) return false
         when (ev.actionMasked) {
@@ -567,7 +780,7 @@ class WP81Shell(
                     // what made the arrival stutter. No keyboard yet; the finger can still
                     // turn back, and a keyboard over the Start screen would be a promise
                     // the gesture has not made.
-                    if (pageProgress <= 0.5f && dx < 0f) {
+                    if (searchOnAppListOpen && pageProgress <= 0.5f && dx < 0f) {
                         appList.beginSearch(animated = false, showKeyboard = false)
                     }
                     return true
@@ -608,8 +821,12 @@ class WP81Shell(
                 // saying so on purpose.
                 // Arrived: the layout is already a search - see onInterceptTouchEvent -
                 // so all that is left is the keyboard. Turned back: undo it.
-                if (target == 1f) appList.beginSearch(animated = false)
-                else appList.endSearch(animated = false)
+                // Told not to, the list is simply a list: nothing was prepared on the way
+                // in either, so there is nothing to undo and endSearch below answers for
+                // both - a finger that turned back, and a search the user opened by hand
+                // before swiping away from it.
+                if (target == 1f && searchOnAppListOpen) appList.beginSearch(animated = false)
+                else if (target != 1f) appList.endSearch(animated = false)
             }
         }
         return true
@@ -625,9 +842,9 @@ class WP81Shell(
         if (visible) {
             windowBackdrop.alpha = 0f
             windowBackdrop.visibility = VISIBLE
-            windowBackdrop.animate().alpha(1f).setDuration(150).start()
+            windowBackdrop.animate().alpha(1f).setDuration(100).start()
         } else {
-            windowBackdrop.animate().alpha(0f).setDuration(150)
+            windowBackdrop.animate().alpha(0f).setDuration(100)
                 .withEndAction { windowBackdrop.visibility = GONE }.start()
         }
     }
@@ -637,6 +854,9 @@ class WP81Shell(
      * the activity falls through to its own window handling otherwise.
      */
     fun handleBack(): Boolean {
+        // The outermost thing on screen, and the only one drawn over everything: what is
+        // behind it is not what the user is looking at, so it answers first.
+        if (actionCenter.handleBack()) return true
         if (isPicking()) {
             // Backing out of picking returns to whatever asked for it.
             val cancelled = onPickerCancelled
@@ -648,7 +868,13 @@ class WP81Shell(
         if (contextMenu.isShowing()) { contextMenu.dismiss(); return true }
         if (iconPicker.isShowing()) { iconPicker.dismiss(); return true }
         if (colorPicker.isShowing()) { colorPicker.dismiss(); return true }
-        if (isSettingsOpen()) { closeSettings(); return true }
+        // A category inside settings is a page in its own right, and back is the way out
+        // of it before it is the way out of settings.
+        if (isSettingsOpen()) {
+            if (settingsPage.handleBack()) return true
+            closeSettings()
+            return true
+        }
         if (isFolderOpen()) {
             // Editing inside the folder takes back first, then the page itself.
             if (folderPage.handleBack()) return true
@@ -688,10 +914,12 @@ class WP81Shell(
         iconPicker.applyPalette(p)
         inputDialog.applyPalette(p)
         toast.applyPalette(p)
+        statusBar.applyPalette(p)
+        actionCenter.applyPalette(p)
     }
 
     companion object {
-        private const val PAGE_MS = 260L
+        private const val PAGE_MS = 173L
 
         /** How far across the screen a drag must travel to change page. */
         private const val COMMIT_FRACTION = 0.18f

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  wp81_glyph_battery - the Battery program, in the app list and on a tile with nothing to
+  say yet.
+
+  The Windows Phone icon pack's own appbar.battery.0 - assets/custom_icons_8 - path data
+  unedited, stood upright by a quarter turn anticlockwise so the terminal is at the top.
+  The pack draws its batteries lying down because they were app-bar marks; a battery on a
+  tile is a battery, and a battery stands up.
+
+  The viewport is refitted to a rectangle around what the mark actually draws, as the rest
+  of this set is: the file leaves the outline in the middle of a 76-unit square with more
+  than half of it empty, and an icon fitted to that square would be drawn at half the size
+  of every other glyph beside it. Working from the file's numbers, the mark occupies
+  x 20-59 and y 28-48 before the turn, which is 39 by 20 after it - hence the viewport,
+  the pivot at the middle of the original square, and the translation that brings the
+  turned mark back to the origin.
+
+  See BatteryFaceView, which draws the same asset on the tile and paints the charge into
+  the hollow this outline leaves.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="12.31dp"
+    android:height="24dp"
+    android:viewportWidth="20"
+    android:viewportHeight="39">
+    <group
+        android:pivotX="38"
+        android:pivotY="38"
+        android:rotation="-90"
+        android:translateX="-28"
+        android:translateY="-17">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M 59,34L 59,42L 56,42L 56,48L 20,48L 20,28L 56,28L 56,34L 59,34 Z M 24,32L 24,44L 52,44L 52,32L 24,32 Z" />
+    </group>
+</vector>

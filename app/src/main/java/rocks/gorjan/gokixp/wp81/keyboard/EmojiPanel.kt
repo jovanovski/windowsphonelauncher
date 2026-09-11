@@ -28,6 +28,7 @@ import rocks.gorjan.gokixp.R
 import rocks.gorjan.gokixp.wp81.SvgIcon
 import rocks.gorjan.gokixp.wp81.TiltEffect
 import rocks.gorjan.gokixp.wp81.WP81Palette
+import kotlin.math.floor
 
 /**
  * One shelf of the grid: a header - null for a flat run of search results - and the emoji
@@ -194,12 +195,11 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
     //
     // Read once, here, for the reason given on KeyboardView's own `glyphs` map: SvgIcon
     // re-parses its file on every call, so a panel that fetched one per draw would be
-    // parsing XML in the input path. Four of them cover everything drawn: search leads with
-    // a magnifying glass, a typed query can be cleared with the cross, Recent is headed by
-    // a clock the way the phone's own history lists were, and a search with nothing in it
-    // is answered by the same smiley the keyboard's own emoji key wears.
+    // parsing XML in the input path. Three of them cover everything drawn: search leads with
+    // a magnifying glass, Recent is headed by a clock the way the phone's own history lists
+    // were, and a search with nothing in it is answered by the same smiley the keyboard's own
+    // emoji key wears.
     private val magnifyIcon = SvgIcon.fromAsset(context, "$ICONS/appbar.magnify.svg")?.mutate()
-    private val closeIcon = SvgIcon.fromAsset(context, "$ICONS/appbar.close.svg")?.mutate()
     private val clockIcon = SvgIcon.fromAsset(context, "$ICONS/appbar.clock.svg")?.mutate()
     private val smileyIcon = SvgIcon.fromAsset(context, "$ICONS/appbar.smiley.happy.svg")?.mutate()
     private val backspaceIcon = context.getDrawable(R.drawable.wp81_calc_backspace)?.mutate()
@@ -266,6 +266,8 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
 
         /** No space bar and no joystick on this panel, so no caret drag either. */
         override fun onCursorSlide(view: android.view.View, steps: Int) = 0
+
+        override fun onCursorLines(view: android.view.View, lines: Int) = 0
 
         /** Backspace repeats while held - [KeyView] already drives that; this just answers it. */
         override fun onKeyRepeat(view: KeyView) {
@@ -361,7 +363,6 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
         palette = p
         setBackgroundColor(blend(GROUND_ALPHA))
         magnifyIcon?.setTint(palette.foregroundSubtle)
-        closeIcon?.setTint(palette.foregroundSubtle)
         searchBar.applyPalette()
         grid.applyPalette()
         abcKey.applyPalette(p)
@@ -419,13 +420,13 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
         val controlH = (keyW * CONTROL_ROW_FRACTION).toInt()
         val rowPitch = keyH + gap
 
-        // With the keys underneath there is only room for a glance at the results; without
-        // them the panel has the lot. The keys reserve the navigation bar in the first case,
-        // so reserving it here as well would leave a band of nothing above them.
+        // With the keys underneath there is less room for the results; without them the panel
+        // has the lot. The keys reserve the navigation bar in the first case, so reserving it
+        // here as well would leave a band of nothing above them.
         val gridH: Int
         val reserved: Int
         if (searchMode) {
-            gridH = (rowPitch * SEARCH_GRID_ROWS).toInt()
+            gridH = (rowPitch * searchRows(controlH, rowPitch)).toInt()
             reserved = 0
         } else {
             // A full four rows of grid *under* the control row, so the panel comes to exactly
@@ -460,6 +461,33 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
         grid.measure(gridSpec.first, gridSpec.second)
         gifGrid.measure(gridSpec.first, gridSpec.second)
         setMeasuredDimension(w, controlH + gridH + reserved)
+    }
+
+    /**
+     * How many rows of results fit above the keys, while the keys are up.
+     *
+     * Worked out against the screen rather than written down as a number, because the number
+     * is not a design decision - it is whatever is left. This arrangement is the only one on
+     * the keyboard where two things are stacked, and the one underneath is fixed: the keys
+     * are the keys. So the panel takes what is over, in whole rows, and how many that is
+     * differs by more than a factor of two between a tall phone and a short one held
+     * sideways. Two rows was a number that fit everywhere and was therefore too few nearly
+     * everywhere - a screenful of GIFs shown two at a time is a search you scroll rather than
+     * one you look at.
+     *
+     * Whole rows, still. A row sliced through the middle reads as the panel being cut off
+     * rather than as there being more to scroll to.
+     *
+     * [SEARCH_MAX_SHARE] of the screen is the cap on the *whole* input method, keys included,
+     * which is why what is subtracted here is the height of everything that is not this grid.
+     * Past that the app being typed into has nothing left to show, and a picker that hides
+     * the conversation it is picking for has stopped being a keyboard.
+     */
+    private fun searchRows(controlH: Int, rowPitch: Float): Float {
+        if (rowPitch <= 0f) return SEARCH_ROWS_MIN
+        val screen = resources.displayMetrics.heightPixels
+        val room = screen * SEARCH_MAX_SHARE - controlH - contentHeight - bottomInset
+        return floor(room / rowPitch).coerceIn(SEARCH_ROWS_MIN, SEARCH_ROWS_MAX)
     }
 
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
@@ -553,9 +581,15 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
     // ==================================================================== search bar
 
     /**
-     * The bar itself: a magnifying glass, the query or a placeholder, and a cross to clear
-     * it. Ordinary widgets rather than a canvas, unlike the grid below - there is exactly
-     * one of this, so nothing is bought by hand-rolling it.
+     * The bar itself: a magnifying glass, and the query or a placeholder beside it. Ordinary
+     * widgets rather than a canvas, unlike the grid below - there is exactly one of this, so
+     * nothing is bought by hand-rolling it.
+     *
+     * There was a cross on the end to clear the box, and it is gone. Backspace is a key on
+     * this panel's own control row, an inch from where the thumb already is, and it is how
+     * every other piece of text on this keyboard gets taken back - so the cross was a second
+     * way to do one thing, sitting in the one place a search bar has no room to spare, and
+     * costing a full key's width of the query it was there to help with.
      *
      * It is display-only. Making it an `EditText` was the first thing tried, and it cannot
      * work: an input method cannot itself become the target of *another* input method, so a
@@ -568,7 +602,6 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
 
         private val magnify = ImageView(context)
         private val label = TextView(context)
-        private val clear = ImageView(context)
 
         /** Half a gutter: what the fill is held in from the view's bounds. See [configure]. */
         private var inset = 0f
@@ -596,20 +629,8 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
             label.maxLines = 1
             label.ellipsize = TextUtils.TruncateAt.END
 
-            clear.setImageDrawable(closeIcon)
-            clear.scaleType = ImageView.ScaleType.FIT_CENTER
-            clear.isClickable = true
-            // A local clear, not a callback: there is nothing for the host to be told. It
-            // already owns whatever buffer it is feeding into `query`, and the next
-            // character it forwards starts a fresh search exactly as if this were the first
-            // tap - the host does not have to be told the box now reads empty for that to
-            // keep working, only for the placeholder to reappear here in the meantime.
-            clear.setOnClickListener { query = "" }
-            TiltEffect.apply(clear)
-
             addView(magnify)
             addView(label, LayoutParams(0, LayoutParams.MATCH_PARENT, 1f))
-            addView(clear)
 
             setOnClickListener { onSearchTapped?.invoke() }
             TiltEffect.apply(this)
@@ -626,7 +647,6 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
             inset = gap / 2f
             setPadding(pad, inset.toInt(), pad, inset.toInt())
             magnify.layoutParams = LayoutParams(icon, icon).apply { marginEnd = pad }
-            clear.layoutParams = LayoutParams(icon, icon).apply { marginStart = pad }
             label.setTextSize(TypedValue.COMPLEX_UNIT_PX, keyW * BAR_TEXT_FRACTION)
             refresh()
         }
@@ -649,7 +669,6 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
                 label.text = query
                 label.setTextColor(palette.foreground)
             }
-            clear.visibility = if (query.isEmpty()) INVISIBLE else VISIBLE
         }
     }
 
@@ -754,6 +773,16 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
 
         /** Lays [sections] out into fixed-height rows once, so scrolling is pure arithmetic. */
         private fun rebuild() {
+            // Not before there is a width to lay them out against. [columns] is still its
+            // initial 1 and [cellPitch] is zero until the first measure, so running here cuts
+            // every section into one-emoji rows and builds three and a half thousand of them -
+            // and does it twice, because `setContent` and `configure` both land before the
+            // panel has been measured. All of it is thrown away the moment the real width
+            // arrives, and all of it is built on the main thread in the middle of opening the
+            // panel, which is exactly where it is felt. [onSizeChanged] rebuilds, so there is
+            // nothing to lose by waiting for it.
+            if (cellPitch <= 0f) return
+
             val built = mutableListOf<EmojiRow>()
             for (section in sections) {
                 if (section.label != null) built.add(EmojiRow.Header(section.label, section.icon))
@@ -983,8 +1012,18 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
         /** See [KeyboardSettingsActivity], which is where a key is pasted in. */
         const val NO_GIF_KEY_MESSAGE = "Add a GIPHY key in keyboard settings"
 
-        /** How long the typing has to settle before the GIFs are asked. See [findGifs]. */
-        const val GIF_DEBOUNCE_MS = 350L
+        /**
+         * How long the typing has to settle before the GIFs are asked. See [findGifs].
+         *
+         * A whole second, which is longer than a debounce is usually set and is deliberate:
+         * what is on the other end is somebody's own GIPHY key against somebody's own rate
+         * limit, so the thing being protected is not the phone's battery but a quota that
+         * runs out. A second is comfortably longer than the gap between two letters typed by
+         * a thumb, which means a word costs one request rather than one per letter, and it
+         * is short enough that a person who has finished typing does not wonder whether the
+         * keyboard heard them.
+         */
+        const val GIF_DEBOUNCE_MS = 1_000L
 
         /** The keyboard's own ground. See `KeyboardView.GROUND_ALPHA` - the two must match. */
         const val GROUND_ALPHA = 0.102f
@@ -1004,12 +1043,25 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
         const val BACKSPACE_FRACTION = 1.45f
 
         /**
-         * How much of the grid survives when the keys are up underneath it.
+         * How much of the grid survives when the keys are up underneath it. See [searchRows].
          *
-         * A whole number of rows. At 1.7 the bottom row was sliced through the middle, which
-         * reads as the panel being cut off rather than as there being more to scroll to.
+         * The floor is what used to be the whole rule, and it is kept as a floor: two rows fit
+         * on anything, including a small phone held sideways, and a panel that answered a
+         * search with one row of results would be worse than one that overflowed slightly.
+         * The ceiling is there because the grid scrolls - past four rows the marginal row is
+         * a flick away anyway, and the app underneath has given up enough.
          */
-        const val SEARCH_GRID_ROWS = 2f
+        const val SEARCH_ROWS_MIN = 2f
+        const val SEARCH_ROWS_MAX = 4f
+
+        /**
+         * The most of the screen the keyboard will take while a search is up.
+         *
+         * Four fifths, counting the keys as well as this panel. It is a lot, and a picker is
+         * the one thing on a keyboard that earns it: what is being chosen is a picture, and a
+         * picture too small to recognise is not a choice being offered.
+         */
+        const val SEARCH_MAX_SHARE = 0.8f
 
         /** A function key's fill, reused for the search bar so it reads as a control. */
         const val FUNCTION_ALPHA = 0.302f

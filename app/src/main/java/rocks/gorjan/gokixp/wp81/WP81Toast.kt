@@ -18,7 +18,8 @@ import rocks.gorjan.gokixp.R
  *
  * A full-width accent band that slides in over whatever is on screen, holds briefly, and
  * retracts: two lines of Segoe, no icon, no border, no rounded corners. Tapping it opens
- * whatever it is about; flicking it away dismisses it early.
+ * whatever it is about; flicking it away dismisses it early. A band that is asking for
+ * something rather than reporting it can hold until it is dealt with - see [show].
  *
  * Enters from the bottom, just above the navigation keys - within reach of a thumb, and
  * clear of the status bar.
@@ -136,6 +137,13 @@ class WP81Toast(
             }
         }
 
+    /**
+     * Puts the band up.
+     *
+     * A [durationMs] of zero or less leaves it up until it is dealt with - tapped or
+     * flicked away. For something the user is meant to act on rather than merely notice,
+     * a band that retracts on its own is the announcement that was never seen.
+     */
     fun show(title: String, text: String, durationMs: Long, onTap: (() -> Unit)?) {
         this.onTap = onTap
         titleView.text = title
@@ -155,7 +163,7 @@ class WP81Toast(
             .setInterpolator(DecelerateInterpolator())
             .start()
 
-        postDelayed(hideRunnable, durationMs)
+        if (durationMs > 0) postDelayed(hideRunnable, durationMs)
     }
 
     fun dismiss() {

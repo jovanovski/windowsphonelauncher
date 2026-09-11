@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  wp81_glyph_calendar - the Calendar live tile.
+
+  The one built-in tile with no program behind it to borrow a mark from, and it needs one
+  now that the 1x1 stands down to its icon (see TileView.showsLive). Drawn in the same
+  idiom as the Modern UI Icons marks around it and on their 76x76 grid, so it sits at the
+  same weight: a ruled page with a solid masthead and two rows of days on it.
+
+  Emitted white so callers can tint per accent / light-dark theme.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="76"
+    android:viewportHeight="76">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M 19,21L 57,21L 57,57L 19,57L 19,21 Z M 22,32L 22,54L 54,54L 54,32L 22,32 Z M 25,35L 31,35L 31,41L 25,41L 25,35 Z M 35,35L 41,35L 41,41L 35,41L 35,35 Z M 45,35L 51,35L 51,41L 45,41L 45,35 Z M 25,45L 31,45L 31,51L 25,51L 25,45 Z M 35,45L 41,45L 41,51L 35,51L 35,45 Z M 45,45L 51,45L 51,51L 45,51L 45,45 Z" />
+</vector>

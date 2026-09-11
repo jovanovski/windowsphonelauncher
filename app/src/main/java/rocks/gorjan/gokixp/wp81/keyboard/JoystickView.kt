@@ -28,6 +28,14 @@ import kotlin.math.hypot
  * leaving both - two ways to do one thing is not twice as good, it is one of them still
  * costing you the occasional wrong space for a gesture you no longer use.
  *
+ * It is also why it moves in four directions where the space bar could only ever move in two.
+ * A key can only report the one axis it is not already using; a control of its own can report
+ * both, so up and down are here as well, and they do what up and down have always done to a
+ * caret - the line above, the line below, at the column it was already in. Not that the two
+ * are the same gesture at right angles: characters and lines are wildly different sizes, so
+ * they run at wildly different rates and only one of them can be asked for at a time. See
+ * [CaretRate].
+ *
  * It sits on the crossing of two gutters - the one above the bottom row, and the one after
  * that row's first key - because that is the one place on a full keyboard where nothing is,
  * and where a thumb resting between rows is already close to it.
@@ -43,7 +51,7 @@ internal class JoystickView(
 ) : View(context) {
 
     /**
-     * The caret should move this many characters, negative for left.
+     * The caret should move this many characters along the line, negative for left.
      *
      * A delta rather than a position, for the same reason the space bar's slide reports one:
      * where the caret ends up is the field's business - a line ending, a chip, an emoji that
@@ -55,6 +63,20 @@ internal class JoystickView(
      */
     var onDrag: ((Int) -> Int)? = null
 
+    /**
+     * And this many lines, negative for up.
+     *
+     * Separate from [onDrag] rather than a second argument to it because the two are answered
+     * by quite different work at the far end - one names a position a character away, the
+     * other has to find where the line above starts before it can name anything at all - and
+     * because only one of them is ever being asked for.
+     *
+     * @return how many lines it actually moved: zero at the top and the bottom of the text,
+     *   and zero in a field that will not say what its own lines are. See
+     *   `WP81KeyboardService.onCursorLines`.
+     */
+    var onDragLines: ((Int) -> Int)? = null
+
     /** Set by the grid on every measure pass, so this is sized in the same units as the keys. */
     private var keyW = 0f
 
@@ -62,6 +84,7 @@ internal class JoystickView(
 
     /** Where the finger started, in screen coordinates - it leaves this view immediately. */
     private var fromX = 0f
+    private var fromY = 0f
 
     /**
      * How far the finger is from where it went down, which is the stick's deflection.
@@ -70,9 +93,10 @@ internal class JoystickView(
      * dot near its edge is not already a push. The control is a stick that springs back to
      * wherever you took hold of it.
      */
-    private var offset = 0f
+    private var offsetX = 0f
+    private var offsetY = 0f
 
-    /** How a deflection becomes characters a second, and how those become whole steps. */
+    /** How a deflection becomes steps, which way they count, and how they become whole ones. */
     private val pace = CaretRate()
 
     private var lastFrame = 0L
@@ -124,7 +148,9 @@ internal class JoystickView(
                 if (!within(event)) return false
                 held = true
                 fromX = event.rawX
-                offset = 0f
+                fromY = event.rawY
+                offsetX = 0f
+                offsetY = 0f
                 pace.release()
                 lastFrame = android.os.SystemClock.uptimeMillis()
                 // The gesture belongs to this view for as long as the finger is down. It
@@ -141,7 +167,8 @@ internal class JoystickView(
                 // The finger only says how far the stick is pushed. Nothing moves the caret
                 // here - [run] does that, at whatever rate this deflection asks for, whether
                 // or not the finger is still moving.
-                offset = event.rawX - fromX
+                offsetX = event.rawX - fromX
+                offsetY = event.rawY - fromY
                 invalidate()
                 return true
             }
@@ -157,7 +184,8 @@ internal class JoystickView(
 
     private fun release() {
         held = false
-        offset = 0f
+        offsetX = 0f
+        offsetY = 0f
         pace.release()
         removeCallbacks(run)
         parent?.requestDisallowInterceptTouchEvent(false)
@@ -173,20 +201,28 @@ internal class JoystickView(
 
     /** Moves the caret by whatever [seconds] of the current deflection is worth. */
     private fun advance(seconds: Float) {
-        val push = offset / resources.displayMetrics.density
-        val steps = pace.steps(push, seconds)
+        val density = resources.displayMetrics.density
+        val steps = pace.steps(offsetX / density, offsetY / density, seconds)
         if (steps == 0) return
 
-        val moved = onDrag?.invoke(steps) ?: 0
+        val moved = (if (pace.vertical) onDragLines else onDrag)?.invoke(steps) ?: 0
         if (moved == 0) {
-            // The caret is against the end of the text. Nothing is happening, so nothing is
-            // owed and nothing is felt - a dot still ticking there would say it was moving.
+            // The caret is against the end of the text - or the field will not say where its
+            // lines are, which comes to the same thing here. Nothing is happening, so nothing
+            // is owed and nothing is felt: a dot still ticking there would say it was moving.
             pace.stalled()
             return
         }
-        // A tick per character while the caret is walking, and none once it is running. See
-        // [CaretRate.fine].
-        if (pace.fine(push)) KeyboardHaptics.key(this)
+        // A tick for every step the caret actually takes, at any speed and on either axis.
+        //
+        // The rate this fires at is the rate the caret is moving at, so a stick pushed to the
+        // end of its travel buzzes rather than ticks - and that is the point of it. What is
+        // being reported is not each character on its own, which nobody could count at thirty
+        // a second anyway; it is that the caret is *moving*, and how fast. A control that goes
+        // quiet as soon as it speeds up feels like a control that has come off its mounting at
+        // exactly the moment there is most to be uncertain about, and the one thing this dot
+        // cannot show is the caret itself - the finger is nowhere near it.
+        KeyboardHaptics.key(this)
     }
 
     private fun within(event: MotionEvent): Boolean =
@@ -203,24 +239,48 @@ internal class JoystickView(
         paint.color = ColorUtils.blendARGB(palette.background, palette.foreground, GROUND_ALPHA)
         canvas.drawCircle(cx, cy, keyW * HALO, paint)
 
-        // The face, in a key's own grey - and a *pressed* key's while it is held, which is the
-        // same thing every other control on this keyboard does with a thumb on it.
+        // The face, in a key's own grey, sinking a step further while it is held.
+        //
+        // Deliberately not the accent that everything else on this keyboard goes when a thumb
+        // lands on it - see `KeyView.fillFor`. The dot riding on this face *is* the accent,
+        // and a control whose handle and whose face were the same colour would be a control
+        // with no visible handle at the one moment somebody is looking to see how far they
+        // have pushed it.
         paint.color = ColorUtils.blendARGB(
             palette.background,
             palette.foreground,
-            if (held) KeyView.PRESSED_FILL_ALPHA else KeyView.LETTER_FILL_ALPHA
+            if (held) FACE_HELD_ALPHA else KeyView.LETTER_FILL_ALPHA
         )
         canvas.drawCircle(cx, cy, keyW * FACE, paint)
 
         // The dot rides toward the finger, clamped inside the ring. It is what makes the
         // control legible: a stick you can see is pushed, and pushed *that* far, rather than
-        // a caret running for reasons the screen does not show. It only ever moves sideways,
-        // which also says - without a word - that up and down do nothing here.
+        // a caret running for reasons the screen does not show.
+        //
+        // Along the axis the gesture is on, though, and not simply where the finger is. Only
+        // one axis is ever being answered - see [CaretRate.pick] - and a dot sitting at the
+        // corner of a diagonal push would be claiming both. Drawn this way the dot is the
+        // one thing on screen that says which of the two you are actually doing, and a thumb
+        // that is drifting off the line it meant can see it happening.
         val room = keyW * (HALO - DOT_HELD)
         val throw_ = keyW * FULL_THROW
-        val slide = (offset / throw_).coerceIn(-1f, 1f) * room
+        var slideX = offsetX / throw_
+        var slideY = offsetY / throw_
+        if (pace.engaged) {
+            if (pace.vertical) slideX = 0f else slideY = 0f
+        }
+        val out = hypot(slideX, slideY)
+        if (out > 1f) {
+            slideX /= out
+            slideY /= out
+        }
         paint.color = palette.accent
-        canvas.drawCircle(cx + slide, cy, keyW * (if (held) DOT_HELD else DOT), paint)
+        canvas.drawCircle(
+            cx + slideX * room,
+            cy + slideY * room,
+            keyW * (if (held) DOT_HELD else DOT),
+            paint
+        )
     }
 
     private companion object {
@@ -253,6 +313,16 @@ internal class JoystickView(
 
         /** `#1A1A1A` on Dark - the keyboard's own ground. See `KeyboardView.groundColour`. */
         const val GROUND_ALPHA = 0.102f
+
+        /**
+         * The face with a thumb on it, as an alpha over the page like the fills it sits among.
+         *
+         * Between the keyboard's ground and the paler of the two key fills - 0.102 and 0.200 -
+         * so the dot's face is darker than the keys around it while it is held and still
+         * lighter than the gutter it sits in. Going past the ground would read as a hole where
+         * the dot was; landing on it exactly would merge the dot into the board.
+         */
+        const val FACE_HELD_ALPHA = 0.14f
 
         /**
          * How far the finger travels for the dot to show full deflection, in key widths.

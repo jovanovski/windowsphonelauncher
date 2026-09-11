@@ -2,7 +2,10 @@ package rocks.gorjan.gokixp.wp81
 
 import android.content.Context
 import android.location.Geocoder
+import android.location.Location
+import android.location.LocationListener
 import android.location.LocationManager
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -303,6 +306,15 @@ object WeatherStore {
     /** How old a forecast may be before opening the app asks for another. */
     private const val STALE_MS = 30L * 60L * 1000L
 
+    /**
+     * How long a refresh waits on the radio before going with the fix it already had.
+     *
+     * Long enough for the network provider, which is what usually answers, and short of
+     * what it takes a phone indoors to see a satellite - because the wait is in front of
+     * somebody who tapped a button, and a stale fix now beats an exact one later.
+     */
+    private const val LOCATE_TIMEOUT_MS = 8_000L
+
     /** How many places may be saved. A list nobody scrolls, and a preferences file that stays small. */
     private const val MAX_PLACES = 10
 
@@ -395,18 +407,57 @@ object WeatherStore {
     /**
      * Fetches the selected place's forecast, unless a fresh one is already held.
      *
+     * [locate] goes to the radio for a fresh fix before asking what the weather is there,
+     * which is what a refresh asked for by hand does - see [locateHere]. It says nothing
+     * about a pinned town: those do not move, and the request would only be a delay.
+     *
      * [onDone] is called on the main thread either way, and is told nothing about what
      * happened: a page redraws itself from the cache afterwards, and whether that cache
      * was just replaced or merely re-read is not a difference it can show.
      */
-    fun refresh(context: Context, force: Boolean = false, onDone: () -> Unit = {}) {
+    fun refresh(
+        context: Context,
+        force: Boolean = false,
+        locate: Boolean = false,
+        onDone: () -> Unit = {}
+    ) {
         if (fetching) return
         if (!force && !isStale(context) && report(context) != null) {
             onDone()
             return
         }
         val place = selected(context)
-        val point = coordinatesFor(context, place)
+        if (locate && place != null && place.isHere) {
+            // Marked as fetching from here rather than from [fetchFor], so that the rings
+            // stay dimmed and the page says it is reading while the radio is looking: from
+            // outside, waiting on a fix and waiting on a forecast are one wait.
+            fetching = true
+            locateHere(context) { fix ->
+                // Cleared before handing on because [fetchFor] sets it again and its own
+                // guard has to be able to tell that nothing is out yet. Both happen on the
+                // main thread inside this callback, so there is no gap anything can see.
+                fetching = false
+                fetchFor(context, place, fix ?: coordinatesFor(context, place), onDone)
+            }
+            return
+        }
+        fetchFor(context, place, coordinatesFor(context, place), onDone)
+    }
+
+    /**
+     * The forecast request itself, once there is somewhere to point it.
+     *
+     * [point] is handed in rather than worked out here: a refresh asked for by hand has
+     * just been to the radio for one, and asking [coordinatesFor] again would answer with
+     * whatever the system had cached before that - the old town, on the trip that made
+     * somebody reach for refresh in the first place.
+     */
+    private fun fetchFor(
+        context: Context,
+        place: WeatherPlace?,
+        point: Pair<Double, Double>?,
+        onDone: () -> Unit
+    ) {
         if (point == null) {
             onDone()
             return
@@ -954,6 +1005,90 @@ object WeatherStore {
             Log.w(TAG, "could not read the last known position", e)
             null
         }
+    }
+
+    /**
+     * Goes and asks where the phone is now, rather than reading where it last was.
+     *
+     * [lastKnownLocation] is what draws a page: it costs nothing, answers immediately, and
+     * is right almost always. It is wrong in exactly the case somebody reaches for the
+     * refresh ring in - they have moved, and the fix the system is holding is the town
+     * they left - so a refresh asked for by hand goes to the radio first and asks about
+     * wherever it says they are.
+     *
+     * Every provider that is switched on is asked at once and the first fix wins: the
+     * network one usually answers in a moment, and GPS is there for a phone that has it
+     * switched off. The fix is written down as it arrives rather than after the forecast
+     * comes back, because where the phone is stands whether or not Open-Meteo answered.
+     *
+     * [onDone] is called on the main thread exactly once - with the fix, or with null when
+     * there is no permission, nothing switched on, or nothing came back inside
+     * [LOCATE_TIMEOUT_MS]. Null is not a failure to report: the forecast falls back to the
+     * remembered fix, which is the one it would have used anyway.
+     */
+    fun locateHere(context: Context, onDone: (Pair<Double, Double>?) -> Unit) {
+        val manager = try {
+            context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+        } catch (e: Exception) {
+            Log.w(TAG, "no location service to ask", e)
+            null
+        }
+        val providers = manager?.let {
+            listOf(LocationManager.NETWORK_PROVIDER, LocationManager.GPS_PROVIDER).filter { provider ->
+                try {
+                    it.isProviderEnabled(provider)
+                } catch (e: Exception) {
+                    false
+                }
+            }
+        }.orEmpty()
+        if (manager == null || providers.isEmpty()) {
+            onDone(null)
+            return
+        }
+        // The fix and the giving up race each other, and both end in [onDone]. Read and
+        // written on the main thread only: the listener is handed that looper below, and
+        // the timeout is posted to it.
+        var settled = false
+        val listener = object : LocationListener {
+            override fun onLocationChanged(location: Location) {
+                if (settled) return
+                settled = true
+                manager.removeUpdates(this)
+                rememberHere(context, location.latitude, location.longitude)
+                onDone(location.latitude to location.longitude)
+            }
+
+            // Overridden rather than left to the interface's defaults, which are an API 30
+            // addition: on Android 10 a listener without them is an AbstractMethodError the
+            // moment a provider says anything.
+            override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+            override fun onProviderEnabled(provider: String) {}
+            override fun onProviderDisabled(provider: String) {}
+        }
+        try {
+            for (provider in providers) {
+                manager.requestLocationUpdates(provider, 0L, 0f, listener, Looper.getMainLooper())
+            }
+        } catch (e: SecurityException) {
+            // Not allowed to ask. The app says so on the page rather than here.
+            settled = true
+            manager.removeUpdates(listener)
+            onDone(null)
+            return
+        } catch (e: Exception) {
+            Log.w(TAG, "could not ask where the phone is", e)
+            settled = true
+            manager.removeUpdates(listener)
+            onDone(null)
+            return
+        }
+        main.postDelayed({
+            if (settled) return@postDelayed
+            settled = true
+            manager.removeUpdates(listener)
+            onDone(null)
+        }, LOCATE_TIMEOUT_MS)
     }
 
     // ------------------------------------------------------------------ searching

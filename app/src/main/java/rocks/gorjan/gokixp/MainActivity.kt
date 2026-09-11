@@ -83,6 +83,8 @@ import android.view.LayoutInflater
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts.CreateDocument
 import androidx.appcompat.content.res.AppCompatResources
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.common.api.ApiException
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import rocks.gorjan.gokixp.wp81.WP81Settings
@@ -250,6 +252,110 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
     private fun refreshDefaultBrowserUi() {
         refreshDefaultBrowser?.invoke()
+    }
+
+    // ---- backup and restore -----------------------------------------------------------
+
+    /**
+     * The user's Google Drive, as one of the two places a backup can go.
+     *
+     * Lazy, and it asks the phone about the account rather than holding one: the sign-in
+     * belongs to the device and outlives every instance of this activity, so a helper that
+     * only knew about accounts it had seen sign in would be signed out on every launch.
+     */
+    private val googleDrive by lazy { GoogleDriveHelper(this) }
+
+    /**
+     * Where the user chose to put a backup file.
+     *
+     * The snapshot is taken here rather than carried to here. The system's file picker is
+     * another activity and this one can be recreated behind it, which takes any settings
+     * held in a field with it - and a backup that silently wrote nothing is worse than one
+     * that failed loudly. Reading the preferences at the moment of writing costs a few
+     * milliseconds and cannot go stale.
+     */
+    private val backupExportLauncher =
+        registerForActivityResult(CreateDocument(BACKUP_MIME)) { uri: Uri? ->
+            val target = uri ?: return@registerForActivityResult
+            Thread {
+                val failure = try {
+                    val json = SettingsBackup.snapshot(this)
+                    contentResolver.openOutputStream(target)?.use { it.write(json.toByteArray()) }
+                        ?: throw java.io.IOException("Nothing would open that file for writing")
+                    null
+                } catch (e: Exception) {
+                    Log.e("MainActivity", "Could not write the backup file", e)
+                    e.message ?: "the file could not be written"
+                }
+                runOnUiThread {
+                    if (failure == null) {
+                        themeManager.setWP81LastFileBackup(System.currentTimeMillis())
+                        refreshWP81BackupRows()
+                        showNotification("Backup", "Your settings were saved to that file")
+                    } else {
+                        showNotification("Backup", "Could not save: $failure")
+                    }
+                }
+            }.start()
+        }
+
+    /** A backup file the user picked, read and then offered back to them to confirm. */
+    private val backupImportLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+            val source = uri ?: return@registerForActivityResult
+            Thread {
+                val json = try {
+                    contentResolver.openInputStream(source)?.use {
+                        it.bufferedReader().readText()
+                    }
+                } catch (e: Exception) {
+                    Log.e("MainActivity", "Could not read the backup file", e)
+                    null
+                }
+                runOnUiThread {
+                    if (json == null) showNotification("Restore", "That file could not be read")
+                    else confirmRestore(json, "that file")
+                }
+            }.start()
+        }
+
+    /**
+     * The Google sign-in screen, and what it was opened for.
+     *
+     * What the user asked for is recorded in preferences rather than held in a lambda, for
+     * the reason the image picker's target is - see [consumePendingImagePick]. Sign-in is a
+     * whole screen from another app, and an activity that is recreated behind it comes back
+     * with any in-memory handler gone, leaving a user who has just signed in with nothing
+     * to show for it.
+     */
+    private val driveSignInLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val wanted = consumePendingDriveAction()
+        if (result.resultCode != RESULT_OK) {
+            // RESULT_CANCELED is both "the user backed out" and "this build has no OAuth
+            // client for its package and signing key", and the two are indistinguishable
+            // from here. Said plainly rather than guessed at.
+            Log.w("MainActivity", "Google sign-in did not complete: ${result.resultCode}")
+            showNotification("Google Drive", "Not signed in")
+            return@registerForActivityResult
+        }
+        try {
+            val account = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+                .getResult(ApiException::class.java)
+            googleDrive.connect(account)
+            when (wanted) {
+                DRIVE_ACTION_BACKUP -> backUpToDrive()
+                DRIVE_ACTION_RESTORE -> restoreFromDrive()
+                else -> showNotification("Google Drive", "Signed in as ${account.email}")
+            }
+        } catch (e: ApiException) {
+            Log.e("MainActivity", "Google sign-in failed: ${e.statusCode}", e)
+            showNotification("Google Drive", "Sign-in failed (${e.statusCode})")
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Google sign-in failed", e)
+            showNotification("Google Drive", "Sign-in failed")
+        }
     }
 
 
@@ -524,6 +630,24 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         private const val PICK_TARGET_WP81_BACKGROUND = "wp81_background"
         private const val PICK_TARGET_WP81_ICON_PREFIX = "wp81_icon:"
 
+        /** What the in-flight Google sign-in is for; see driveSignInLauncher. */
+        private const val KEY_PENDING_DRIVE_ACTION = "pending_drive_action"
+        private const val DRIVE_ACTION_BACKUP = "backup"
+        private const val DRIVE_ACTION_RESTORE = "restore"
+
+        /**
+         * That a restore has just happened, for the launcher it restarts to announce.
+         *
+         * A restore replaces every setting the shell was drawn from, so the shell is built
+         * again from scratch - which takes the band announcing it with it. So the news is
+         * left in the preferences the restart is about to read, and said on the way back
+         * up. Cleared as it is read; see [announceRestoreIfJustDone].
+         */
+        private const val KEY_RESTORE_ANNOUNCE = "wp81_restore_announce"
+
+        /** What a settings backup is, to the picker that saves one and the one that opens it. */
+        private const val BACKUP_MIME = "application/json"
+
         /**
          * How large the flat swatch behind this launcher is. See [matchDeviceWallToTheme].
          *
@@ -544,6 +668,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
         /** How long an in-app notification stays on screen. */
         private const val NOTIFICATION_DURATION_MS = 7000L
+
+        /** A band that holds until it is tapped or flicked away. See [showNotification]. */
+        private const val STICKY_NOTIFICATION = 0L
 
         /**
          * How high the phone's toast and its task switcher sit, in dp.
@@ -826,6 +953,25 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             return prefs.getString(KEY_USER_NAME, "User") ?: "User"
         }
 
+        /**
+         * What the phone should call its owner, as typed in Cortana's settings.
+         *
+         * That is the only place it can be typed, because the greeting under her ring is
+         * the only place in the shell that says it - a page of its own for one field that
+         * feeds one line would be a settings entry nobody would ever find.
+         *
+         * A blank name is forgotten rather than stored blank, so that "has not said" and
+         * "said nothing" stay the same state and [getUserName] has one fallback rather
+         * than two.
+         */
+        fun setUserName(context: Context, name: String) {
+            val trimmed = name.trim()
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
+                if (trimmed.isEmpty()) remove(KEY_USER_NAME)
+                else putString(KEY_USER_NAME, trimmed)
+            }
+        }
+
         // Safe getter for integer preferences that handles type mismatches from corrupted imports
         private fun android.content.SharedPreferences.safeGetInt(key: String, defaultValue: Int): Int {
             return try {
@@ -993,7 +1139,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // Show welcome screen if this is the first launch for this version
         Handler(Looper.getMainLooper()).postDelayed({
             showWelcomeScreenIfNeeded()
-
+            announceRestoreIfJustDone()
         }, 1000) // Delay to ensure UI is fully loaded
     }
     
@@ -1074,6 +1220,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 when (intent?.action) {
                     Intent.ACTION_POWER_CONNECTED -> playSound(R.raw.charge_on_8)
                     Intent.ACTION_POWER_DISCONNECTED -> playSound(R.raw.charge_off_8)
+                    Intent.ACTION_BATTERY_CHANGED -> onBatteryChanged(intent)
                 }
             }
         }
@@ -1081,10 +1228,57 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_POWER_CONNECTED)
             addAction(Intent.ACTION_POWER_DISCONNECTED)
+            // The charge itself, which is what the battery tile draws and what the app's
+            // chart is drawn from. Registered alongside the two connection actions rather
+            // than in a receiver of its own: it is the same subject, and a launcher with
+            // two battery receivers is a launcher where one of them gets forgotten.
+            addAction(Intent.ACTION_BATTERY_CHANGED)
         }
         registerReceiver(chargingReceiver, filter)
         Log.d("MainActivity", "Charging detection setup complete")
     }
+
+    /**
+     * A new reading of the battery: written down, and put on the tile.
+     *
+     * The record is kept whether or not the tile is pinned and whether or not the shell is
+     * up, which is the one place this departs from how the other live tiles are fed. It has
+     * to be: a chart of the last day cannot be assembled after the fact, so the moment
+     * somebody pins the tile or opens the app is far too late to start watching. What that
+     * costs is a comparison and, when the level has actually moved, one string written to
+     * preferences - see BatteryStore.record, which mostly decides against.
+     *
+     * The broadcast arrives for temperature and voltage as well as for the level, so this
+     * runs more often than the level changes and is written to be cheap on the times it
+     * has nothing to say.
+     */
+    private fun onBatteryChanged(intent: Intent) {
+        val reading = try {
+            rocks.gorjan.gokixp.wp81.BatteryStore.from(intent)
+        } catch (e: Exception) {
+            Log.w("MainActivity", "could not read the battery broadcast", e)
+            return
+        }
+        if (!reading.known) return
+        rocks.gorjan.gokixp.wp81.BatteryStore.record(this, reading)
+
+        // Only when it says something new. The broadcast carries the temperature and the
+        // voltage as well as the level, so on some phones it arrives every half minute
+        // saying the same thing about the charge - and what hangs off this is a wall of
+        // tiles and, when it is open, a page that re-reads a day of usage events to
+        // rebuild itself. Neither is worth doing to redraw the same number.
+        val state = reading.percent to reading.charging
+        if (state == wp81LastBattery) return
+        wp81LastBattery = state
+        refreshWP81Battery()
+        // And the app, if it happens to be open over the wall: the page it is showing is
+        // the same reading, and one that went stale while somebody watched it would be the
+        // one screen on the phone that disagreed with the status bar above it.
+        batteryAppInstance?.bind()
+    }
+
+    /** The last charge the tiles were told about. See [onBatteryChanged]. */
+    private var wp81LastBattery: Pair<Int, Boolean>? = null
 
     private fun initializeSystemApps() {
         // Register Internet Explorer
@@ -1164,6 +1358,12 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // Files, on the same terms again.
         systemAppActions["system.files"] = { _ ->
             showFilesDialog()
+        }
+
+        // Battery, likewise. It is also what the Start screen's battery tile opens, the
+        // way the Weather tile opens Weather - the tile is this program's own.
+        systemAppActions["system.battery"] = { _ ->
+            showBatteryDialog()
         }
 
         // Cortana, which is also where the search key goes - see the shell's onCortana.
@@ -1348,6 +1548,24 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 name = "Weather",
                 exeName = "weather.exe",
                 packageName = "system.weather",
+                icon = iconStore.square(tinted)
+            ))
+        }
+
+        // Battery, the charge behind the battery tile: the day it has had, and what spent
+        // it. Windows Phone kept its Battery Saver in Settings; this shell gives it a
+        // program of its own because the tile it feeds is a program's tile, not a widget
+        // standing beside one - see WP81TileHost.PROGRAM_WIDGETS.
+        AppCompatResources.getDrawable(this, R.drawable.wp81_glyph_battery)?.let { glyph ->
+            // The glyph is drawn white for tiles; the app list is not always dark, so it
+            // takes the accent here rather than vanishing on a Light theme.
+            val tinted = glyph.mutate()
+            androidx.core.graphics.drawable.DrawableCompat.setTint(
+                tinted, themeManager.getWP81Accent())
+            systemApps.add(AppInfo(
+                name = "Battery",
+                exeName = "battery.exe",
+                packageName = "system.battery",
                 icon = iconStore.square(tinted)
             ))
         }
@@ -2770,6 +2988,54 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     private var weatherAppInstance: rocks.gorjan.gokixp.apps.weather.WeatherApp? = null
 
     /**
+     * Battery while its window is up, so a level that moves under it is rebound rather
+     * than left as it was when the page opened.
+     */
+    private var batteryAppInstance: rocks.gorjan.gokixp.apps.battery.BatteryApp? = null
+
+    /**
+     * Opens Battery.
+     *
+     * Full-screen and chromeless like the rest of the Metro programs. Bound on the way in
+     * rather than left to the next broadcast: the level and the day behind it are both
+     * readable on the spot, and a page that opened blank until something happened to the
+     * battery would be a page that opened blank.
+     */
+    private fun showBatteryDialog() {
+        if (floatingWindowManager.findAndFocusWindow("system.battery")) {
+            // It may have been behind something for a while, and both the level and the
+            // record it draws will have moved on.
+            batteryAppInstance?.bind()
+            return
+        }
+
+        val windowsDialog = createThemedWindowsDialog()
+        windowsDialog.windowIdentifier = "system.battery"
+
+        val battery = rocks.gorjan.gokixp.apps.battery.BatteryApp(
+            context = this,
+            palette = rocks.gorjan.gokixp.wp81.WP81Palette.from(themeManager),
+            onNotify = { title, message -> showNotification(title, message) }
+        )
+        batteryAppInstance = battery
+
+        val view = battery.createView()
+        windowsDialog.setContentView(view)
+        windowsDialog.setBorderless()
+        windowsDialog.setSaveState(false)
+        windowsDialog.setMaximizable(true)
+        windowsDialog.setTaskbarIcon(R.drawable.wp81_glyph_battery)
+        windowsDialog.setTitle("Battery")
+        windowsDialog.setOnCloseListener {
+            battery.cleanup()
+            batteryAppInstance = null
+        }
+        windowsDialog.setContextMenuView(contextMenu)
+        floatingWindowManager.showWindow(windowsDialog)
+        turnWP81PageIn(view)
+    }
+
+    /**
      * Opens Calculator.
      *
      * Full-screen and chromeless like Zune and News, and one window only: the keypad has
@@ -3559,27 +3825,39 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             { isNotificationListenerEnabled() },
             { Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS) }
         )
-        list += screen(
-            "Alarms and reminders",
-            "Alarms and timers going off at the time they were set for.",
-            {
-                getSystemService(android.app.AlarmManager::class.java)
-                    ?.canScheduleExactAlarms() != false
-            },
-            {
-                Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
-                    .setData(Uri.fromParts("package", packageName, null))
-            }
-        )
-        list += screen(
-            "All files",
-            "Browsing the whole of storage in the file browser, rather than only media.",
-            { android.os.Environment.isExternalStorageManager() },
-            {
-                Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-                    .setData(Uri.fromParts("package", packageName, null))
-            }
-        )
+        // Only where the phone has the setting to point at. Before Android 12 an exact
+        // alarm needed no permission at all, and asking `canScheduleExactAlarms` there is
+        // not merely pointless but fatal: the method does not exist, and the call throws
+        // NoSuchMethodError as this list is built - which is a page that opens by itself
+        // on first run, so the launcher crashed a second after starting and went on doing
+        // it, because the marker saying the page had been shown is written afterwards.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            list += screen(
+                "Alarms and reminders",
+                "Alarms and timers going off at the time they were set for.",
+                {
+                    getSystemService(android.app.AlarmManager::class.java)
+                        ?.canScheduleExactAlarms() != false
+                },
+                {
+                    Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
+                        .setData(Uri.fromParts("package", packageName, null))
+                }
+            )
+        }
+        // Likewise: all-files access arrived in Android 11, and before it the storage
+        // permission granted at install is the whole of the answer. Same crash otherwise.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            list += screen(
+                "All files",
+                "Browsing the whole of storage in the file browser, rather than only media.",
+                { android.os.Environment.isExternalStorageManager() },
+                {
+                    Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                        .setData(Uri.fromParts("package", packageName, null))
+                }
+            )
+        }
         // The roles ask through Android's own prompt rather than the settings list, which
         // is both fewer taps and the only way that says which app is being chosen.
         list += rocks.gorjan.gokixp.apps.welcome.WelcomeApp.Permission(
@@ -3637,6 +3915,31 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             )
         } catch (e: Exception) {
             Log.w("MainActivity", "Could not open the keyboard's settings", e)
+        }
+    }
+
+    /**
+     * Android's own settings, from the row at the foot of this launcher's.
+     *
+     * The top of them rather than any particular screen: what somebody wants from here is
+     * unknown - the network, the volume, the clock, a permission - and the phone's own
+     * front page is the one place all of it is reachable from.
+     *
+     * NEW_TASK because this leaves the launcher: the settings app belongs in its own entry
+     * in the task switcher, not stacked on top of the home screen, or backing out of it
+     * would land on Start with settings still notionally underneath.
+     *
+     * A phone with no settings activity to open is not a phone, but the launcher is a home
+     * screen and cannot afford to take that on faith - see the same guard on every other
+     * screen this hands over to.
+     */
+    private fun openPhoneSettings() {
+        try {
+            startActivity(
+                Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (e: Exception) {
+            Log.w("MainActivity", "Could not open the phone's settings", e)
+            showNotification("Settings", "This phone has no settings screen to open")
         }
     }
 
@@ -3733,7 +4036,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             context = this,
             palette = rocks.gorjan.gokixp.wp81.WP81Palette.from(themeManager),
             onShowNotification = { title, message, onTap ->
-                showNotification(title, message, onTap)
+                showNotification(title, message, onTap = onTap)
             },
             onUpdateWindowTitle = { title -> windowsDialog.setTitle(title) },
             onReturnToLinkCaller = { returnToLinkCaller() },
@@ -3807,6 +4110,22 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 // nothing unless there is a News tile on Start. The request came from the
                 // reader, which is open and waiting on it whether the wall has a tile or not.
                 wp81NewsFeed.refreshIfStale(ids.toList().sorted(), force = true)
+            },
+            customFeeds = { themeManager.getWP81CustomNewsFeeds() },
+            onCustomFeedsChanged = { feeds ->
+                themeManager.setWP81CustomNewsFeeds(feeds)
+                // An id in the enabled set that no longer names anything is a feed that
+                // has been deleted. Cleared here rather than at the point of deletion, so
+                // that a set left holding one - by a list that failed to save, or by a
+                // build that spelled an id differently - is tidied up at the next change
+                // rather than leaving the tile waiting on a feed nobody can read.
+                val live = themeManager.getWP81NewsFeeds()
+                    .filter { themeManager.getWP81NewsSource(it) != null }.toSet()
+                if (live != themeManager.getWP81NewsFeeds()) {
+                    themeManager.setWP81NewsFeeds(live)
+                }
+                // No fetch from here: the reader follows every change to this list with the
+                // set of feeds it wants read, and that is what asks for one.
             }
         )
         newsAppInstance = newsApp
@@ -4052,6 +4371,16 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         val shownForVersion = prefs.getString(KEY_SHOWN_WELCOME_FOR_VERSION, null)
 
         if (shownForVersion != currentVersion) {
+            // Marked as shown *before* the page is opened, not after.
+            //
+            // This is the launcher's home screen opening a window on itself a second after
+            // starting, unasked. If that throws, the marker written afterwards never gets
+            // written - so the next launch tries again, throws again, and the phone is left
+            // with a home screen that dies a second after every single start with no way
+            // back in. A welcome page missed because it could not be drawn is a far smaller
+            // thing than that, so the cost of failure is one page rather than the launcher.
+            prefs.edit { putString(KEY_SHOWN_WELCOME_FOR_VERSION, currentVersion) }
+
             // The phone's own welcome. A Vista dialog with a picture and two buttons over
             // a Start screen would be a window from another operating system, which is
             // why this branched before; there is only the one shell to greet now.
@@ -4059,11 +4388,14 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             // An update opens it on the release notes - the reason it is opening at all is
             // that something changed, and the person reading has met the introduction. A
             // first install, which is the null, opens on the introduction itself.
-            showWelcomeDialogWP81(startOnReleaseNotes = shownForVersion != null)
-
-
-            // Save that we've shown it for this version
-            prefs.edit { putString(KEY_SHOWN_WELCOME_FOR_VERSION, currentVersion) }
+            try {
+                showWelcomeDialogWP81(startOnReleaseNotes = shownForVersion != null)
+            } catch (e: Throwable) {
+                // Throwable rather than Exception: the failure this is here for was a
+                // NoSuchMethodError, which is an Error and would sail straight past a
+                // catch on Exception into the main looper.
+                Log.e("MainActivity", "Could not open the welcome page", e)
+            }
         }
 
         offerDesktopImportIfAvailable()
@@ -4434,10 +4766,107 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 }
             }
             paintWP81NavBar()
+            applyWP81CornerInsets(insets, statusBars.top, navBars.bottom, padLeft, padRight)
 
             insets
         }
         androidx.core.view.ViewCompat.requestApplyInsets(root)
+    }
+
+    /**
+     * Stands the shell's two edge bars clear of the display's rounded corners.
+     *
+     * A phone with round corners cuts a bite out of each of them, and nothing tells an app
+     * about it: the corner is not an inset, because it is not a bar - it is the shape of the
+     * screen. While Android's own status bar is on show it hides the problem, since our
+     * strip is then drawn below the whole arc; hide it - which is what "full screen" does -
+     * and the strip lands in the steepest part of the curve, where it lost the first signal
+     * bar and the last digit of the clock.
+     *
+     * The bars are the only things this has to be done for. Everything between them is a
+     * page with margins of its own and comes nowhere near an arc.
+     */
+    private fun applyWP81CornerInsets(
+        insets: androidx.core.view.WindowInsetsCompat,
+        statusBarPx: Int,
+        navBarPx: Int,
+        padLeft: Int,
+        padRight: Int
+    ) {
+        val shell = wp81Shell ?: return
+        val (topRadius, bottomRadius) = roundedCornerRadii(insets)
+        val density = resources.displayMetrics.density
+
+        // The camera first, because it moves what the strip writes and so changes how far
+        // the corner reaches into it. Only what Android's own status bar was not already
+        // covering: with that bar on show the lens is behind it and there is nothing to do,
+        // and full screen is where the shell gets handed the band the camera is punched
+        // through. See WP81StatusBar.setTopInset.
+        val cutout = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.displayCutout())
+        val cameraPx = maxOf(0, cutout.top - statusBarPx)
+        shell.setStatusBarTopInset(cameraPx)
+
+        // How far the content of each bar sits from the physical edge of the screen: the
+        // system bar's own height, plus whatever the camera pushed it down by, plus the
+        // bar's own padding.
+        val stripContent = statusBarPx + shell.statusBarContentTopPx
+        val keyContent = navBarPx +
+            (rocks.gorjan.gokixp.wp81.WP81NavBar.GLYPH_INSET_DP * density).toInt()
+        // A side bar in landscape has already moved the shell in by that much, so only what
+        // the arc asks for beyond it is left to do here.
+        val alreadyIn = maxOf(padLeft, padRight)
+        shell.setCornerInsets(
+            maxOf(0, cornerSideInsetPx(topRadius, stripContent) - alreadyIn),
+            maxOf(0, cornerSideInsetPx(bottomRadius, keyContent) - alreadyIn)
+        )
+        // The container windowed programs are drawn in is a sibling of the shell rather
+        // than a child, so it is laid out against the strip by hand and has to be told
+        // when the strip's height moves under it.
+        rebaseFloatingWindowsForWP81()
+    }
+
+    /**
+     * The radius of the sharpest corner along the top of the display, and along the bottom.
+     *
+     * The sharpest of each pair rather than each corner's own, because a bar is padded the
+     * same at both ends: two different insets on one strip would be a clock further from its
+     * edge than the signal is from the other, which reads as a mistake rather than as a
+     * screen with one corner rounder than the other.
+     *
+     * Nothing before Android 12 will say, so nothing is done there - those phones are square
+     * enough that the strip was never bitten into.
+     */
+    private fun roundedCornerRadii(
+        insets: androidx.core.view.WindowInsetsCompat
+    ): Pair<Int, Int> {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S) return 0 to 0
+        val platform = insets.toWindowInsets() ?: return 0 to 0
+        fun radius(position: Int) = platform.getRoundedCorner(position)?.radius ?: 0
+        return maxOf(
+            radius(android.view.RoundedCorner.POSITION_TOP_LEFT),
+            radius(android.view.RoundedCorner.POSITION_TOP_RIGHT)
+        ) to maxOf(
+            radius(android.view.RoundedCorner.POSITION_BOTTOM_LEFT),
+            radius(android.view.RoundedCorner.POSITION_BOTTOM_RIGHT)
+        )
+    }
+
+    /**
+     * How far in from the side something must start to clear a corner of [radiusPx], when it
+     * sits [contentEdgePx] from that edge of the screen.
+     *
+     * The corner is a quarter circle centred [radiusPx] in from both edges, so at a distance
+     * `y` from the top the screen begins at `r - sqrt(r^2 - (r - y)^2)`. Content further down
+     * than the radius is past the arc entirely and needs nothing - which is the answer
+     * whenever the system's own bars are on show, and is why this quietly does nothing until
+     * the shell is put full screen.
+     */
+    private fun cornerSideInsetPx(radiusPx: Int, contentEdgePx: Int): Int {
+        if (radiusPx <= 0 || contentEdgePx >= radiusPx) return 0
+        val fromCentre = (radiusPx - contentEdgePx).toDouble()
+        val reach = radiusPx - kotlin.math.sqrt(
+            radiusPx.toDouble() * radiusPx - fromCentre * fromCentre)
+        return reach.toInt().coerceAtLeast(0)
     }
 
     fun playClickSound() = playSound(R.raw.click)
@@ -5542,6 +5971,16 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // Back in front of the user, so the next home gesture is one made from here. See
         // wp81AwayBehindAnotherApp, and onNewIntent, which is guaranteed to run first.
         wp81AwayBehindAnotherApp = false
+        // Said again rather than only when it changes, and cheaply: the keyboard hears this
+        // through a receiver its service registers, and the service is not always there to
+        // hear - the system takes it down when another keyboard is picked and builds it again
+        // later, in a process that may have outlived it holding an older answer. Repeating it
+        // here means any missed change is put right before the launcher is on screen, which
+        // is necessarily before anybody types into one of its text boxes. See
+        // KeyboardAppearance.
+        rocks.gorjan.gokixp.wp81.keyboard.KeyboardAppearance.publish(
+            this, themeManager.getWP81Accent(), themeManager.isWP81Dark()
+        )
         refreshWeatherIfNeeded()
 
         // Most likely straight back from one of Android's permission prompts. The switches
@@ -5566,6 +6005,12 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // A bar the user swiped back into view while they were here, or one the app they
         // came home from left standing, is put away again. See applyWP81Fullscreen.
         if (wp81Shell != null) applyWP81Fullscreen()
+
+        // The strip stops being refreshed while the launcher is not on screen, so the
+        // first thing somebody coming home would see is the clock as it was when they
+        // left. Taken now rather than on the next tick, which is up to two seconds away
+        // and is two seconds spent looking at the wrong time.
+        wp81Shell?.statusBar?.refresh(force = true)
     }
 
     /**
@@ -6649,6 +7094,10 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         wp81IconProvider.invalidate(packageName)
         refreshWP81AppList()
         refreshWP81Tiles()
+        // The Action Center keeps its own copy of every app's name and mark, because it
+        // rebuilds its list from a two-second tick and cannot ask the package manager
+        // each time. That copy is now out of date for this app.
+        wp81Shell?.actionCenter?.invalidateApps()
     }
     
     private fun handlePendingPackageAction() {
@@ -6892,6 +7341,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         "system.messaging" to R.drawable.wp81_glyph_message_smiley,
         "system.alarms" to R.drawable.wp81_glyph_clock,
         "system.weather" to R.drawable.wp81_glyph_weather,
+        "system.battery" to R.drawable.wp81_glyph_battery,
         "system.files" to R.drawable.wp81_glyph_files,
         "system.cortana" to R.drawable.wp81_glyph_cortana,
         "system.settings" to R.drawable.wp81_glyph_settings_app
@@ -6973,6 +7423,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
         shell.applyPalette(palette)
         applyWP81NavBarVisibility()
+        applyWP81ActionCenter()
         applyWP81SystemBarAppearance(palette)
         applyWP81Fullscreen()
         applyWP81StartBackground()
@@ -7011,8 +7462,16 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
     private fun wireWP81Shell(shell: rocks.gorjan.gokixp.wp81.WP81Shell) {
         wireWP81Settings(shell)
+        wireWP81ActionCenter(shell)
         shell.startScreen.onLaunch = { tile -> launchWP81Tile(tile) }
-        shell.startScreen.onSwipeDownAtTop = { expandNotificationShade() }
+        // The wall's pull-down: the shell's own Action Center where the user has asked
+        // for it, and Android's own shade where they have not. Read at the moment the
+        // gesture fires rather than wired once, so the switch in settings takes effect on
+        // the next pull rather than on the next launch.
+        shell.startScreen.onSwipeDownAtTop = {
+            if (themeManager.getWP81ActionCenter()) openWP81ActionCenter(shell)
+            else expandNotificationShade()
+        }
         // Pushing up at the bottom of Start reaches the app list, which still arrives from
         // the side: the gesture is a shortcut to the page, not a different way of showing it.
         shell.startScreen.onSwipeUpAtBottom = {
@@ -7029,6 +7488,10 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             // twelve-second tick, a tile dragged wider sat on a single reading for most of
             // the time the user spent looking at what they had just resized.
             refreshWP81Weather()
+            // And the battery, which is where a tile just pinned from the app list gets
+            // its first charge to draw: the broadcast that would otherwise hand it one may
+            // not come round for a minute.
+            refreshWP81Battery()
         }
         shell.startScreen.onTileUnpin = { tile -> unpinOrHideWP81Tile(tile) }
         // The foot mark is Alarms' - it wears that app's icon and is about that app's
@@ -7260,7 +7723,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     private fun rebaseFloatingWindowsForWP81() {
         val container = findViewById<View>(R.id.floating_windows_container) ?: return
         val params = container.layoutParams as RelativeLayout.LayoutParams
-        params.topMargin = 0
+        params.topMargin = wp81StatusBarInsetPx()
         params.bottomMargin = wp81NavBarInsetPx()
         container.layoutParams = params
     }
@@ -7276,6 +7739,24 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         if (themeManager.getWP81HideNavBar()) 0
         else (rocks.gorjan.gokixp.wp81.WP81NavBar.HEIGHT_DP *
             resources.displayMetrics.density).toInt()
+
+    /**
+     * How much room the shell's status strip is taking at the top, which is none when the
+     * user has turned it off.
+     *
+     * The mirror of [wp81NavBarInsetPx], and used for the same one thing: the container
+     * windowed programs are drawn in is a sibling of the shell rather than a child, so it
+     * is laid out against these two bands by hand. A status bar that vanished the moment
+     * anything opened over it would not be a status bar - the phone's was above every
+     * program on it. See WP81StatusBar.
+     */
+    private fun wp81StatusBarInsetPx(): Int =
+        if (!themeManager.getWP81ActionCenter()) 0
+        // Asked of the shell, which is the only thing that knows how far the camera has
+        // pushed it down; the constant alone was right until the strip could grow.
+        else wp81Shell?.statusBarInsetPx
+            ?: (rocks.gorjan.gokixp.wp81.WP81StatusBar.HEIGHT_DP *
+                resources.displayMetrics.density).toInt()
 
     // ---------------------------------------------------------------- tiles
 
@@ -7327,6 +7808,21 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // it is refreshed on the same pass.
         shell.startScreen.setFolderPreviews { tile -> wp81FolderPreviewFor(tile) }
         shell.folderPage.setFolderPreviews { tile -> wp81FolderPreviewFor(tile) }
+        // The Action Center is reading the same notifications the tiles are, so it is fed
+        // from the same pass. Both calls are cheap while it is away: the list is kept and
+        // not drawn, and the signal, the battery and the four quick actions are not read
+        // at all. See WP81ActionCenter.setNotifications.
+        shell.actionCenter.setNotifications(NotificationListenerService.shade())
+        shell.actionCenter.refreshChrome()
+        // The strip is on screen whether or not the panel is, so it is kept current on
+        // every pass. It throttles its own expensive readings - see WP81StatusBar.refresh.
+        shell.statusBar.refresh()
+        // Only while it is down: this is a read out of Settings.Secure, and the answer can
+        // only have changed by the user leaving to change it - which they can do from the
+        // panel's own empty page and come straight back to.
+        if (shell.actionCenter.isOpen()) {
+            shell.actionCenter.setNotificationAccess(isNotificationListenerEnabled())
+        }
         refreshWP81Media()
     }
 
@@ -7371,6 +7867,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         refreshWP81Photos()
         refreshWP81People()
         refreshWP81Weather()
+        refreshWP81Battery()
     }
 
     private fun refreshWP81Media() {
@@ -7380,6 +7877,11 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             { tile -> sessions[wp81MediaPackageFor(tile)] }
         shell.startScreen.setMedia(lookup)
         shell.folderPage.contents.setMedia(lookup)
+        // The Action Center draws whichever of these is playing as a player of its own,
+        // and hides that app's notification while it does. Every session is handed over
+        // rather than one: which to draw is the panel's own decision, and it keeps the one
+        // it is already showing where two are alive at once.
+        shell.actionCenter.setMedia(sessions.values)
 
         for (surface in listOf(shell.startScreen, shell.folderPage.contents)) {
             surface.setMediaHandlers(
@@ -7399,7 +7901,12 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      */
     /** The stories behind the News tile. Fed by whichever feeds are switched on. */
     private val wp81NewsFeed by lazy {
-        rocks.gorjan.gokixp.wp81.NewsFeed { refreshWP81News() }
+        rocks.gorjan.gokixp.wp81.NewsFeed(
+            onUpdated = { refreshWP81News() },
+            // An enabled id may name one of the built-in feeds or one the user added; the
+            // settings are the only place that knows about both.
+            sourceById = { id -> themeManager.getWP81NewsSource(id) }
+        )
     }
 
     /**
@@ -7503,6 +8010,11 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      * it is an invitation rather than a slideshow; permission but nothing read back; and
      * the pictures themselves, which carry no words at all - a photograph on a tile is not
      * captioned, it is looked at.
+     *
+     * None of the three names the tile. It already carries its program's name along its
+     * foot, as every program's live tile does - so a "Photos" set large on the floor of it
+     * was the same word twice, one above the other, and the picture mark in the corner was
+     * a third. What is left is the one line that says what is actually going on.
      */
     private fun refreshWP81Photos(force: Boolean = false) {
         val shell = wp81Shell ?: return
@@ -7515,9 +8027,8 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_PHOTOS,
                 listOf(
                     rocks.gorjan.gokixp.wp81.TileView.LiveFace(
-                        title = "Photos",
-                        detail = "tap to allow",
-                        glyph = R.drawable.wp81_glyph_photos
+                        title = "",
+                        detail = "tap to allow"
                     )
                 ),
                 rocks.gorjan.gokixp.wp81.TileView.LiveStyle.READING
@@ -7531,7 +8042,10 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             // A forced read is one where what was there is no longer to be trusted - the
             // permission just changed - so what was decoded under it goes too.
             if (force) rocks.gorjan.gokixp.wp81.PhotoFeed.clear()
-            rocks.gorjan.gokixp.wp81.PhotoFeed.recent(this) { shots ->
+            rocks.gorjan.gokixp.wp81.PhotoFeed.recent(
+                this,
+                includeVideo = themeManager.getWP81PhotoTileVideos()
+            ) { shots ->
                 wp81PhotosLoading = false
                 wp81PhotosReadAt = System.currentTimeMillis()
                 wp81Photos = shots
@@ -7552,9 +8066,8 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         }
         val waiting = listOf(
             rocks.gorjan.gokixp.wp81.TileView.LiveFace(
-                title = "Photos",
-                detail = if (wp81PhotosLoading) "looking\u2026" else "no pictures yet",
-                glyph = R.drawable.wp81_glyph_photos
+                title = "",
+                detail = if (wp81PhotosLoading) "looking\u2026" else "no pictures yet"
             )
         )
         for (start in wp81TileSurfaces()) start.setLiveWidgetRotation(
@@ -7747,8 +8260,199 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             // By package, so Phone and Messaging get the calls and texts that were left
             // by somebody else. See NotificationListenerService.linesFor.
             NotificationListenerService.linesFor(tile.packageName)
-                .map { rocks.gorjan.gokixp.wp81.TileView.Line(it.title, it.text) }
+                .map { line ->
+                    rocks.gorjan.gokixp.wp81.TileView.Line(line.title, line.text).apply {
+                        open = wp81NotificationOpening(tile, line)
+                    }
+                }
         } + wp81UpdateLine(tile)
+
+    /**
+     * What a tap on a tile showing this notification should do, or null for the usual
+     * launch.
+     *
+     * A tile turned over to "Mum: are you coming?" is a tile about that message, and the
+     * app's own content intent is what goes to it - the same thing the shade sends when
+     * the notification is tapped there. Without this every one of them landed on the app's
+     * front page, leaving the user to find the conversation the tile had just shown them.
+     *
+     * The shell's own tiles follow only the shell's own notifications. Phone and Messaging
+     * are programs in here, and a missed call left by whichever dialler the phone is
+     * actually using points into *that* app - so a tap on the Phone tile would leave the
+     * launcher for somebody else's call log rather than opening the one in here.
+     */
+    private fun wp81NotificationOpening(
+        tile: rocks.gorjan.gokixp.wp81.Tile,
+        line: NotificationListenerService.NotificationLine
+    ): (() -> Unit)? {
+        val opening = line.opening ?: return null
+        if (tile.kind == rocks.gorjan.gokixp.wp81.Tile.Kind.SYSTEM_APP && !opening.ours) {
+            return null
+        }
+        return { openNotification(opening) { launchWP81Tile(tile) } }
+    }
+
+    /**
+     * Brings the Action Center down over the wall, with what is posted right now on it.
+     *
+     * Handed the list here rather than left to the two-second tick: a panel opened by a
+     * gesture should be right by the time it has finished arriving, and the tick may have
+     * been anywhere in its cycle when the finger moved.
+     *
+     * The same knock the push-up at the other end of the wall gives. Both gestures take
+     * the wall off an edge and hand the screen to something else, so both should land the
+     * same way - and unlike the system shade, which rings its own bell, this one is drawn
+     * by the launcher and has to.
+     */
+    private fun openWP81ActionCenter(shell: rocks.gorjan.gokixp.wp81.WP81Shell) {
+        rocks.gorjan.gokixp.wp81.Haptics.tap(shell.startScreen)
+        primeWP81ActionCenter(shell)
+        shell.actionCenter.open()
+    }
+
+    /**
+     * Puts on the panel what is true right now, ahead of it being seen.
+     *
+     * Both ways in come through here - the pull-down on the wall, which opens it outright,
+     * and the drag on the status strip, which carries it out by hand - because in both the
+     * panel is about to be looked at and neither can wait for the two-second tick to have
+     * come round. Whether the listener is switched on is a Settings.Secure read and is
+     * asked here rather than on that tick for the same reason it is only asked while the
+     * panel is down: the answer can only change by the user going away to change it.
+     */
+    private fun primeWP81ActionCenter(shell: rocks.gorjan.gokixp.wp81.WP81Shell) {
+        shell.statusBar.refresh(force = true)
+        shell.actionCenter.setNotificationAccess(isNotificationListenerEnabled())
+        shell.actionCenter.setNotifications(NotificationListenerService.shade())
+        shell.actionCenter.setMedia(wp81MediaSessions?.active()?.values.orEmpty())
+    }
+
+    /**
+     * What the Action Center's rows and commands actually do.
+     *
+     * All of it belongs to the host rather than to the panel: the panel draws a list and
+     * reports which row was touched, and every one of these answers is something only the
+     * activity can give - a PendingIntent sent with the launch grant, the listener's
+     * connection, the shell's own settings page.
+     */
+    private fun wireWP81ActionCenter(shell: rocks.gorjan.gokixp.wp81.WP81Shell) {
+        val panel = shell.actionCenter
+        // Where the shade would send it, and the app's front page where the notification
+        // carries nowhere to go - which is the same fallback a tile's notification gets.
+        panel.onOpenNotification = { entry ->
+            val opening = entry.opening
+            if (opening != null) openNotification(opening) { launchInstalledApp(entry.packageName) }
+            else launchInstalledApp(entry.packageName)
+        }
+        panel.onDismissNotification = { entry ->
+            NotificationListenerService.dismiss(entry.key)
+        }
+        panel.onOpenApp = { packageName -> launchInstalledApp(packageName) }
+        // The mini player at the top of the panel. It reports which app is making the
+        // sound and nothing else: the sessions - and the notification access they are read
+        // through - are the activity's. See WP81ActionCenter.MiniPlayer.
+        panel.onMediaPlayPause = { app -> wp81MediaSessions?.togglePlayPause(app) }
+        panel.onMediaNext = { app -> wp81MediaSessions?.next(app) }
+        panel.onMediaPrevious = { app -> wp81MediaSessions?.previous(app) }
+        panel.onMediaSeek = { app, position -> wp81MediaSessions?.seekTo(app, position) }
+        panel.onClearAll = { NotificationListenerService.clearAll() }
+        // The shell's settings, not Android's. The phone's own command went to the phone's
+        // own settings, and on this phone that page is this shell's.
+        panel.onAllSettings = { shell.openSettings() }
+
+        // The strip is the handle the panel is pulled out of, which is how the phone did
+        // it: what comes down follows the finger the whole way rather than playing an
+        // animation once a threshold has been passed. The strip reports the drag and knows
+        // nothing about what is behind it - see WP81StatusBar.onPullStart - so which
+        // direction means what is settled here.
+        val strip = shell.statusBar
+        strip.onPullStart = { travelled ->
+            if (travelled > 0f) {
+                rocks.gorjan.gokixp.wp81.Haptics.tap(strip)
+                primeWP81ActionCenter(shell)
+                panel.beginPull()
+            } else {
+                // Upward, with the panel already down: the strip sits directly above it
+                // and is the obvious thing to push it back into. Closed, this is a swipe
+                // up at the top of the screen and means nothing.
+                panel.close()
+            }
+        }
+        strip.onPullMove = { travelled -> panel.pullTo(travelled) }
+        strip.onPullEnd = { travelled -> panel.endPull(travelled) }
+        // The panel is worth nothing without the listener, and an empty list is the only
+        // symptom of its being off - so the empty page offers the way to switch it on.
+        panel.onNotificationAccess = {
+            try {
+                startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+            } catch (e: Exception) {
+                Log.w("MainActivity", "No notification access screen on this phone", e)
+            }
+        }
+    }
+
+    /**
+     * Opens an installed app by its package name, or does nothing if it has none to open.
+     *
+     * An app can be uninstalled while a notification it posted is still standing, and a
+     * few - widgets, plugins - have no launcher entry at all. Both come back as no intent,
+     * which is a row that cannot be followed rather than an error worth showing.
+     */
+    private fun launchInstalledApp(packageName: String) {
+        val intent = packageManager.getLaunchIntentForPackage(packageName) ?: return
+        try {
+            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            startActivity(intent)
+        } catch (e: Exception) {
+            Log.w("MainActivity", "Could not open $packageName", e)
+        }
+    }
+
+    /**
+     * Sends a notification where it was going, and retires it the way the shade would.
+     *
+     * The intent belongs to the app that posted it and is sent with that app's identity;
+     * all this end has to do is grant the launch, which since Android 14 is the sender's
+     * to grant and nobody else's - see [pendingIntentOptions].
+     *
+     * A notification can be withdrawn between the tile reading it and the user tapping it,
+     * which is what [fallback] is for: the app opens on its front page, which is where it
+     * would have opened before any of this.
+     */
+    private fun openNotification(
+        opening: NotificationListenerService.Opening,
+        fallback: () -> Unit
+    ) {
+        try {
+            opening.intent.send(this, 0, null, null, null, null, pendingIntentOptions())
+        } catch (e: android.app.PendingIntent.CanceledException) {
+            Log.w("MainActivity", "Notification intent has been withdrawn; opening the app", e)
+            fallback()
+            return
+        }
+        // Only where the app asked for it. A notification that stays put in the shade
+        // after it is tapped means to stay put - an ongoing download, a running trip -
+        // and clearing it off the tile would be clearing it out from under its own app.
+        if (opening.autoCancel) NotificationListenerService.dismiss(opening.key)
+    }
+
+    /**
+     * The permission to start what is on the other end of a notification.
+     *
+     * From Android 14 a PendingIntent's activity start is the sender's privilege to hand
+     * over rather than something the creator carries, and the app that posted the
+     * notification is in the background by definition. Without this the tap is swallowed
+     * and nothing opens at all.
+     */
+    private fun pendingIntentOptions(): Bundle? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            android.app.ActivityOptions.makeBasic()
+                .setPendingIntentBackgroundActivityStartMode(
+                    android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+                .toBundle()
+        } else {
+            null
+        }
 
 
     /**
@@ -7863,10 +8567,10 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     /**
      * Makes a folder out of the tile that is selected, where it stands.
      *
-     * The app bar's answer to holding one tile over another, which is switched off - see
-     * StartScreenView.FOLD_ON_DRAG. A folder of one is the start of a folder rather than
-     * the whole of it: it opens into the wall as soon as it is made, and the rest goes in
-     * by dragging tiles down into the band, which is a target the size of a row.
+     * The app bar's answer to holding one tile over another, which needs no second tile.
+     * A folder of one is the start of a folder rather than the whole of it: it opens into
+     * the wall as soon as it is made, and the rest goes in either by holding a tile over
+     * it or by dragging tiles down into the open band.
      */
     private fun newWP81FolderFrom(tile: rocks.gorjan.gokixp.wp81.Tile) {
         val icon = desktopIcons.firstOrNull { it.id == tile.id } ?: return
@@ -8112,6 +8816,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         refreshWP81Photos()
         refreshWP81People()
         refreshWP81Weather()
+        refreshWP81Battery()
         refreshWP81Notifications()
         refreshWP81Media()
     }
@@ -8302,6 +9007,23 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     }
 
     /**
+     * Hands every battery tile the charge it draws.
+     *
+     * Cheap enough to run on the tick and on every battery broadcast alike: it is one read
+     * of a sticky intent the platform keeps up to date anyway, plus a line written to the
+     * record when the level has actually moved. See BatteryStore.
+     *
+     * Guarded by the tile being pinned, like the rest of them - with one deliberate
+     * exception below, in [onBatteryChanged], where the record is kept whether or not
+     * anybody is showing it.
+     */
+    private fun refreshWP81Battery() {
+        if (!wp81HasProgramTile(rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_BATTERY)) return
+        val face = wp81TileHost.batteryFace()
+        for (start in wp81TileSurfaces()) start.setBatteryFace(face)
+    }
+
+    /**
      * Asks whether rain is close enough to be worth saying something about.
      *
      * Hung off the weather tile's refresh rather than given a job of its own: the forecast
@@ -8458,9 +9180,16 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_CLOCK,
             rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_WEATHER,
             rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_NEWS,
-            rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_PHOTOS -> wp81SystemGlyphs[tile.packageName]
-            // The shell's own has no program behind it to take a mark from.
-            rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_CALENDAR -> null
+            rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_PHOTOS,
+            // The battery's face is up at every footprint, the 1x1 included, so this is
+            // for the one moment it has none: a phone that will not say what the charge
+            // is. Which is also the tile a folder draws of it while it is filed inside.
+            rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_BATTERY -> wp81SystemGlyphs[tile.packageName]
+            // The shell's own has no program behind it to take a mark from, so it is
+            // given one of this shell's own. It shows wherever any other widget's icon
+            // does: before the first reading is cached, and on the 1x1 - see
+            // TileView.showsLive, where every widget stands down to its mark.
+            rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_CALENDAR -> R.drawable.wp81_glyph_calendar
             // People's mark, for the moments the mosaic has no faces to draw - the book
             // unread, or the permission never given.
             rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_PEOPLE ->
@@ -8527,6 +9256,11 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_PHOTOS -> openWP81Photos()
 
             rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_PEOPLE -> openWP81People()
+
+            // The charge opened out: the tile says how full and the program says what
+            // happened to get there and what spent it. The same relation the weather tile
+            // has to the forecast behind it.
+            rocks.gorjan.gokixp.wp81.Tile.Kind.LIVE_BATTERY -> showBatteryDialog()
 
             rocks.gorjan.gokixp.wp81.Tile.Kind.SETTINGS -> openWP81Settings()
         }
@@ -9112,6 +9846,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         shell.openSettings()
         shell.settingsPage.setDefaultBrowser(isDefaultBrowser())
         shell.settingsPage.setKeyboardEnabled(isOwnKeyboardEnabled())
+        refreshWP81BackupRows()
         refreshDefaultBrowser = { shell.settingsPage.setDefaultBrowser(isDefaultBrowser()) }
         refreshWP81IconPackRow()
         refreshWP81CustomBackground()
@@ -9134,8 +9869,12 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
     }
 
     private fun wireWP81Settings(shell: rocks.gorjan.gokixp.wp81.WP81Shell) {
-        shell.settingsPage.onBack = { shell.closeSettings() }
         shell.settingsPage.onKeyboard = { openKeyboardSettings() }
+        shell.settingsPage.onPhoneSettings = { openPhoneSettings() }
+        // Welcome, opened over settings rather than in place of it - it is a program, and
+        // it comes up in a window like every other one. Closing it leaves the user where
+        // they were, which is the list they opened it from.
+        shell.settingsPage.onAbout = { showWelcomeDialogWP81() }
         shell.settingsPage.onAccentPicked = { color ->
             commitWP81Appearance(color, themeManager.isWP81Dark())
         }
@@ -9196,6 +9935,16 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             themeManager.setWP81Fullscreen(enabled)
             applyWP81Fullscreen()
         }
+        // Nothing to lay out either way - the gesture reads the setting when it fires -
+        // but a panel that happens to be down while it is switched off should not stay
+        // down, which is the one thing this cannot leave to the next pull.
+        shell.settingsPage.setActionCenter(themeManager.getWP81ActionCenter())
+        shell.settingsPage.onActionCenterChanged = { enabled ->
+            themeManager.setWP81ActionCenter(enabled)
+            // The strip goes with it, and takes the panel down with itself if it happens
+            // to be open - see WP81Shell.setStatusBarShown.
+            applyWP81ActionCenter()
+        }
         shell.settingsPage.onColumnsPicked = { columns ->
             themeManager.setWP81Columns(columns)
             shell.startScreen.columns = columns
@@ -9226,6 +9975,23 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             themeManager.setWP81IconPackOnTiles(onTiles)
             commitIconPack()
         }
+        // How the app list opens. Held on the shell as well as in preferences because the
+        // swipe reads it as the finger moves - see WP81Shell.searchOnAppListOpen - and a
+        // gesture is no place to be opening a preference file.
+        shell.searchOnAppListOpen = themeManager.getWP81AppListSearchFocus()
+        shell.settingsPage.setAppListSearchFocus(shell.searchOnAppListOpen)
+        shell.settingsPage.onAppListSearchFocusChanged = { focus ->
+            themeManager.setWP81AppListSearchFocus(focus)
+            shell.searchOnAppListOpen = focus
+        }
+        // What the Photos tile turns through. Forced, because the roll is read with the
+        // answer in hand rather than filtered afterwards - see PhotoFeed.recent - so the
+        // run of pictures the tile is holding was gathered under the old one.
+        shell.settingsPage.setPhotoTileVideos(themeManager.getWP81PhotoTileVideos())
+        shell.settingsPage.onPhotoTileVideosChanged = { show ->
+            themeManager.setWP81PhotoTileVideos(show)
+            refreshWP81Photos(force = true)
+        }
         shell.settingsPage.onBrowse = {
             setPendingImagePick(PICK_TARGET_WP81_BACKGROUND)
             imagePickerLauncher.launch("image/*")
@@ -9233,6 +9999,217 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         shell.settingsPage.onWallpaperLongPress = { source, anchorY ->
             showWP81WallpaperMenu(source, anchorY)
         }
+        // Backup. The two dates are read from preferences here and refreshed after every
+        // successful transfer; see refreshWP81BackupRows.
+        refreshWP81BackupRows()
+        shell.settingsPage.onBackUpToDrive = { backUpToDrive() }
+        shell.settingsPage.onBackUpToFile = { backUpToFile() }
+        shell.settingsPage.onRestoreFromDrive = { restoreFromDrive() }
+        shell.settingsPage.onRestoreFromFile = { restoreFromFile() }
+    }
+
+    // ---- backup and restore -----------------------------------------------------------
+
+    /** Tells the backup rows when each destination was last written to. */
+    private fun refreshWP81BackupRows() {
+        wp81Shell?.settingsPage?.setBackupTimes(
+            themeManager.getWP81LastDriveBackup(),
+            themeManager.getWP81LastFileBackup()
+        )
+    }
+
+    /**
+     * Writes a backup to the user's Google Drive, signing them in first if need be.
+     *
+     * Signing in is a screen from another app, so it cannot be waited on - the tap that
+     * wanted a backup is recorded, and the sign-in launcher picks this up again on the way
+     * back. See [driveSignInLauncher].
+     */
+    private fun backUpToDrive() {
+        if (!googleDrive.isSignedIn()) {
+            setPendingDriveAction(DRIVE_ACTION_BACKUP)
+            signInToDrive()
+            return
+        }
+        showNotification("Google Drive", "Backing up your settings...")
+        Thread {
+            val failure = try {
+                googleDrive.upload(SettingsBackup.snapshot(this))
+                null
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Could not back up to Drive", e)
+                e.message ?: "Drive would not take the file"
+            }
+            runOnUiThread {
+                if (failure == null) {
+                    themeManager.setWP81LastDriveBackup(System.currentTimeMillis())
+                    refreshWP81BackupRows()
+                    // Named, because a phone can have more than one Google account on it
+                    // and "backed up" is worth nothing to somebody who cannot tell which
+                    // of them is holding the copy.
+                    val account = googleDrive.accountEmail()
+                    showNotification(
+                        "Google Drive",
+                        if (account != null) "Your settings were backed up to $account"
+                        else "Your settings were backed up"
+                    )
+                } else {
+                    showNotification("Google Drive", "Could not back up: $failure")
+                }
+            }
+        }.start()
+    }
+
+    /**
+     * Asks where to put a backup file, and writes it there.
+     *
+     * The system's own document picker rather than a path of this app's choosing, so the
+     * file lands wherever the user keeps things - their own Drive, a memory card, whatever
+     * cloud they have - and the launcher needs no storage permission to put it there.
+     */
+    private fun backUpToFile() {
+        try {
+            backupExportLauncher.launch(SettingsBackup.fileName())
+        } catch (e: Exception) {
+            Log.e("MainActivity", "No document picker to save a backup with", e)
+            showNotification("Backup", "This phone has nowhere to save the file")
+        }
+    }
+
+    /** Fetches the backup on the user's Drive and asks before putting it back. */
+    private fun restoreFromDrive() {
+        if (!googleDrive.isSignedIn()) {
+            setPendingDriveAction(DRIVE_ACTION_RESTORE)
+            signInToDrive()
+            return
+        }
+        showNotification("Google Drive", "Looking for your backup...")
+        Thread {
+            val json = try {
+                googleDrive.download()
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Could not fetch the Drive backup", e)
+                runOnUiThread {
+                    showNotification(
+                        "Google Drive", e.message ?: "The backup could not be fetched")
+                }
+                return@Thread
+            }
+            runOnUiThread { confirmRestore(json, "google drive") }
+        }.start()
+    }
+
+    /** Asks for a backup file, then asks before putting it back. */
+    private fun restoreFromFile() {
+        try {
+            // Not only application/json: a backup that has been through a cloud drive or a
+            // messaging app routinely comes back as text/plain or with no type at all, and
+            // a picker that hides it is a picker with nothing in it.
+            backupImportLauncher.launch(arrayOf(BACKUP_MIME, "text/plain", "*/*"))
+        } catch (e: Exception) {
+            Log.e("MainActivity", "No document picker to open a backup with", e)
+            showNotification("Restore", "This phone has nowhere to open the file from")
+        }
+    }
+
+    private fun signInToDrive() {
+        try {
+            driveSignInLauncher.launch(googleDrive.signInIntent())
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Could not open the Google sign-in screen", e)
+            consumePendingDriveAction()
+            showNotification("Google Drive", "This phone cannot sign in to Google")
+        }
+    }
+
+    private fun setPendingDriveAction(action: String) {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit {
+            putString(KEY_PENDING_DRIVE_ACTION, action)
+        }
+    }
+
+    /** Reads and clears it, so a stale one cannot claim a later sign-in. */
+    private fun consumePendingDriveAction(): String? {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val action = prefs.getString(KEY_PENDING_DRIVE_ACTION, null)
+        if (action != null) prefs.edit { remove(KEY_PENDING_DRIVE_ACTION) }
+        return action
+    }
+
+    /**
+     * Puts the backup in front of the user, with its date, before anything is replaced.
+     *
+     * A restore is the one thing on the settings page that cannot be undone by tapping it
+     * again: it replaces the Start screen, the colours, the hand-picked icons, the keyboard
+     * and every app's settings at once. The date is what makes the question answerable -
+     * "restore" is not a decision anybody can make, and "restore the copy from March" is.
+     */
+    private fun confirmRestore(json: String, source: String) {
+        val taken = SettingsBackup.createdAt(json)
+        val stamp = if (taken > 0L) {
+            android.text.format.DateUtils.formatDateTime(
+                this,
+                taken,
+                android.text.format.DateUtils.FORMAT_SHOW_DATE or
+                    android.text.format.DateUtils.FORMAT_SHOW_TIME or
+                    android.text.format.DateUtils.FORMAT_ABBREV_ALL
+            )
+        } else {
+            null
+        }
+        val question =
+            (if (stamp != null) "This backup was taken on $stamp. " else "") +
+                "Restoring replaces everything this launcher remembers - your Start screen, " +
+                "colours, icons, keyboard and app settings - with what is in it."
+
+        val shell = wp81Shell
+        if (shell == null) {
+            // Nothing to ask with. The user tapped restore and there is no shell to put the
+            // question in, which only happens if the launcher is still coming up.
+            showNotification("Restore", "Try again once the launcher has finished starting")
+            return
+        }
+        shell.inputDialog.confirm("restore", question, "restore") {
+            applyRestoredBackup(json, source)
+        }
+    }
+
+    /**
+     * Puts the settings back, and starts the launcher again on top of them.
+     *
+     * Everything on screen was built out of the preferences that have just been replaced -
+     * the palette, the tile wall, the app list, the icons, the columns, the navigation bar -
+     * so the shell is built again rather than patched. [DesktopImport] refreshes in place
+     * instead, and can: it brings across the Start screen alone, where this brings across
+     * every setting there is.
+     *
+     * The keyboard's own file is among them, and the keyboard runs in its own process - see
+     * WP81Settings.keyboardPrefs. A keyboard that happens to be loaded at this moment is
+     * holding the old settings and will write them back over these when it next saves one.
+     * Restarting the phone, or simply the next time the keyboard is loaded fresh, settles
+     * it; that is the same bargain the desktop import already makes.
+     */
+    private fun applyRestoredBackup(json: String, source: String) {
+        val files = try {
+            SettingsBackup.restore(this, json)
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Could not restore the backup", e)
+            showNotification("Restore", e.message ?: "That backup could not be read")
+            return
+        }
+        Log.i("MainActivity", "Restored $files preference files from $source")
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit {
+            putString(KEY_RESTORE_ANNOUNCE, source)
+        }
+        recreate()
+    }
+
+    /** Says a restore went through, on the launcher the restore restarted. */
+    private fun announceRestoreIfJustDone() {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val source = prefs.getString(KEY_RESTORE_ANNOUNCE, null) ?: return
+        prefs.edit { remove(KEY_RESTORE_ANNOUNCE) }
+        showNotification("Restore", "Your settings came back from $source")
     }
 
     /**
@@ -9679,7 +10656,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         val shell = wp81Shell ?: return
         val icon = desktopIcons.firstOrNull { it.id == tile.id } ?: return
         val folderId = icon.parentFolderId ?: return
-        val name = getCustomOrOriginalName(icon.packageName, icon.name)
 
         // Which surface the folder is being looked into, read before the rebuild: the wall
         // closes its own gap whenever it is rebuilt, so afterwards there is nothing to ask.
@@ -9702,7 +10678,8 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 .firstOrNull { it.id == folderId }
                 ?.let { openWP81FolderInline(it) }
         }
-        showNotification("Removed", name)
+        // No band announcing it: the tile leaving the folder is on screen as it happens,
+        // and a notice for something the user just watched themselves do is noise.
     }
 
     /** Re-shows a folder page after its contents changed. */
@@ -9802,10 +10779,16 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
 
         // Whatever is on screen of it goes first: the gap belongs to a tile that is about
         // to stop existing.
-        wp81Shell?.startScreen?.closeFolder(animated = false)
+        val start = wp81Shell?.startScreen
+        start?.closeFolder(animated = false)
         desktopIcons.remove(folder)
         saveDesktopIcons()
-        refreshWP81Tiles()
+        // Off the wall one tile at a time where it is on the wall, and the rest close
+        // around it. A folder is emptied in the middle of a drop, and rebuilding every
+        // tile there replaces the one the user has just watched land. The full pass is
+        // kept for a folder with no tile of its own on Start - one filed inside another
+        // folder - where there is nothing here to take off.
+        if (start?.unpinTile(folder.id) != true) refreshWP81Tiles()
     }
 
     /** The tiles filed inside a folder, in the order the folder keeps them. */
@@ -10026,6 +11009,11 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                     refreshWP81NewsFeeds()
 
                     refreshWP81Weather()
+                    // The charge arrives by broadcast, which is how the tile keeps up
+                    // between ticks - this is for the case the broadcast cannot cover: a
+                    // wall rebuilt while the level happened not to move, which leaves a
+                    // freshly-built tile with no face until something changes.
+                    refreshWP81Battery()
                     // Media sessions announce themselves when they change, but a session
                     // quietly going away is a change nobody reports. Re-read on the tick
                     // so a tile cannot be left holding a track that finished.
@@ -10069,6 +11057,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         themeManager.setWP81Accent(accent)
         themeManager.setWP81Dark(dark)
         refreshWP81Palette()
+        // The keyboard is a process of its own and does not share these preferences, so it
+        // is told rather than left to notice. See KeyboardAppearance.
+        rocks.gorjan.gokixp.wp81.keyboard.KeyboardAppearance.publish(this, accent, dark)
         if (backgroundChanged) matchDeviceWallToTheme()
     }
 
@@ -10225,6 +11216,32 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      * the band at the foot of the screen, since keys that are not there cannot be wearing
      * the accent. See [rocks.gorjan.gokixp.wp81.WP81Shell.setNavBarShown].
      */
+    /**
+     * Draws the status strip, or takes it away, along with what the pull-down opens.
+     *
+     * One switch for both because they are one thing: the strip is the Action Center's
+     * header, and the panel comes down out of it. Turned off, the shell is what it was
+     * before either existed - Android's own status bar above, the wall directly beneath it,
+     * and a pull-down that asks the system for its own shade.
+     */
+    private fun applyWP81ActionCenter() {
+        val shell = wp81Shell ?: return
+        shell.setStatusBarShown(themeManager.getWP81ActionCenter())
+        // The windows programs are drawn in are laid out against the strip by hand, so
+        // they have to be told when its height changes. See wp81StatusBarInsetPx.
+        rebaseFloatingWindowsForWP81()
+        // How far a rounded corner reaches into the strip depends on how far down the
+        // strip its writing begins - and with no strip on screen that is nothing at all,
+        // so the answer worked out without one is the full radius. Left alone, the strip
+        // would come back wearing it and stand well in from both edges. Asking for the
+        // insets again works them out against the strip that is now there, which is the
+        // same thing full screen does when it is the switch that moved. See
+        // [applyWP81CornerInsets].
+        findViewById<View>(R.id.root_container)?.let {
+            androidx.core.view.ViewCompat.requestApplyInsets(it)
+        }
+    }
+
     private fun applyWP81NavBarVisibility() {
         val shell = wp81Shell ?: return
         shell.setNavBarShown(!themeManager.getWP81HideNavBar())
@@ -10340,6 +11357,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             newsAppInstance?.let { "system.news" to it },
             alarmsAppInstance?.let { "system.alarms" to it },
             weatherAppInstance?.let { "system.weather" to it },
+            batteryAppInstance?.let { "system.battery" to it },
             metroNotepadAppInstance?.let { "system.notepad" to it },
             calculatorAppInstance?.let { "system.calculator" to it },
             cortanaAppInstance?.let { "system.cortana" to it },
@@ -10424,8 +11442,16 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      * Shows a notification bubble with title and description
      * @param title The notification title (application name)
      * @param description The notification message
+     * @param durationMs How long the band holds before retracting on its own; zero or less
+     *   leaves it up until it is tapped or flicked away, for something the user is meant to
+     *   act on rather than merely notice.
      */
-    private fun showNotification(title: String, description: String, onTap: (() -> Unit)? = null) {
+    private fun showNotification(
+        title: String,
+        description: String,
+        durationMs: Long = NOTIFICATION_DURATION_MS,
+        onTap: (() -> Unit)? = null
+    ) {
         // Windows Phone 8.1 announces things with a band across the top instead of the
         // Vista speech bubble, which is anchored to a system tray this shell does not have.
         wp81Shell?.let { shell ->
@@ -10434,7 +11460,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             // arriving from another app opens the browser before the shell is necessarily
             // there to be told about it, and a lift set then is set on nothing.
             shell.toast.lift = metroIEAppInstance?.barHeight() ?: 0
-            shell.toast.show(title, description, NOTIFICATION_DURATION_MS, onTap)
+            shell.toast.show(title, description, durationMs, onTap)
             // The phone's own alert, not the desktop's: a band across the top of a Start
             // screen announcing itself with Vista's bubble is two operating systems at once.
             playSound(R.raw.bubble_8)
@@ -10530,7 +11556,14 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                             if (manualCheck || due) {
                                 showNotification(
                                     "Windows Update",
-                                    "A new version ($latestTag) is available. Tap to download."
+                                    "A new version ($latestTag) is available. Tap to download.",
+                                    // Stays up until it is dealt with. This one is asking
+                                    // for a download rather than reporting something that
+                                    // already happened, and a band that retracts on its own
+                                    // after seven seconds is the update nobody ever saw -
+                                    // the next reminder is two days out. Flick it away to
+                                    // decline it.
+                                    durationMs = STICKY_NOTIFICATION
                                 ) {
                                     if (downloadUrl.isNotEmpty()) {
                                         try {

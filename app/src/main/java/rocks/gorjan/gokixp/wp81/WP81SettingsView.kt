@@ -22,8 +22,16 @@ import rocks.gorjan.gokixp.R
  *
  * Deliberately not the launcher's Display Properties window: that is a Vista dialog full
  * of desktop concepts - screensavers, taskbar height, cursor, Plus! themes - none of which
- * exist on a phone. This page carries only what this shell can actually change: the Start
- * background image, the accent colour, and Light versus Dark.
+ * exist on a phone. This page carries only what this shell can actually change.
+ *
+ * Two levels, the way the phone's own settings were. The page opens on a list of
+ * categories - a name and, under it, the settings waiting behind it - and tapping one
+ * turns to a page holding only those. It was one flat column before, and a column with a
+ * dozen headings, four dozen accent swatches and a wallpaper strip in it is a page nobody
+ * reads to the bottom of: the setting somebody came for was some unknown distance down a
+ * scroll with no landmarks. A list of six names is a page you can take in at a glance,
+ * and the line under each name is what makes it a list you can aim at rather than one you
+ * have to open every row of - "blur" is not a word anybody guesses is under "wallpaper".
  *
  * Everything applies immediately. WP8.1 had no OK/Cancel here, and neither does this.
  */
@@ -85,11 +93,34 @@ class WP81SettingsView(
     /** Fired when the shell is set to take the whole display, or to leave the system bars. */
     var onFullscreenChanged: ((Boolean) -> Unit)? = null
 
+    /** Fired when the pull-down is pointed at the Action Center, or back at Android's shade. */
+    var onActionCenterChanged: ((Boolean) -> Unit)? = null
+
     /** Tapping the row that asks the phone to send its links to the launcher. */
     var onDefaultBrowser: (() -> Unit)? = null
 
     /** Tapping the row that opens the keyboard's own settings. */
     var onKeyboard: (() -> Unit)? = null
+
+    /** Tapping the row that opens Android's own settings. */
+    var onPhoneSettings: (() -> Unit)? = null
+
+    /** Tapping the row that opens Welcome. */
+    var onAbout: (() -> Unit)? = null
+
+    /**
+     * The four things the backup page can be asked to do.
+     *
+     * Four commands rather than one with a destination beside it, because a backup and a
+     * restore are not the same kind of act and should not share a button: one of them
+     * replaces everything the phone remembers, and a page where that is one tap away from
+     * the harmless one is a page somebody will eventually mis-tap. The host asks before
+     * either restore - see MainActivity.
+     */
+    var onBackUpToDrive: (() -> Unit)? = null
+    var onBackUpToFile: (() -> Unit)? = null
+    var onRestoreFromDrive: (() -> Unit)? = null
+    var onRestoreFromFile: (() -> Unit)? = null
 
     /**
      * Tapping the icon pack row, with the row's bottom edge to hang the list of packs off.
@@ -103,13 +134,65 @@ class WP81SettingsView(
     /** Fired when the pack is invited onto the Start tiles, or sent back off them. */
     var onIconPackOnTilesChanged: ((Boolean) -> Unit)? = null
 
-    /** Tapping the row that asks the phone for its app history. */
+    /** Fired when the app list is set to open into its search box, or as a plain list. */
+    var onAppListSearchFocusChanged: ((Boolean) -> Unit)? = null
 
-    /** Tapping the back arrow beside the title. */
-    var onBack: (() -> Unit)? = null
+    /** Fired when the Photos tile is set to turn through clips as well as stills. */
+    var onPhotoTileVideosChanged: ((Boolean) -> Unit)? = null
 
-    private val column = LinearLayout(context)
-    private val header = MetroPageHeader(context, palette)
+    /**
+     * The list of categories, which is what settings opens on.
+     *
+     * Its rows are [ActionRow]s at the larger size, because that is exactly what they are:
+     * a name, a line under it, and a tap that goes somewhere. The line is [Category.detail]
+     * - what is behind the row, rather than where any of it stands.
+     */
+    private val rootScroll = ScrollView(context)
+    private val rootColumn = LinearLayout(context)
+
+    /**
+     * The name of the page, in the size the platform gave a program's own name.
+     *
+     * Not a [MetroPageHeader], which is the shape for a page that was pushed onto a stack
+     * and carries the arrow back off it. Settings is not on anybody's stack - it is
+     * reached from the key strip and from a tile, the way News and Music are - so it is
+     * headed the way they are: the name alone, large, light and lower case, with no arrow
+     * beside it. The way out is the shell's own back key, which is on screen throughout.
+     *
+     * The category pages behind it are pushed, and do carry the arrow. See [pageHeader].
+     */
+    private val header = TextView(context).apply {
+        text = "settings"
+        typeface = ResourcesCompat.getFont(context, R.font.segoeui_light)
+        textSize = APP_TITLE_SP
+        includeFontPadding = false
+        maxLines = 1
+        ellipsize = android.text.TextUtils.TruncateAt.END
+        // Standing on the same margin as the rows under it, so the page has one left edge.
+        setPadding(dp(24), dp(APP_TITLE_TOP_DP), dp(24), dp(APP_TITLE_BOTTOM_DP))
+    }
+
+    /**
+     * The one page every category is shown on, dressed with that category's column.
+     *
+     * One page rather than six, because only ever one of them is on screen: the header,
+     * the scroller and the turn are the same in each case, and the only difference is the
+     * title and the settings hung under it. The columns themselves are built once, at
+     * [categoryColumns], and swapped into [pageBody] as they are entered - so a row's
+     * state, and the host's handle on it, outlive being looked at.
+     */
+    private val pageScroll = ScrollView(context)
+    private val pageColumn = LinearLayout(context)
+    private val pageHeader = MetroPageHeader(context, palette)
+    private val pageBody = LinearLayout(context)
+    private val pageTransition = MetroPageTransition(pageScroll)
+
+    /** Which category is being looked at, or null on the list. See [handleBack]. */
+    private var shownCategory: Category? = null
+
+    private val categoryColumns = LinkedHashMap<Category, LinearLayout>()
+    private val categoryRows = LinkedHashMap<Category, ActionRow>()
+
     private val accentGrid = LinearLayout(context)
     private val backgroundRow = LinearLayout(context)
     private val wallpaperStrip = LinearLayout(context)
@@ -244,14 +327,14 @@ class WP81SettingsView(
      * launcher lands on Start - and the wall's own swipes, across to the app list and up
      * into its search. What goes with the keys is Cortana's hold, and she has a tile.
      *
-     * Turning it on takes the colour switch above away with the keys: it paints a strip
+     * Turning it on takes the colour switch below away with the keys: it paints a strip
      * that is no longer there, and a switch that visibly does nothing is worse than one
      * that is missing. Its stored answer is untouched, so the keys come back wearing
      * whatever they were. See [setScreenControls].
      */
     private val hideNavBarRow = SwitchRow("hide the navigation bar") { on ->
         // From here rather than on the host's way back, for the same reason the dim
-        // slider appears with its own switch: the row it hides is directly above this
+        // slider appears with its own switch: the row it hides is directly below this
         // one and should go as the switch is thrown.
         accentNavBarRow.setVisible(!on)
         onHideNavBarChanged?.invoke(on)
@@ -260,9 +343,9 @@ class WP81SettingsView(
     /**
      * Hands the shell the whole display, with Android's status and navigation bars hidden.
      *
-     * Separate from the switch above it and deliberately so: those keys are this shell's
-     * own and this is the phone's chrome - the clock, the signal, the battery, and the
-     * gesture bar at the foot of the screen. Either can be wanted without the other, and
+     * Separate from the switch that hides the keys and deliberately so: those keys are
+     * this shell's own and this is the phone's chrome - the clock, the signal, the
+     * battery, and the gesture bar at the foot of the screen. Either can be wanted without the other, and
      * both together is a wall with nothing on it but tiles.
      *
      * The bars come back on a swipe from the edge and leave again by themselves, which is
@@ -270,6 +353,26 @@ class WP81SettingsView(
      */
     private val fullscreenRow =
         SwitchRow("full screen") { on -> onFullscreenChanged?.invoke(on) }
+
+    /**
+     * The phone's status bar, and what a downward drag from the top of the wall opens.
+     *
+     * On, the shell wears a strip along the top - signal, carrier, battery, clock and date
+     * - and pulling down on the wall brings the Action Center out of it, with its quick
+     * actions, its two commands and its notifications grouped by the app that posted them.
+     * Off, both go: the wall starts under Android's own status bar and the gesture asks the
+     * system for its shade, which is what it did before either existed.
+     *
+     * One switch, because the strip is the panel's header and a bar left behind without it
+     * would say the time and nothing else.
+     *
+     * A switch rather than a choice of two, because there is a default worth stating: the
+     * gesture belongs to Windows Phone and this is what Windows Phone did with it. The
+     * shade is not taken away by turning it on - it is where it always was, a swipe from
+     * the status bar above. See `WP81Settings.getWP81ActionCenter`.
+     */
+    private val actionCenterRow =
+        SwitchRow("status bar and action center") { on -> onActionCenterChanged?.invoke(on) }
 
     /**
      * Where the rest of the phone's links go.
@@ -289,7 +392,37 @@ class WP81SettingsView(
      * somebody who wants to turn its languages or its dictation on before they start
      * typing. The phone kept keyboard under settings, and so does this.
      */
-    private val keyboardRow = ActionRow("keyboard") { _ -> onKeyboard?.invoke() }
+    private val keyboardRow = ActionRow("keyboard", ROOT_LABEL_SP) { _ -> onKeyboard?.invoke() }
+
+    /**
+     * What this is, who wrote it, and what changed in it.
+     *
+     * Welcome, which is a program of its own with a panorama in it - so this is a row on
+     * the list rather than a category, the way keyboard is. Until now the only way back
+     * to it was the tile, and a tile is something a user can unpin: the release notes,
+     * the permissions the launcher is asking for and the way around the shell all went
+     * with it, with nothing left pointing at them. About is where a phone keeps those,
+     * and it is where somebody looks for them.
+     */
+    /**
+     * Android's own settings, which are the ones this page is not.
+     *
+     * Everything above this row is the launcher's: what Start looks like, what the tiles
+     * do, where links open. None of it is the *phone's* - the volume, the network, the
+     * clock, the permissions - and a shell that has taken over the home screen is a shell
+     * that has taken away the usual way to those, which is the settings app's own icon in
+     * a list somebody now reaches through this launcher.
+     *
+     * Named for what is behind it rather than "android settings", because the user's phone
+     * is the subject and Android is an implementation detail of it. Windows Phone drew no
+     * such line - its settings page held both, system and applications, under one heading -
+     * so the nearest honest thing is to say which of the two this row hands over to.
+     */
+    private val phoneSettingsRow =
+        ActionRow("phone settings", ROOT_LABEL_SP) { _ -> onPhoneSettings?.invoke() }
+            .also { it.setDetail("android's own settings, outside the launcher") }
+
+    private val aboutRow = ActionRow("about", ROOT_LABEL_SP) { _ -> onAbout?.invoke() }
 
     /**
      * Which icon pack is dressing the apps, and the way to change it.
@@ -313,72 +446,137 @@ class WP81SettingsView(
     private val iconPackTilesRow =
         SwitchRow("use it on start tiles") { on -> onIconPackOnTilesChanged?.invoke(on) }
 
+    /**
+     * Whether swiping across to the app list arrives with the search box up.
+     *
+     * On, because that is what the swipe has always done here and it is the fast way to
+     * open an app: the gesture and the typing are one movement. It is also the wrong
+     * default for anybody who swipes across to *browse* - they get a keyboard over two
+     * thirds of the list every time, and a rail of letters that has folded itself away.
+     * Off, the list arrives as a list; search is still the key on the strip and the
+     * button at the top of the rail. See WP81Shell.searchOnAppListOpen.
+     */
+    private val appListSearchRow =
+        SwitchRow("focus the search box") { on -> onAppListSearchFocusChanged?.invoke(on) }
+
+    /**
+     * Whether the Photos tile plays the camera roll's clips as well as showing its stills.
+     *
+     * Filed under the program whose tile it is rather than under "tiles", which is the
+     * wall's own settings - how many columns it has, what a notification looks like on it,
+     * what the apps are wearing. This is a setting about what one program puts on its
+     * tile, and the place to look for it is that program. See
+     * WP81Settings.getWP81PhotoTileVideos.
+     */
+    private val photoTileVideosRow =
+        SwitchRow("show videos on the live tile") { on -> onPhotoTileVideosChanged?.invoke(on) }
+
+    /**
+     * Backup and restore, as four rows on a page of their own.
+     *
+     * Everything this shell remembers is in its preference files - the Start screen and
+     * the order of its tiles, the accent, the hand-picked icons, the keyboard, the news
+     * feeds, the playlists - and until now the only copy of any of it was the one on the
+     * phone. A launcher whose whole point is an arrangement the user built by hand should
+     * not lose it to a wiped phone or a new one.
+     *
+     * Each row's second line is when that destination was last written to, which is the
+     * question somebody actually opens this page with: not "can I back up" but "is what
+     * is up there still worth anything". See [setBackupTimes].
+     */
+    private val backUpToDriveRow =
+        ActionRow("back up to google drive") { _ -> onBackUpToDrive?.invoke() }
+
+    private val backUpToFileRow =
+        ActionRow("back up to a file") { _ -> onBackUpToFile?.invoke() }
+
+    private val restoreFromDriveRow =
+        ActionRow("restore from google drive") { _ -> onRestoreFromDrive?.invoke() }
+
+    private val restoreFromFileRow =
+        ActionRow("restore from a file") { _ -> onRestoreFromFile?.invoke() }
+
     private var selectedAccent: Int = palette.accent
     private var selectedDark: Boolean = palette.isDark
     private var selectedBackground: String? = null
 
-    /** The page's own scroller, so the theme picker can bring itself into view. */
-    private val scroll = ScrollView(context)
-
     init {
         isClickable = true
-        column.orientation = LinearLayout.VERTICAL
-        // A hair of air under the last thing on the page. Scrolled to the end, the theme
-        // picker sat hard against the bottom edge, which reads as the page having been cut
+
+        // -------------------------------------------------------------- the list
+        rootColumn.orientation = LinearLayout.VERTICAL
+        // A hair of air under the last thing on the page. Scrolled to the end, the last
+        // row sat hard against the bottom edge, which reads as the page having been cut
         // off rather than finished.
-        column.setPadding(0, 0, 0, dp(BOTTOM_GAP_DP))
+        rootColumn.setPadding(0, 0, 0, dp(BOTTOM_GAP_DP))
 
-        header.setTitle("settings")
-        header.onBack = { onBack?.invoke() }
-        column.addView(header, wide())
+        rootColumn.addView(header, wide())
 
-        column.addView(sectionLabel("background"), wide())
+        // -------------------------------------------------------------- theme
+        // Dark or Light, and then how much of the screen this shell is drawing at all.
+        // Both are questions about what the phone looks like rather than about the wall,
+        // which is what everything under "tiles" and "wallpaper" is.
+        val theme = categoryColumn(Category.THEME)
+        theme.addView(sectionLabel("background"), wide())
         // Two mutually exclusive choices of one word each: a column of them wasted a
         // screenful of height on a decision that fits across one row.
         backgroundRow.orientation = LinearLayout.HORIZONTAL
         backgroundRow.addView(themeRow("Dark", true), share())
         backgroundRow.addView(themeRow("Light", false), share())
-        column.addView(backgroundRow, wide())
+        theme.addView(backgroundRow, wide())
 
-        column.addView(sectionLabel("accent color"), wide())
+        // Whether there is a strip at all first, then what it looks like: the colour
+        // switch belongs to the keys, so it reads as theirs when it sits under the switch
+        // that decides whether they are there - and it is that switch that takes it away.
+        theme.addView(sectionLabel("screen"), wide())
+        theme.addView(hideNavBarRow.view, wide())
+        theme.addView(accentNavBarRow.view, wide())
+        theme.addView(fullscreenRow.view, wide())
+        // What the wall's own pull-down opens. Filed with the other three because it is a
+        // question of the same kind - which chrome the user gets, this shell's or the
+        // phone's - rather than a question about notifications, which are the same
+        // notifications either way.
+        theme.addView(actionCenterRow.view, wide())
+
+        // -------------------------------------------------------------- tiles
+        val tiles = categoryColumn(Category.TILES)
+        tiles.addView(sectionLabel("accent color"), wide())
         buildAccentGrid()
-        column.addView(accentGrid, wide())
-        column.addView(accentNavBarRow.view, wide())
+        tiles.addView(accentGrid, wide())
+        // Under the accent, because that is what it puts the painted tiles back to.
+        // Always offered, unlike the wallpaper's own switches, so it is shown here rather
+        // than by a seeding setter - see the row's own note.
+        hideColorsRow.setVisible(true)
+        tiles.addView(hideColorsRow.view, wide())
 
-        // Its own section, under the colour switch it takes away: both are about the
-        // strip along the bottom, but one is a question of what colour it is and these
-        // two are questions of whether the shell is sharing the screen at all.
-        column.addView(sectionLabel("screen"), wide())
-        column.addView(hideNavBarRow.view, wide())
-        column.addView(fullscreenRow.view, wide())
-
-        // The word the three answers share is said once, in the heading: at a third of the
-        // width each there is no room to repeat "columns" beside every marker, and three
-        // rows of one word would spend a screenful of height on one decision.
-        column.addView(sectionLabel("tile columns"), wide())
+        // The word the answers share is said once, in the heading: at a share of the width
+        // each there is no room to repeat "columns" beside every marker, and a row of one
+        // word each would spend a screenful of height on one decision.
+        tiles.addView(sectionLabel("tile columns"), wide())
         val columnsRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
         for (count in COLUMN_CHOICES) columnsRow.addView(columnsOption(count), share())
-        column.addView(columnsRow, wide())
+        tiles.addView(columnsRow, wide())
 
-        // A section of its own, and a pair rather than a switch. What a tile does with an
-        // unread notification is not "numbers, or nothing": with the number off it still
-        // marks the tile, with a dot. A checkbox called "notification numbers" left the
-        // other half of that unsaid, so turning it off read as turning notifications off.
-        // Naming both answers says what the wall will actually look like either way.
-        column.addView(sectionLabel("notifications"), wide())
+        // A pair rather than a switch. What a tile does with an unread notification is not
+        // "numbers, or nothing": with the number off it still marks the tile, with a dot.
+        // A checkbox called "notification numbers" left the other half of that unsaid, so
+        // turning it off read as turning notifications off. Naming both answers says what
+        // the wall will actually look like either way.
+        tiles.addView(sectionLabel("notifications"), wide())
         val countsRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
         countsRow.addView(countsOption("numbers", true), share())
         countsRow.addView(countsOption("dots", false), share())
-        column.addView(countsRow, wide())
+        tiles.addView(countsRow, wide())
 
-        // Under the tiles' own settings and above the wallpaper's, which is where it
-        // belongs on both counts: what the apps are wearing is a question about the wall,
-        // and the switch under it decides whether the wall is affected at all.
-        column.addView(sectionLabel("app icons"), wide())
-        column.addView(iconPackRow.view, wide())
-        column.addView(iconPackTilesRow.view, wide())
+        // The row opens the list of installed packs; the switch under it decides whether
+        // the answer reaches Start as well as the app list.
+        tiles.addView(sectionLabel("app icons"), wide())
+        tiles.addView(iconPackRow.view, wide())
+        tiles.addView(iconPackTilesRow.view, wide())
 
-        column.addView(sectionLabel("start background"), wide())
+        // -------------------------------------------------------------- wallpaper
+        val wallpaper = categoryColumn(Category.WALLPAPER)
+        wallpaper.addView(sectionLabel("start background"), wide())
         wallpaperStrip.orientation = LinearLayout.HORIZONTAL
         val scroller = HorizontalScrollView(context).apply {
             isHorizontalScrollBarEnabled = false
@@ -386,58 +584,181 @@ class WP81SettingsView(
             setPadding(dp(22), 0, dp(22), dp(28))
             clipToPadding = false
         }
-        column.addView(scroller, wide())
+        wallpaper.addView(scroller, wide())
         // The one square of the strip that outlives a refill of it. See buildBrowseSquare.
         buildBrowseSquare()
 
         blurSlider.onValueChanged = { v -> onBlurChanged?.invoke(v) }
-        column.addView(blurLabel, wide())
-        column.addView(blurSlider, LinearLayout.LayoutParams(
+        wallpaper.addView(blurLabel, wide())
+        wallpaper.addView(blurSlider, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT).apply {
             setMargins(dp(22), 0, dp(22), dp(20))
         })
 
-        column.addView(driftRow.view, wide())
-        hideColorsRow.setVisible(true)
-        column.addView(hideColorsRow.view, wide())
-        column.addView(dimAllRow.view, wide())
+        wallpaper.addView(driftRow.view, wide())
+        wallpaper.addView(dimAllRow.view, wide())
         dimSlider.onValueChanged = { v -> onDimAmountChanged?.invoke(v) }
-        column.addView(dimLabel, wide())
-        column.addView(dimSlider, LinearLayout.LayoutParams(
+        wallpaper.addView(dimLabel, wide())
+        wallpaper.addView(dimSlider, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT).apply {
             setMargins(dp(22), 0, dp(22), dp(20))
         })
 
-        // Its own section: it is the only thing on this page that is not about what Start
-        // looks like, and filing it under the wallpaper's switches would bury it.
-        column.addView(sectionLabel("links"), wide())
-        column.addView(openLinksRow.view, wide())
-        column.addView(defaultBrowserRow.view, wide())
+        // -------------------------------------------------------------- links
+        val browser = categoryColumn(Category.BROWSER)
+        browser.addView(sectionLabel("links"), wide())
+        browser.addView(openLinksRow.view, wide())
+        browser.addView(defaultBrowserRow.view, wide())
 
-        // Its own section rather than a row under "links", because what is behind it is a
-        // page the size of this one: languages, autocorrect, the hold delay, dictation.
-        column.addView(sectionLabel("keyboard"), wide())
-        column.addView(keyboardRow.view, wide())
+        // -------------------------------------------------------------- files & photos
+        val files = categoryColumn(Category.FILES)
+        files.addView(sectionLabel("photos tile"), wide())
+        files.addView(photoTileVideosRow.view, wide())
 
-        // There is no "theme" section. This launcher is the Windows Phone shell and has
-        // nothing to switch to - the desktop themes it once listed ship as a separate app
-        // now, and picking one here could only lead somewhere that is not installed.
+        // -------------------------------------------------------------- app list
+        val appList = categoryColumn(Category.APP_LIST)
+        appList.addView(sectionLabel("search"), wide())
+        appList.addView(appListSearchRow.view, wide())
 
-        scroll.isFillViewport = true
-        scroll.overScrollMode = OVER_SCROLL_NEVER
-        scroll.addView(column, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
-        addView(scroll, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        // -------------------------------------------------------------- backup
+        // Making a copy and putting one back, under two headings rather than four rows in
+        // a row: the difference between them is the whole of what this page is about, and
+        // the heading is what stops "restore from a file" being read as the fourth way of
+        // saving one.
+        val backup = categoryColumn(Category.BACKUP)
+        backup.addView(sectionLabel("back up"), wide())
+        backup.addView(backUpToDriveRow.view, wide())
+        backup.addView(backUpToFileRow.view, wide())
+        backup.addView(sectionLabel("restore"), wide())
+        backup.addView(restoreFromDriveRow.view, wide())
+        backup.addView(restoreFromFileRow.view, wide())
+        // Seeded as never, so the rows read as rows rather than as blanks in the moment
+        // before the host answers. It answers on the way into settings; see
+        // MainActivity.refreshWP81BackupRows.
+        setBackupTimes(0L, 0L)
 
-        // 2. Everything that is not a section heading is stood in from the edge, so the
+        // The names, in the order the phone would have put them: what the shell looks
+        // like, then what is on it, then the two programs that have settings of their
+        // own, then the other page of the shell. Keyboard is a row rather than a category
+        // because there is nothing here to show - the settings are an Activity of their
+        // own, and this is the way to it.
+        rootColumn.addView(categoryRow(Category.THEME).view, wide())
+        rootColumn.addView(categoryRow(Category.TILES).view, wide())
+        rootColumn.addView(categoryRow(Category.WALLPAPER).view, wide())
+        rootColumn.addView(categoryRow(Category.BROWSER).view, wide())
+        rootColumn.addView(categoryRow(Category.FILES).view, wide())
+        rootColumn.addView(keyboardRow.view, wide())
+        rootColumn.addView(categoryRow(Category.APP_LIST).view, wide())
+        // Under the settings rather than among them: it is what to do about all of them
+        // at once, and it is the row somebody looks for when they have a new phone.
+        rootColumn.addView(categoryRow(Category.BACKUP).view, wide())
+        // Then out of the launcher altogether. Below every setting this page can change,
+        // because it changes none of them - it is the way to the other settings screen,
+        // and putting it among the shell's own would read as one more of them.
+        rootColumn.addView(phoneSettingsRow.view, wide())
+        // Last, as it was on the phone: it is the one row that is not a setting at all.
+        aboutRow.setDetail("tips & tricks, permissions, release notes")
+        rootColumn.addView(aboutRow.view, wide())
+
+        // "theme" here is dark against light, not a shell to switch to. This launcher is
+        // the Windows Phone shell and has nothing to switch to - the desktop themes it
+        // once listed ship as a separate app now, and offering one here could only lead
+        // somewhere that is not installed.
+
+        rootScroll.isFillViewport = true
+        rootScroll.overScrollMode = OVER_SCROLL_NEVER
+        rootScroll.addView(
+            rootColumn, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+        addView(rootScroll, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+
+        // -------------------------------------------------------------- the category page
+        pageColumn.orientation = LinearLayout.VERTICAL
+        pageColumn.setPadding(0, 0, 0, dp(BOTTOM_GAP_DP))
+        pageHeader.onBack = { closeCategory() }
+        pageColumn.addView(pageHeader, wide())
+        pageBody.orientation = LinearLayout.VERTICAL
+        pageColumn.addView(pageBody, wide())
+
+        pageScroll.isFillViewport = true
+        pageScroll.overScrollMode = OVER_SCROLL_NEVER
+        pageScroll.visibility = GONE
+        // Opaque and taking its own taps: it lies over the list rather than replacing it,
+        // so that the list is simply there again as the page turns away - and nothing
+        // through the gaps between rows should reach the list underneath.
+        pageScroll.isClickable = true
+        pageScroll.addView(
+            pageColumn, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+        addView(pageScroll, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+
+        // Everything that is not a section heading is stood in from the edge, so the
         // headings are the only things on the page's own margin and each one visibly has a
         // group of settings hanging under it. Applied here, once, rather than at each of a
         // dozen call sites - and added to whatever margin a row already had rather than
-        // replacing it, so the slider and the wallpaper strip keep their own.
-        indentSettingRows()
+        // replacing it, so the sliders and the wallpaper strip keep their own.
+        for (col in categoryColumns.values) indentSettingRows(col)
 
         applyPalette(palette)
+    }
+
+    /**
+     * The column a category's settings are built into, made the first time it is asked for.
+     *
+     * Detached until the category is entered - see [showCategory] - which is also why the
+     * rows are held as fields rather than looked up: a setting the host seeds while its
+     * category has never been opened has no parent to be found through.
+     */
+    private fun categoryColumn(category: Category): LinearLayout =
+        categoryColumns.getOrPut(category) {
+            LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        }
+
+    /** One name on the list, with the line under it naming what is behind it. */
+    private fun categoryRow(category: Category): ActionRow =
+        categoryRows.getOrPut(category) {
+            ActionRow(category.title, ROOT_LABEL_SP) { showCategory(category) }
+                .also { it.setDetail(category.detail) }
+        }
+
+    /**
+     * Turns to a category's page.
+     *
+     * The page lies over the list rather than replacing it, so backing out is the turn
+     * away and the list is already behind it - with the scroll position the user left it
+     * at, which is the thing a rebuilt list always loses.
+     */
+    private fun showCategory(category: Category) {
+        shownCategory = category
+        pageHeader.setTitle(category.title)
+        pageBody.removeAllViews()
+        pageBody.addView(categoryColumn(category), wide())
+        pageScroll.scrollTo(0, 0)
+        // Whatever was left open last time is folded away before it is shown again.
+        if (category == Category.TILES) setAccentExpanded(false)
+        pageTransition.playIn()
+    }
+
+    /** The way back to the list: the page turns away, and the list is under it. */
+    private fun closeCategory() {
+        if (shownCategory == null) return
+        shownCategory = null
+        // Emptied only once the turn is over, so the page has something to show while it
+        // is leaving. A category entered during the turn re-fills it and MetroPageTransition
+        // drops this, which is what stops the new page being emptied by the old one's exit.
+        pageTransition.playOut { pageBody.removeAllViews() }
+    }
+
+    /**
+     * Backs out of a category, and says whether there was one to back out of.
+     *
+     * False means the user is on the list, where back is the way out of settings
+     * altogether - which is the host's to do. See WP81Shell.handleBack.
+     */
+    fun handleBack(): Boolean {
+        if (shownCategory == null) return false
+        closeCategory()
+        return true
     }
 
     /**
@@ -649,15 +970,28 @@ class WP81SettingsView(
     /**
      * Called each time the page is shown.
      *
-     * Both lists start closed. The accent grid used to open itself whenever the colour in
-     * use was not in the first row, which is most of them - so the page opened as a wall of
+     * On the list, at the top of it, with no category open. Settings is entered from the
+     * key strip and from a tile, and both mean "take me to settings" rather than "take me
+     * back to where I was in settings" - so whatever page was being looked at last time is
+     * dropped rather than restored. Cut rather than turned away: nothing is on screen yet,
+     * and an exit animation for a page the user cannot see is a page arriving in the
+     * middle of somebody else's.
+     *
+     * The accent grid starts closed. It used to open itself whenever the colour in use was
+     * not in the first row, which is most of them - so its page opened as a wall of
      * swatches with the settings under it pushed off the bottom, every time. What is on is
      * still marked; finding it is a tap on "more colors", and that is the tap the person
      * who wants to change it was going to make anyway.
      */
     fun onOpened() {
         setAccentExpanded(false)
-        scroll.scrollTo(0, 0)
+        shownCategory = null
+        pageScroll.animate().cancel()
+        pageScroll.visibility = GONE
+        pageScroll.alpha = 1f
+        pageScroll.rotationY = 0f
+        pageBody.removeAllViews()
+        rootScroll.scrollTo(0, 0)
     }
 
     private fun setAccentExpanded(expanded: Boolean) {
@@ -840,6 +1174,16 @@ class WP81SettingsView(
         openLinksRow.set(on)
     }
 
+    /** Seeds the switch for how the app list opens. */
+    fun setAppListSearchFocus(on: Boolean) {
+        appListSearchRow.set(on)
+    }
+
+    /** Seeds the switch for what the Photos tile turns through. */
+    fun setPhotoTileVideos(on: Boolean) {
+        photoTileVideosRow.set(on)
+    }
+
     /** Seeds the navigation bar switch. */
     fun setAccentNavBar(on: Boolean) {
         accentNavBarRow.set(on)
@@ -850,12 +1194,17 @@ class WP81SettingsView(
      *
      * And puts the colour switch where [hideNavBarRow] would have put it, so a page built
      * with the keys already hidden opens without it rather than showing it until the
-     * switch beneath is touched.
+     * switch above it is touched.
      */
     fun setScreenControls(hideNavBar: Boolean, fullscreen: Boolean) {
         hideNavBarRow.set(hideNavBar)
         fullscreenRow.set(fullscreen)
         accentNavBarRow.setVisible(!hideNavBar)
+    }
+
+    /** Seeds the switch for what the pull-down opens. */
+    fun setActionCenter(on: Boolean) {
+        actionCenterRow.set(on)
     }
 
     /** Says whether the phone is sending its links here, in the row's second line. */
@@ -897,6 +1246,38 @@ class WP81SettingsView(
         )
         iconPackTilesRow.set(onTiles)
         iconPackTilesRow.setVisible(name != null)
+    }
+
+    /**
+     * Says when each destination was last written to, in the two backup rows' second lines.
+     *
+     * Zero is a destination that has never been used, and it is said as that rather than
+     * left blank: a row with nothing under it reads as a row that has not loaded yet.
+     *
+     * The restore rows carry no date. What is on the phone's Drive may have been put there
+     * by another phone on the same account, and the file the user is about to pick is not
+     * known until they pick it - so both say what restoring *does* instead, which is the
+     * thing worth reading before tapping either of them. The date of the backup that was
+     * actually found is put in front of the user by the host, in the prompt that asks
+     * before anything is replaced.
+     */
+    fun setBackupTimes(drive: Long, file: Long) {
+        backUpToDriveRow.setDetail(lastBackup(drive))
+        backUpToFileRow.setDetail(lastBackup(file))
+        restoreFromDriveRow.setDetail("replaces everything on this phone")
+        restoreFromFileRow.setDetail("replaces everything on this phone")
+    }
+
+    private fun lastBackup(at: Long): String {
+        if (at <= 0L) return "not backed up here yet"
+        val stamp = android.text.format.DateUtils.formatDateTime(
+            context,
+            at,
+            android.text.format.DateUtils.FORMAT_SHOW_DATE or
+                android.text.format.DateUtils.FORMAT_SHOW_TIME or
+                android.text.format.DateUtils.FORMAT_ABBREV_ALL
+        )
+        return "last backed up $stamp"
     }
 
     /** Seeds the tile settings, which are not tied to whether a background is set. */
@@ -945,7 +1326,11 @@ class WP81SettingsView(
      * somewhere else, or one the system has to be asked for. It has no marker, because
      * there is nothing here that is on or off.
      */
-    private inner class ActionRow(text: String, private val onTap: (View) -> Unit) {
+    private inner class ActionRow(
+        text: String,
+        labelSp: Float = ROW_LABEL_SP,
+        private val onTap: (View) -> Unit
+    ) {
 
         val view = LinearLayout(context)
         private val label = TextView(context)
@@ -953,13 +1338,17 @@ class WP81SettingsView(
 
         init {
             view.orientation = LinearLayout.VERTICAL
-            view.setPadding(dp(24), dp(6), dp(24), dp(18))
+            // A row on the list is given more air than one on a page: there it is one
+            // setting among a group under a heading, and here it is the whole of what the
+            // screen is offering, with nothing to be read as belonging to.
+            val big = labelSp >= ROOT_LABEL_SP
+            view.setPadding(dp(24), dp(if (big) 10 else 6), dp(24), dp(if (big) 22 else 18))
             view.isClickable = true
             view.setOnClickListener { onTap(view) }
             TiltEffect.apply(view)
 
             label.text = text
-            label.textSize = 17f
+            label.textSize = labelSp
             label.typeface = ResourcesCompat.getFont(context, R.font.segoeui_regular)
             view.addView(label, wide())
 
@@ -1033,6 +1422,7 @@ class WP81SettingsView(
         fun set(value: Boolean) {
             toggle.set(value, animated = false)
         }
+
 
         /** Takes the row off the page, for a setting that has stopped meaning anything. */
         fun setVisible(visible: Boolean) {
@@ -1167,13 +1557,22 @@ class WP81SettingsView(
         selectedAccent = p.accent
         selectedDark = p.isDark
         setBackgroundColor(p.background)
-        header.applyPalette(p)
-        for (i in 0 until column.childCount) {
-            val child = column.getChildAt(i)
-            if (child is TextView && child.tag == TAG_SECTION) {
-                child.setTextColor(p.accent)
+        header.setTextColor(p.foreground)
+        pageHeader.applyPalette(p)
+        // The category page lies over the list, so it paints its own ground rather than
+        // letting the rows underneath show between its own.
+        pageScroll.setBackgroundColor(p.background)
+        for (col in categoryColumns.values) {
+            for (i in 0 until col.childCount) {
+                val child = col.getChildAt(i)
+                if (child is TextView && child.tag == TAG_SECTION) {
+                    child.setTextColor(p.accent)
+                }
             }
         }
+        for (row in categoryRows.values) row.repaint()
+        appListSearchRow.repaint()
+        photoTileVideosRow.repaint()
         blurLabel.setTextColor(p.accent)
         dimLabel.setTextColor(p.accent)
         accentMoreLabel.setTextColor(p.foreground)
@@ -1186,8 +1585,10 @@ class WP81SettingsView(
         accentNavBarRow.repaint()
         hideNavBarRow.repaint()
         fullscreenRow.repaint()
+        actionCenterRow.repaint()
         defaultBrowserRow.repaint()
         keyboardRow.repaint()
+        aboutRow.repaint()
         iconPackRow.repaint()
         iconPackTilesRow.repaint()
         repaintCountRows()
@@ -1202,17 +1603,20 @@ class WP81SettingsView(
     /**
      * Stands every setting in from the page's left edge, leaving the headings on it.
      *
-     * The page was one flat column: a heading and the rows under it began at the same
-     * margin, so "tile columns" and "start background" read as two more rows rather than
-     * as the names of what followed. An indent is enough to show which is which - the headings
-     * hang out to the left, and each group is visibly a group.
+     * A category page was one flat column: a heading and the rows under it began at the
+     * same margin, so "tile columns" and "start background" read as two more rows rather
+     * than as the names of what followed. An indent is enough to show which is which - the
+     * headings hang out to the left, and each group is visibly a group.
+     *
+     * The list itself is not indented. Its rows have no headings to hang under, and are
+     * the page's own margin.
      */
-    private fun indentSettingRows() {
+    private fun indentSettingRows(column: LinearLayout) {
         val inset = dp(SECTION_INSET_DP)
         for (i in 0 until column.childCount) {
             val child = column.getChildAt(i)
-            // The title bar is the page's own, not a setting; headings mark the edge.
-            if (child === header || child.tag == TAG_SECTION) continue
+            // Headings mark the edge; everything else stands in from it.
+            if (child.tag == TAG_SECTION) continue
             val lp = child.layoutParams as? LinearLayout.LayoutParams ?: continue
             lp.leftMargin += inset
             child.layoutParams = lp
@@ -1221,18 +1625,71 @@ class WP81SettingsView(
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
+    /**
+     * The groups settings is split into, each a page of its own.
+     *
+     * Named as the phone would name them, in lower case, because that is how the title at
+     * the top of the page is drawn and the row on the list should be the same words.
+     *
+     * [detail] is the line under the name on the list, and it says what is behind the row
+     * rather than where any of it stands. A category is not a setting and has no state to
+     * report - "dark" under "theme" answers a question nobody is asking, and says nothing
+     * to the person who came looking for full screen. Naming the contents is what makes
+     * the list navigable, and it is what the phone's own settings list did.
+     *
+     * Keyboard is not one of these. What is behind it is an Activity, not a column of
+     * rows, so it is a row on the list that opens it directly - see [keyboardRow].
+     */
+    private enum class Category(val title: String, val detail: String) {
+        THEME("theme", "dark or light, status bar, navigation bar"),
+        TILES("tiles", "accent color, columns, notifications, icons"),
+        WALLPAPER("wallpaper", "picture, blur, dim, drift"),
+        BROWSER("internet explorer", "where links open"),
+        FILES("files & photos", "what the photos tile shows"),
+        APP_LIST("app list", "opening into search"),
+        BACKUP("backup", "keep a copy of your settings, and put one back")
+    }
+
     companion object {
         private const val TAG_SECTION = "wp81_section"
+
+        /** A setting's name, on a category page. */
+        private const val ROW_LABEL_SP = 17f
+
+        /**
+         * A category's name, on the list.
+         *
+         * Larger than a setting's, because the list is the page's whole content and its
+         * rows are the headings of everything behind them - see the phone's own settings,
+         * where the name is type and the line under it is a footnote to it.
+         */
+        private const val ROOT_LABEL_SP = 24f
+
+        /**
+         * The page's own name, at the size the panorama gives a program's.
+         *
+         * Taken from MetroPanorama.APP_TITLE_SP rather than shared with it: that one is a
+         * measurement of the panorama's slowest layer, and this page has no panorama. They
+         * are the same number because they are the same thing on screen - the name of
+         * where you are - and the platform wrote it at one size.
+         */
+        private const val APP_TITLE_SP = 69f
+        private const val APP_TITLE_TOP_DP = 14
+        private const val APP_TITLE_BOTTOM_DP = 6
 
         /**
          * The widths the wall can be set to, narrowest first.
          *
          * Four is WP8.1's own; three is a wall of bigger tiles, and six is what the phone
-         * itself offered on its larger screens under the name "show more tiles". The row
-         * is built from this list, so the first entry is the one that carries the page's
-         * left margin. See TileGridLayout.columns.
+         * itself offered on its larger screens under the name "show more tiles". Five is
+         * neither and is here because the step from four to six is a big one on a tall
+         * screen - it halves the width of a medium tile - and an odd count is no harder
+         * for the packer, which reads the number rather than a list of arrangements.
+         *
+         * The row is built from this list, so the first entry is the one that carries the
+         * page's left margin. See TileGridLayout.columns.
          */
-        private val COLUMN_CHOICES = listOf(3, 4, 6)
+        private val COLUMN_CHOICES = listOf(3, 4, 5, 6)
 
         /** How far a setting stands in from the heading above it. See indentSettingRows. */
         private const val SECTION_INSET_DP = 12

@@ -28,6 +28,12 @@ import android.view.animation.AccelerateDecelerateInterpolator
  * one, eight by two on a full-width strip, two by four on a tall one - so the squares fill
  * the tile at every size instead of stretching to fit it.
  *
+ * They fill it edge to edge, with nothing between them but a hairline. The tile is not a
+ * little wall of little tiles - it is one tile scored into squares, exactly as the phone
+ * drew it: the face keeps its own colour throughout, the squares have no padding and no
+ * gap, and the only marks on it are the lines dividing column from column, row from row,
+ * and the bottom row from the folder's name. See [lineColor].
+ *
  * Every square carries an app. A folder with more apps than squares used to spend the last
  * one on an ellipsis, which said there was more without saying what: the squares turn over
  * anyway, so the same square spent on another app tells you what the folder holds *and*
@@ -97,19 +103,17 @@ class FolderPreviewView(
 
     private val cells = mutableListOf<Slot>()
 
-    private val scrimPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val linePaint = Paint()
 
     /**
-     * Whether the ground under the squares is a photograph being held down dark.
+     * Whether the squares are showing their apps, or only the lines dividing them.
      *
-     * A mini tile lightens what it sits on, which is how it reads as a tile at all on the
-     * accent. Over a darkened photograph that lightening is the dim being undone in
-     * exactly the squares the folder covers - the wall goes uniformly dark and the folder
-     * keeps a lit grid in the middle of it. So the block goes the other way instead: the
-     * same strength, in the direction the tile it is on is already going. See
-     * TileView.dimAllTiles.
+     * An open folder leaves its tile behind on the wall as a marker for where it is, and
+     * a marker that still has the apps and the name on it is the folder twice over - the
+     * page in front of the user is already listing them. What is left is the scoring: the
+     * same tile, the same divisions, and nothing in them. See TileView.applyEmptied.
      */
-    private var darkGround = false
+    private var contentsHidden = false
 
     /**
      * This view's own offset into the rotation, 1-5 seconds.
@@ -189,29 +193,36 @@ class FolderPreviewView(
 
     fun applyPalette(p: WP81Palette) {
         palette = p
-        scrimPaint.color = scrimColor()
+        linePaint.color = lineColor()
+        invalidate()
         for (cell in cells) cell.invalidate()
     }
 
-    /** Says which way the squares should mark themselves off. See [darkGround]. */
-    fun setDarkGround(dark: Boolean) {
-        if (darkGround == dark) return
-        darkGround = dark
-        scrimPaint.color = scrimColor()
-        for (cell in cells) cell.invalidate()
+    /** Empties the squares, leaving the lines. See [contentsHidden]. */
+    fun setContentsHidden(hidden: Boolean) {
+        if (contentsHidden == hidden) return
+        contentsHidden = hidden
+        for (cell in cells) cell.cancelFlip()
+        bindSlots()
     }
 
     /**
-     * The block a mini tile lays over the tile's own face.
+     * The colour of the lines the tile is divided by.
      *
-     * A lighter block of the same fill rather than a colour of its own: the folder is one
-     * tile subdivided, not a crowd of tiles pushed together, and a translucent block also
-     * leaves the Start background showing through when the tile is a window onto it. On a
-     * darkened photograph it is the same block the other way up - see [darkGround].
+     * A line rather than a block: the folder is one tile scored into squares, not a crowd
+     * of small tiles pushed together, and lightening each square to say where it began
+     * turned the tile into a grid of paler patches - which is not what the phone drew.
+     * The face is left exactly as it is, the accent or the photograph showing through it
+     * unbroken, and only the divisions themselves are marked.
+     *
+     * The theme picks which way the scoring goes, not the tile: black under the dark
+     * theme and white under the light one, so a wall of folders is scored the same way
+     * throughout rather than each tile deciding for itself from whatever colour it
+     * happens to be wearing.
      */
-    private fun scrimColor(): Int =
-        if (darkGround) Color.argb(SCRIM_ALPHA, 0, 0, 0)
-        else Color.argb(SCRIM_ALPHA, 255, 255, 255)
+    private fun lineColor(): Int =
+        if (palette.isDark) Color.argb(LINE_ALPHA, 0, 0, 0)
+        else Color.argb(LINE_ALPHA, 255, 255, 255)
 
     /** Starts the preview over: the first apps in the folder, in the first squares. */
     private fun seed() {
@@ -243,7 +254,7 @@ class FolderPreviewView(
      * flickering between the same two apps.
      */
     private fun rotateOne() {
-        if (paused || !isShown) return
+        if (paused || contentsHidden || !isShown) return
         if (shown.isEmpty() || entries.size <= shown.size) return
 
         val slot = nextSlot % shown.size
@@ -265,47 +276,92 @@ class FolderPreviewView(
     }
 
     /**
-     * The edge of one square, from whichever of the tile's two dimensions runs out first.
+     * Where the squares stop and the folder's name begins, measured down the tile.
      *
-     * The two agree in every case the grid is actually asked for - the shape is derived
-     * from the tile's own - but taking the smaller keeps the squares square if a footprint
-     * ever hands over one they were not derived from.
+     * Everything above it is the grid's and everything below it the name's, and the line
+     * drawn along it is the one that separates the two.
      */
-    private fun sideFor(w: Int, h: Int): Int {
-        val gap = dp(GAP_DP)
-        return minOf(
-            ((h * heightFraction).toInt() - (rows - 1) * gap) / rows,
-            (w - (columns - 1) * gap) / columns
-        ).coerceAtLeast(1)
-    }
+    private fun gridBottom(h: Int): Int = (h * heightFraction).toInt()
+
+    /**
+     * The left edge of column [i], in whole pixels from the tile's own left edge.
+     *
+     * Taken as a fraction of the whole width rather than counted up in squares, so the
+     * columns divide the tile exactly: what the division leaves over is a pixel here and
+     * a pixel there inside the grid rather than a strip of unused tile at the end of the
+     * row. The squares come out square to within that pixel, because the shape of the
+     * grid was derived from the tile's own footprint. [rowEdge] does the same downwards,
+     * over the band the name has not taken.
+     */
+    private fun colEdge(i: Int, w: Int): Int = (w.toLong() * i / columns).toInt()
+
+    private fun rowEdge(j: Int, h: Int): Int =
+        (gridBottom(h).toLong() * j / rows).toInt()
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val w = MeasureSpec.getSize(widthMeasureSpec)
         val h = MeasureSpec.getSize(heightMeasureSpec)
-        val side = sideFor(w, h)
-        val spec = MeasureSpec.makeMeasureSpec(side, MeasureSpec.EXACTLY)
-        for (cell in cells) cell.measure(spec, spec)
+        for (i in cells.indices) {
+            val col = i / rows
+            val row = i % rows
+            val cw = (colEdge(col + 1, w) - colEdge(col, w)).coerceAtLeast(1)
+            val ch = (rowEdge(row + 1, h) - rowEdge(row, h)).coerceAtLeast(1)
+            cells[i].measure(
+                MeasureSpec.makeMeasureSpec(cw, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(ch, MeasureSpec.EXACTLY)
+            )
+        }
         setMeasuredDimension(w, h)
     }
 
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
         if (cells.isEmpty()) return
-        val gap = dp(GAP_DP)
-        val side = cells[0].measuredWidth
-        // Whatever the squares leave over - a pixel or two of rounding - is split between
-        // the two edges rather than piled up against one of them.
-        val left = (width - (columns * side + (columns - 1) * gap)) / 2
-        // Against the top of the tile, not centred in the space above the name: the name
-        // has the bottom band and the squares have everything over it.
-        val top = 0
+        // Edge to edge and against the top of the tile: the squares are the tile, divided,
+        // so there is nothing to centre them in and nothing between them but the line.
         // Column by column rather than row by row: a folder rarely has enough in it to
         // fill a wide tile, and filling across would leave the lower rows empty and the
         // squares strung out along the top. Down then across keeps whatever there is as a
         // block against the left edge, however few of them there are.
         for (i in cells.indices) {
-            val x = left + (i / rows) * (side + gap)
-            val y = top + (i % rows) * (side + gap)
-            cells[i].layout(x, y, x + side, y + side)
+            val col = i / rows
+            val row = i % rows
+            cells[i].layout(
+                colEdge(col, width),
+                rowEdge(row, height),
+                colEdge(col + 1, width),
+                rowEdge(row + 1, height)
+            )
+        }
+    }
+
+    /**
+     * The lines the tile is scored into squares by, drawn over the squares themselves.
+     *
+     * Over rather than under, so a line is the same weight the whole way across whatever
+     * happens to be behind it - and an icon sliding through its square passes under the
+     * scoring rather than over it.
+     *
+     * Only the divisions are drawn, never the outside: a folder is a tile like any other
+     * and an outline round it would make it a framed one. The last line across is the one
+     * under the bottom row, which is what separates the squares from the folder's name -
+     * and it is only there when the name has a band to be separated from.
+     */
+    override fun dispatchDraw(canvas: Canvas) {
+        super.dispatchDraw(canvas)
+        if (columns <= 0 || rows <= 0) return
+        val weight = dp(LINE_DP).coerceAtLeast(1).toFloat()
+        val bottom = gridBottom(height)
+        for (i in 1 until columns) {
+            val x = colEdge(i, width) - weight / 2f
+            canvas.drawRect(x, 0f, x + weight, bottom.toFloat(), linePaint)
+        }
+        for (j in 1 until rows) {
+            val y = rowEdge(j, height) - weight / 2f
+            canvas.drawRect(0f, y, width.toFloat(), y + weight, linePaint)
+        }
+        if (bottom < height) {
+            val y = bottom - weight / 2f
+            canvas.drawRect(0f, y, width.toFloat(), y + weight, linePaint)
         }
     }
 
@@ -334,7 +390,7 @@ class FolderPreviewView(
 
         fun bind(entry: Entry?) {
             apply(entry)
-            visibility = if (entry == null) INVISIBLE else VISIBLE
+            visibility = if (entry == null || contentsHidden) INVISIBLE else VISIBLE
         }
 
         private fun apply(entry: Entry?) {
@@ -394,7 +450,6 @@ class FolderPreviewView(
         }
 
         override fun onDraw(canvas: Canvas) {
-            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), scrimPaint)
             val side = minOf(width, height).toFloat()
             // The block stays put and only what is on it moves, clipped to the square, so
             // a sliding icon never appears over the square beside it.
@@ -437,11 +492,11 @@ class FolderPreviewView(
 
     companion object {
 
-        /** Between the squares, so they read as tiles rather than as one block. */
-        private const val GAP_DP = 4
+        /** How thick the scoring between the squares is drawn. */
+        private const val LINE_DP = 2
 
-        /** How strongly a mini tile lightens the fill it sits on. */
-        private const val SCRIM_ALPHA = 40
+        /** And how far it takes the face down - or up, under the light theme. */
+        private const val LINE_ALPHA = 140
 
         // Icon size against the square, and the ceiling once the padding correction has
         // been applied. Mirrors the full tile's own numbers.

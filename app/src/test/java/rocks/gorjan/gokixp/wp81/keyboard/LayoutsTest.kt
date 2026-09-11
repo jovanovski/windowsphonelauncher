@@ -161,6 +161,33 @@ class LayoutsTest {
     }
 
     /**
+     * Every symbol anybody expects to find is somewhere on the two pages.
+     *
+     * A symbol that is on neither page and behind no letter is one the keyboard cannot type
+     * at all, and nothing anywhere reports that - `%` was missing this way for a while, which
+     * is a keyboard you cannot write a percentage on. The list is what a phone keyboard is
+     * expected to have rather than an inventory of what the pages happen to carry, so adding
+     * to it is a decision about the keyboard and not about the test.
+     */
+    @Test
+    fun theEverydaySymbolsAreAllReachable() {
+        val printed = (Layouts.SYMBOLS_1.rows + Layouts.SYMBOLS_2.rows)
+            .flatMap { it.keys }
+            .filter { it.action == null }
+            .map { it.output }
+            .toSet()
+        val expected = listOf(
+            "%", "@", "#", "\$", "&", "*", "-", "+", "=", "_", "/", "\\",
+            "(", ")", "[", "]", "{", "}",
+            "\"", "'", ":", ";", "!", "?", ",", ".",
+            "\u20ac", "\u00a3"
+        )
+        for (symbol in expected) {
+            assertTrue("'$symbol' is on neither symbol page", symbol in printed)
+        }
+    }
+
+    /**
      * A subtype's language tag finds its layout, in every spelling the platform uses.
      *
      * `InputMethodSubtype` hands back a BCP 47 tag on modern Android and the older

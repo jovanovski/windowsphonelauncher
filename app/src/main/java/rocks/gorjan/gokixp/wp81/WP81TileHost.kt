@@ -367,6 +367,25 @@ class WP81TileHost(
         }
     }
 
+    // ------------------------------------------------------------------ battery
+
+    /**
+     * What the battery tile draws: the charge, and whether it is climbing.
+     *
+     * Read from the platform rather than from a cache, because there is nothing to cache -
+     * the level is a sticky broadcast that is always current, and going to get it costs
+     * one call. Written down on the way past, so that a wall left up all afternoon is also
+     * the thing keeping the record the app's chart is drawn from. See BatteryStore.
+     *
+     * Null on a phone that will not say, which leaves the tile wearing its mark.
+     */
+    fun batteryFace(): BatteryFaceView.Reading? {
+        val reading = BatteryStore.read(context) ?: return null
+        if (!reading.known) return null
+        BatteryStore.record(context, reading)
+        return BatteryFaceView.Reading(reading.percent, reading.charging)
+    }
+
     /** One end of the day, in the scale the tile is set in, or null where there is none. */
     private fun degrees(celsius: Double?, unit: String): String? {
         if (celsius == null || celsius.isNaN()) return null
@@ -597,7 +616,8 @@ class WP81TileHost(
             "system.weather" to Tile.Kind.LIVE_WEATHER,
             "system.news" to Tile.Kind.LIVE_NEWS,
             "system.files" to Tile.Kind.LIVE_PHOTOS,
-            "system.people" to Tile.Kind.LIVE_PEOPLE
+            "system.people" to Tile.Kind.LIVE_PEOPLE,
+            "system.battery" to Tile.Kind.LIVE_BATTERY
         )
 
         /**

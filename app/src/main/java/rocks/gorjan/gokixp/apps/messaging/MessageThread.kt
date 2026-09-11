@@ -73,6 +73,15 @@ class MessageThread(
      * page would go up behind the page that asked for it. See HubApp.showMenu.
      */
     private val onMenu: (String?, List<WP81ContextMenu.Item>, View) -> Unit,
+    /**
+     * Asks before something is done, and only does it if the answer is yes.
+     *
+     * Through the app for the same reason [onMenu] is: the prompt is built with the
+     * program and every page is pushed over it, so one raised from inside this page would
+     * go up behind the page that raised it. Given the heading, the sentence, the word on
+     * the accepting button, and what to do when it is pressed.
+     */
+    private val onConfirm: (String, String, String, () -> Unit) -> Unit,
     /** A band across the top of the shell, in the app's own name. */
     private val onNotify: (String) -> Unit
 ) : LinearLayout(context) {
@@ -393,7 +402,8 @@ class MessageThread(
                         message.sending -> "sending"
                         else -> null
                     },
-                    onFooter = if (message.failed) ({ retry(message) }) else null
+                    onFooter = if (message.failed) ({ retry(message) }) else null,
+                    onDelete = { confirmDelete(message) }
                 ),
                 wide()
             )
@@ -409,7 +419,11 @@ class MessageThread(
                     onFooter = if (mine.problem != null) ({
                         pending.remove(mine)
                         sendNow(mine.body)
-                    }) else null
+                    }) else null,
+                    // Only once it has stopped: a message that is still on its way out is
+                    // one no delete can catch, and offering to take it away while the
+                    // radio still has it would be a command that lies about what it did.
+                    onDelete = if (mine.problem != null) ({ confirmDrop(mine) }) else null
                 ),
                 wide()
             )
@@ -432,7 +446,9 @@ class MessageThread(
         outgoing: Boolean,
         showTime: Boolean,
         footer: String?,
-        onFooter: (() -> Unit)?
+        onFooter: (() -> Unit)?,
+        /** How this one is taken away, where it is something that can be. See [heldItems]. */
+        onDelete: (() -> Unit)?
     ): View {
         val side = if (outgoing) Gravity.END else Gravity.START
         val holder = LinearLayout(context).apply {
@@ -501,7 +517,7 @@ class MessageThread(
             setOnLongClickListener { row ->
                 answered = true
                 val link = linkAt(this, downX, downY)
-                onMenu(headingFor(link), heldItems(this, body, link), row)
+                onMenu(headingFor(link), heldItems(this, body, link, onDelete), row)
                 true
             }
         }
@@ -562,18 +578,24 @@ class MessageThread(
     /**
      * What a hold on a bubble offers, which is decided by what was under the finger.
      *
-     * A hold anywhere in a message is about the message, and there is one thing to do with
-     * one of those. A hold on a number, an address or a web link is about that instead -
-     * it is the part of the message somebody was pointing at - so the commands are its,
-     * with the message's own copy left on the end: the thing held is still a message, and
-     * a list that took that away would answer a narrower question than was asked.
+     * A hold anywhere in a message is about the message, and there are two things to do
+     * with one of those: take a copy of it, or take it off the phone. A hold on a number,
+     * an address or a web link is about that instead - it is the part of the message
+     * somebody was pointing at - so the commands are its, with the message's own left on
+     * the end: the thing held is still a message, and a list that took that away would
+     * answer a narrower question than was asked.
+     *
+     * Deleting is last wherever it appears, which is where Windows Phone put it and where
+     * the one command you cannot undo belongs: at the end, past everything you were more
+     * likely to have meant.
      */
     private fun heldItems(
-        view: TextView, body: String, link: URLSpan?
+        view: TextView, body: String, link: URLSpan?, onDelete: (() -> Unit)?
     ): List<WP81ContextMenu.Item> {
+        val deleting = onDelete?.let { act -> WP81ContextMenu.Item("delete") { act() } }
         val spanned = view.text as? Spannable
         if (link == null || spanned == null) {
-            return listOf(WP81ContextMenu.Item("copy") { copy(body) })
+            return listOfNotNull(WP81ContextMenu.Item("copy") { copy(body) }, deleting)
         }
         // What the message actually says, rather than what Linkify made of it: the address
         // behind a number is `tel:` and whatever encoding it took to get there, and what
@@ -582,7 +604,7 @@ class MessageThread(
             .subSequence(spanned.getSpanStart(link), spanned.getSpanEnd(link))
             .toString()
         val scheme = Uri.parse(link.url).scheme?.lowercase()
-        return listOf(
+        return listOfNotNull(
             // The same thing a tap does, done by the span itself rather than by working
             // out a second time what a tel: or a mailto: is supposed to mean.
             WP81ContextMenu.Item(
@@ -599,7 +621,8 @@ class MessageThread(
                     else -> "copy link"
                 }
             ) { copy(shown) },
-            WP81ContextMenu.Item("copy message") { copy(body) }
+            WP81ContextMenu.Item("copy message") { copy(body) },
+            deleting
         )
     }
 
@@ -622,6 +645,58 @@ class MessageThread(
         } catch (e: Exception) {
             android.util.Log.w("WP81Messaging", "Could not copy a message", e)
             onNotify("That could not be copied")
+        }
+    }
+
+    // ---------------------------------------------------------------- deleting
+
+    /**
+     * Asks before taking a message off the phone, then takes it off the phone.
+     *
+     * Asked because it cannot be undone and because the gesture that gets here is a hold,
+     * which is easy to do by accident on a page whose whole content is text you were
+     * probably trying to select. The same prompt People puts up before a contact goes.
+     *
+     * The role is checked before the question rather than after it: only the phone's
+     * messaging app may write to the message store, and asking somebody whether they are
+     * sure and then quietly doing nothing is worse than not offering. See
+     * [MessageStore.isTheMessenger].
+     */
+    private fun confirmDelete(message: MessageStore.Message) {
+        if (!MessageStore.isTheMessenger(context)) {
+            onNotify("Only the phone's messaging app can delete messages")
+            return
+        }
+        onConfirm(
+            "delete message",
+            "This message will be removed from this phone.  The copy the other person " +
+                "has is not ours to take back.",
+            "delete"
+        ) {
+            MessageStore.delete(context, message.id) { gone ->
+                if (!gone) onNotify("That message could not be deleted")
+                // Either way, because the store is what the page shows: if it went the
+                // bubble goes with it, and if it did not the page should stop implying it.
+                reload()
+            }
+        }
+    }
+
+    /**
+     * The same, for something typed here that never reached the store.
+     *
+     * Nothing to delete and nothing to ask the phone about - the message exists only as a
+     * bubble on this page, kept because a failed send is otherwise unrecorded. Asked about
+     * all the same, so a hold on a bubble means one thing wherever it lands.
+     */
+    private fun confirmDrop(mine: Pending) {
+        onConfirm(
+            "delete message",
+            "This message was never sent.  Removing it here is the end of it.",
+            "delete"
+        ) {
+            pending.remove(mine)
+            bind(toBottom = false)
         }
     }
 

@@ -3,6 +3,7 @@ package rocks.gorjan.gokixp.wp81.keyboard
 import android.annotation.SuppressLint
 import android.content.Context
 import android.view.View
+import android.view.ViewGroup
 import android.widget.LinearLayout
 import rocks.gorjan.gokixp.wp81.WP81Palette
 
@@ -58,6 +59,16 @@ internal class KeyboardHost(
             panel?.let { removeView(it) }
             panel = view
             keyboard.hideAlternates()
+            // Off whatever was holding it, which is not always nothing and is why this line
+            // exists. The panel outlives the host: the service builds it once and keeps it,
+            // while an input view is thrown away and made again whenever the configuration
+            // changes - turning the phone, the system switching to dark, a font-size change.
+            // After one of those the panel is still a child of the *previous* host, and
+            // `addView` on a view that already has a parent is an IllegalStateException,
+            // taking the whole keyboard process down the next time the emoji key was pressed.
+            // Taking it off its old parent here also lets that dead host be collected, which
+            // is a whole key grid and a suggestion bar per rotation.
+            (view.parent as? ViewGroup)?.removeView(view)
             // First, so that it sits above the bar and the keys in the stack.
             addView(view, 0, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         }

@@ -24,8 +24,8 @@ android {
         applicationId = "rocks.gorjan.gokiwp"
         minSdk = 29
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 4
+        versionName = "1.0.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -63,6 +63,27 @@ android {
     // Kotlin jvmTarget follows compileOptions.targetCompatibility (AGP built-in Kotlin)
     buildFeatures {
         viewBinding = true
+    }
+
+    lint {
+        /*
+         * Calling an API the phone does not have, treated as the release-stopper it is.
+         *
+         * `lintVital` is the pass wired into assembleRelease and bundleRelease, and it runs
+         * only the issues lint marks FATAL. NewApi is merely an ERROR, so it is not among
+         * them: a release build ran lint, passed, and shipped anyway.
+         *
+         * Which is not a theoretical gap. minSdk is 29 and compileSdk is 36, so there are
+         * seven API levels of room to write a call that compiles here and does not exist on
+         * a phone this app supports - and the failure is a NoSuchMethodError at the moment
+         * the line is reached, not a graceful nothing. Welcome's permission list asked
+         * `canScheduleExactAlarms` (API 31) and `isExternalStorageManager` (API 30) with no
+         * guard; Welcome opens by itself a second after a first run, so on Android 10 and 11
+         * the launcher died a second after starting, every start, with no way back in.
+         *
+         * Promoted to fatal, that build fails here instead of on somebody's phone.
+         */
+        fatal += "NewApi"
     }
 }
 
@@ -118,9 +139,33 @@ dependencies {
 
     // No PdfBox: it was only ever the desktop photo viewer's, for opening a PDF in a window.
 
-    // No Google Drive or Play auth either. Those five artifacts existed for the Registry
-    // Editor's settings sync, which is a desktop program. Settings here travel by the
-    // export/import file instead.
+    /*
+     * Google Drive, as somewhere to keep a settings backup.
+     *
+     * These five came out when the desktop launcher's Registry Editor did - its settings
+     * sync was the only thing using them - and they are back because backup is a setting
+     * of this shell now, under settings > backup, rather than a desktop program's feature.
+     * See GoogleDriveHelper: the scope asked for is DRIVE_FILE, which reaches only the
+     * files this app itself wrote.
+     *
+     * The httpcomponents excludes are not optional. google-api-client still declares
+     * Apache HttpClient 4, which Android removed the org.apache.http classes for in API 28
+     * - left in, the build fails on duplicate classes, and a build that gets past that
+     * fails at the first request.
+     */
+    implementation("com.google.android.gms:play-services-auth:21.0.0")
+    implementation("com.google.apis:google-api-services-drive:v3-rev20240123-2.0.0") {
+        exclude(group = "org.apache.httpcomponents")
+    }
+    implementation("com.google.api-client:google-api-client-android:2.2.0") {
+        exclude(group = "org.apache.httpcomponents")
+    }
+    implementation("com.google.http-client:google-http-client-gson:1.43.3") {
+        exclude(group = "org.apache.httpcomponents")
+    }
+    implementation("com.google.http-client:google-http-client-android:1.43.3") {
+        exclude(group = "org.apache.httpcomponents")
+    }
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

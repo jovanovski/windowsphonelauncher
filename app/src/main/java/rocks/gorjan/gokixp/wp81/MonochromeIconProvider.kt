@@ -40,8 +40,20 @@ class MonochromeIconProvider(private val context: Context) {
          */
         data class Monochrome(val drawable: Drawable, val contentRatio: Float = 1f) : Glyph()
 
-        /** The app's real icon; must be drawn as-is, never tinted. */
-        data class FullColor(val drawable: Drawable, val contentRatio: Float = 1f) : Glyph()
+        /**
+         * The app's real icon; must be drawn as-is, never tinted.
+         *
+         * [fromPack] marks the ones an icon pack answered for rather than the app itself.
+         * The picture is drawn the same either way; what it says is that this row's mark
+         * was chosen for it, so a surface that stands its marks on an accent square can go
+         * on doing that instead of dropping the square the moment a pack is turned on.
+         * See AppListView's drawGlyph.
+         */
+        data class FullColor(
+            val drawable: Drawable,
+            val contentRatio: Float = 1f,
+            val fromPack: Boolean = false,
+        ) : Glyph()
     }
 
     /**
@@ -80,7 +92,7 @@ class MonochromeIconProvider(private val context: Context) {
         if (!isTile || packOnTiles) packGlyph?.invoke(packageName)?.let {
             // Full colour, so it is never tinted: a pack's artwork is the picture, not a
             // silhouette of one, and washing it in white would leave a white square.
-            return Glyph.FullColor(it, ratioFor("pack:$packageName", it))
+            return Glyph.FullColor(it, ratioFor("pack:$packageName", it), fromPack = true)
         }
         monochromeLayer(packageName)?.let {
             return Glyph.Monochrome(it, ratioFor("mono:$packageName", it))
@@ -155,6 +167,56 @@ class MonochromeIconProvider(private val context: Context) {
         val ink = measureInk(drawable)
         synchronized(lock) { inkCache[key] = ink }
         return ink
+    }
+
+    /**
+     * Puts a mark on an ImageView at the same optical size as every other mark.
+     *
+     * Nothing about the source can be taken on trust. A themed layer keeps the
+     * adaptive-icon safe zone, a notification silhouette fills its bounds, this shell's own
+     * glyphs cover about half of theirs - so drawing them each at the size of their own
+     * canvas gives a column where one app's mark is twice the next one's. What is placed
+     * instead is the *ink*: its longer side scaled to [glyphPx] and its centre put at the
+     * centre of a [boxPx] square, whatever padding it arrived wrapped in.
+     *
+     * By matrix rather than by padding, because a glyph covering a seventh of its canvas
+     * would need a canvas seven times the box to show at the right size, and no amount of
+     * padding can give it one. What hangs over the edge is that artwork's own margin, and
+     * the box clips it.
+     *
+     * [key] is what the measurement is cached under and should be the same string wherever
+     * the same artwork is placed, so the app list, the Action Center and the status bar
+     * share one rasterisation of each app's icon rather than paying for three.
+     */
+    fun placeInk(
+        view: android.widget.ImageView,
+        drawable: Drawable,
+        key: String,
+        boxPx: Int,
+        glyphPx: Int
+    ) {
+        val ink = inkFor(key, drawable)
+        val canvasW = drawable.intrinsicWidth.toFloat()
+        val canvasH = drawable.intrinsicHeight.toFloat()
+        // Artwork that drew nothing, or will not say how large it is: an ImageView ignores
+        // the matrix for a drawable with no intrinsic size, so the plain fit is the only
+        // honest answer.
+        if (ink == null || canvasW <= 0f || canvasH <= 0f) {
+            view.scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+            return
+        }
+        val inkW = ink.width() * canvasW
+        val inkH = ink.height() * canvasH
+        val scale = glyphPx / maxOf(inkW, inkH)
+        val centre = boxPx / 2f
+        view.scaleType = android.widget.ImageView.ScaleType.MATRIX
+        view.imageMatrix = android.graphics.Matrix().apply {
+            setScale(scale, scale)
+            postTranslate(
+                centre - scale * (ink.left * canvasW + inkW / 2f),
+                centre - scale * (ink.top * canvasH + inkH / 2f)
+            )
+        }
     }
 
     /**

@@ -74,7 +74,7 @@ class FloatingWindowManager(private val context: Context, private val container:
         windowsDialog.alpha = 0f
         windowsDialog.animate()
             .alpha(1f)
-            .setDuration(150)
+            .setDuration(100)
             .start()
 
         onWindowCountChanged?.invoke(visibleWindowCount())
@@ -87,7 +87,7 @@ class FloatingWindowManager(private val context: Context, private val container:
             // animation was the other chromes'; there is only this one now.
             windowsDialog.animate()
                 .alpha(0f)
-                .setDuration(150)
+                .setDuration(100)
                 .withEndAction {
                     container.removeView(windowsDialog)
                     activeWindows.remove(windowsDialog)

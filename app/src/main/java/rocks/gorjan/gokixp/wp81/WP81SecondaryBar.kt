@@ -77,8 +77,8 @@ class WP81SecondaryBar(
     // Made rather than added: which of them are on the strip is the mode's business, and
     // setMode puts them there. See MetroAppBar.makeCommand.
     private val colorButton = makeCommand(R.drawable.wp81_nav_color) { onTileColor?.invoke() }
-    // The app bar image glyph, which the Photos tile also wears - it is the same picture
-    // in both places, and this is the icon that set was drawn for.
+    // The app bar image glyph, which is the icon this set was drawn for. The Photos tile
+    // used to wear it too, until it stopped introducing itself over its own pictures.
     private val pictureButton =
         makeCommand(R.drawable.wp81_glyph_photos) { onTilePicture?.invoke() }
     private val menuButton = makeCommand(R.drawable.wp81_handle_menu) { onTileMenu?.invoke() }
@@ -137,8 +137,9 @@ class WP81SecondaryBar(
             // it looks right.
             //
             // The phone had no such key: folders there were made by holding one tile over
-            // another. That is still written and still works, but it is switched off - see
-            // StartScreenView.FOLD_ON_DRAG for what it cost the wall to keep.
+            // another, which this does too. The key is the way to a folder that does not
+            // need a second tile to aim at - and the way to one at all for a tile with no
+            // neighbour worth pairing it with. See StartScreenView.inFoldZone.
             Mode.EDIT_START ->
                 if (hasSelection) listOfNotNull(
                     colorButton,

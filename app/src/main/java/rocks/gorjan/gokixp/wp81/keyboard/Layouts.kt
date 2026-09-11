@@ -423,6 +423,11 @@ object Layouts {
      *
      * No correspondence to keep here - nothing on this page is behind a letter - so it is
      * simply the overflow, in the order Gboard has it.
+     *
+     * `%` opens the third row because that is where Gboard has it, and it is the one symbol
+     * on this page anybody types often. It was missing entirely for a while - the row had
+     * `§` on the end instead, which is a symbol almost nobody reaches for and was not
+     * worth the only percent sign on the keyboard.
      */
     val SYMBOLS_2 = KeyboardLayout(
         id = "symbols_2",
@@ -433,7 +438,7 @@ object Layouts {
             Row(symbols("£¢€¥^°={}\\")),
             Row(
                 listOf(Key(label = "&123", span = SIDE_KEY, style = Style.FUNCTION, action = Action.SYMBOLS_PAGE)) +
-                    symbols("©®™✓[]§") +
+                    symbols("%©®™✓[]") +
                     listOf(BACKSPACE)
             ),
             spaceRow(10f)

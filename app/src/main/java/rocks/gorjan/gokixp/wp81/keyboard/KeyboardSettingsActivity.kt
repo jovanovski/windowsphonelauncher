@@ -55,7 +55,16 @@ class KeyboardSettingsActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         themeManager = WP81Settings(this)
-        palette = WP81Palette.from(themeManager)
+        // Before a single setting is read, and for the same reason the keyboard does it in
+        // its own onCreate: this page can be opened from the launcher's settings without the
+        // keyboard ever having been turned on, so it can be the first thing in this process
+        // to touch the keyboard's file. Migrating afterwards would copy the old values over
+        // whatever was changed here and quietly undo it.
+        themeManager.migrateKeyboardSettings()
+        // Through [KeyboardAppearance] like everything else in this process: the accent is
+        // the launcher's, chosen on the launcher's page, and this page is not in the
+        // launcher's process any more.
+        palette = KeyboardAppearance.palette(themeManager)
 
         // The page is the background, so the system bars are painted to match rather than
         // sitting as two strips of a different black at either end.

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  wp81_glyph_photos - the Photos live tile.
+  wp81_glyph_photos - the app bar's picture command.
 
   appbar.image, traced verbatim from assets/custom_icons_8/appbar.image.svg: the framed
   landscape with a sun in the corner, on the same 76x76 grid as the rest of the set

@@ -50,6 +50,18 @@ object NewsSources {
     /** The one that is on when the user has never said otherwise. */
     const val DEFAULT_ID = "bbc"
 
+    /**
+     * What marks an id as naming a feed the user added rather than one of these.
+     *
+     * The address itself is the id behind it, rather than a number counted off a list:
+     * adding the same feed twice is then the same feed rather than two, and an id left
+     * behind in the enabled set by a feed that was deleted cannot come back later pointing
+     * at whichever feed happens to have inherited its number.
+     */
+    const val CUSTOM_PREFIX = "custom:"
+
+    fun customId(url: String): String = CUSTOM_PREFIX + url.trim()
+
     fun byId(id: String): NewsSource? = ALL.firstOrNull { it.id == id }
 }
 
@@ -62,7 +74,18 @@ object NewsSources {
  * everybody's top story, then everybody's second - so the front pages lead, and shuffled
  * within each round so no outlet is permanently first.
  */
-class NewsFeed(private val onUpdated: () -> Unit) {
+class NewsFeed(
+    private val onUpdated: () -> Unit,
+    /**
+     * What an id in the enabled set names.
+     *
+     * Asked of the caller rather than looked up in [NewsSources], because the list of
+     * feeds is no longer fixed: the ones the user has added themselves are in settings,
+     * and a feed reader that read settings to find out what a feed is would be two things.
+     * The built-in ones, for a caller that has nothing of its own to add.
+     */
+    private val sourceById: (String) -> NewsSource? = { NewsSources.byId(it) }
+) {
 
     @Volatile
     private var stories: List<NewsStory> = emptyList()
@@ -122,7 +145,7 @@ class NewsFeed(private val onUpdated: () -> Unit) {
             if (enabled != fetchingFor) queued = enabled
             return
         }
-        val sources = enabled.mapNotNull { NewsSources.byId(it) }
+        val sources = enabled.mapNotNull { sourceById(it) }
         if (sources.isEmpty()) {
             if (stories.isNotEmpty()) {
                 stories = emptyList()
@@ -186,14 +209,7 @@ class NewsFeed(private val onUpdated: () -> Unit) {
             .take(MAX_STORIES)
 
     private fun fetch(source: NewsSource): List<NewsStory> {
-        val connection = (URL(source.url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = TIMEOUT_MS
-            readTimeout = TIMEOUT_MS
-            instanceFollowRedirects = true
-            // Some feeds refuse the default Java agent outright.
-            setRequestProperty("User-Agent", USER_AGENT)
-        }
+        val connection = open(source.url)
         try {
             if (connection.responseCode != 200) {
                 Log.w("NewsFeed", "${source.name} returned ${connection.responseCode}")
@@ -332,22 +348,77 @@ class NewsFeed(private val onUpdated: () -> Unit) {
         return 0L
     }
 
-    /** Feeds put markup in their summaries; a tile shows text. */
-    private fun clean(value: String): String =
-        value.replace(Regex("<[^>]*>"), " ")
-            .replace("&amp;", "&")
-            .replace("&quot;", "\"")
-            .replace("&#39;", "'")
-            .replace("&apos;", "'")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&nbsp;", " ")
-            .replace(Regex("\\s+"), " ")
-            .trim()
+    companion object {
 
-    private companion object {
-        const val USER_AGENT = "Mozilla/5.0 (Android) GokiXP live tile"
-        const val TIMEOUT_MS = 10_000
+        /**
+         * Feeds put markup in their summaries; a tile shows text.
+         *
+         * On the companion because it is not only the stories that arrive written for a
+         * web page: so does the title a feed calls itself by, and the one thing worse than
+         * a section named "Al Jazeera &#8211; Breaking News" is two answers to what that
+         * means.
+         */
+        fun clean(value: String): String =
+            numbered(value.replace(Regex("<[^>]*>"), " "))
+                .replace("&amp;", "&")
+                .replace("&quot;", "\"")
+                .replace("&apos;", "'")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&nbsp;", " ")
+                .replace(Regex("\\s+"), " ")
+                .trim()
+
+        /**
+         * The characters a feed writes as a number: `&#8211;` for a dash, `&#8217;` for an
+         * apostrophe, and the same again in hex. Left alone if the number is not one.
+         */
+        private fun numbered(value: String): String = NUMBERED.replace(value) { match ->
+            val hex = match.groupValues[1].isNotEmpty()
+            val code = match.groupValues[2].toIntOrNull(if (hex) 16 else 10)
+            if (code == null || code !in 1..0x10FFFF) match.value
+            else String(Character.toChars(code))
+        }
+
+        private val NUMBERED = Regex("&#(x?)([0-9a-fA-F]+);")
+
+        private const val USER_AGENT = "Mozilla/5.0 (Android) GokiXP live tile"
+        private const val TIMEOUT_MS = 10_000
+
+        /** How many moves of an address to follow before calling it a loop. */
+        private const val MAX_REDIRECTS = 3
+
+        /**
+         * A connection to [url], with the redirects followed that Java will not follow.
+         *
+         * HttpURLConnection follows a redirect only while the protocol stays the same, and
+         * a feed address is as likely as not to be http pointing at https - either because
+         * the publisher moved years ago and left the old address working, or because that
+         * is how somebody typed it. Left to itself the reader sees a 301 and reports the
+         * feed as unreadable, which is the one thing it is not.
+         */
+        fun open(url: String): HttpURLConnection {
+            var address = URL(url)
+            var hops = 0
+            while (true) {
+                val connection = (address.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = TIMEOUT_MS
+                    readTimeout = TIMEOUT_MS
+                    instanceFollowRedirects = true
+                    // Some feeds refuse the default Java agent outright.
+                    setRequestProperty("User-Agent", USER_AGENT)
+                }
+                if (connection.responseCode !in 300..399 || hops++ >= MAX_REDIRECTS) {
+                    return connection
+                }
+                // Relative locations are legal, and some feeds send them.
+                val moved = connection.getHeaderField("Location")
+                if (moved.isNullOrBlank()) return connection
+                connection.disconnect()
+                address = URL(address, moved)
+            }
+        }
 
         /**
          * How deep into each feed to read.
@@ -357,12 +428,12 @@ class NewsFeed(private val onUpdated: () -> Unit) {
          * the lot costs nothing the request has not already paid for - the rows are what
          * cost, and those are built a screenful at a time as the reader gets to them.
          */
-        const val PER_SOURCE = 60
+        private const val PER_SOURCE = 60
 
         /** And how long the newest-first run is. That one is a summary, not a section. */
-        const val MAX_STORIES = 20
+        private const val MAX_STORIES = 20
 
-        val DATE_PATTERNS = listOf(
+        private val DATE_PATTERNS = listOf(
             "EEE, dd MMM yyyy HH:mm:ss Z",
             "EEE, dd MMM yyyy HH:mm:ss z",
             "EEE, dd MMM yyyy HH:mm Z",
@@ -372,6 +443,174 @@ class NewsFeed(private val onUpdated: () -> Unit) {
             "yyyy-MM-dd HH:mm:ss"
         )
 
-        const val REFRESH_MS = 30 * 60 * 1000L
+        private const val REFRESH_MS = 30 * 60 * 1000L
     }
+}
+
+/**
+ * Reads an address someone has typed, to say whether there is a feed at it.
+ *
+ * A feed the user adds is the one part of the News app where the address is not known to
+ * be good, and a bad one saved is a section that is silently never there - the reader
+ * builds its sections out of what came back, so a feed that answers with nothing simply
+ * does not appear, with no line anywhere saying why. So it is read once on the way in.
+ *
+ * The feed's own title is what it ends up called: an outlet has already named itself, and
+ * asking somebody to name a newspaper is asking them to do the feed's typing.
+ */
+object NewsFeedCheck {
+
+    /** What came of the reading. */
+    sealed class Result {
+        /** There is a feed at [url], and it calls itself [name]. */
+        data class Feed(val name: String, val url: String) : Result()
+
+        /** There is not, and [reason] is the line to put in front of the user. */
+        data class NotAFeed(val reason: String) : Result()
+    }
+
+    /**
+     * Reads [address] on a thread, and answers on the main one.
+     *
+     * The address it answers with is the one that finally replied rather than the one
+     * typed, so a feed that has moved is stored where it now lives and not re-walked
+     * through its own redirect every half hour for the life of the phone.
+     */
+    fun check(address: String, onDone: (Result) -> Unit) {
+        val main = Handler(Looper.getMainLooper())
+        fun answer(result: Result) { main.post { onDone(result) } }
+
+        val url = normalise(address)
+        if (url.isEmpty()) {
+            answer(Result.NotAFeed("type the address of a feed"))
+            return
+        }
+        Thread {
+            var connection: HttpURLConnection? = null
+            try {
+                connection = NewsFeed.open(url)
+                val code = connection.responseCode
+                if (code != 200) {
+                    answer(Result.NotAFeed("that address answered $code"))
+                    return@Thread
+                }
+                val (title, stories) = connection.inputStream.use { inspect(it) }
+                if (stories == 0) {
+                    answer(Result.NotAFeed("nothing at that address reads as a feed"))
+                    return@Thread
+                }
+                answer(Result.Feed(name(title, url), connection.url.toString()))
+            } catch (e: Exception) {
+                Log.w("NewsFeedCheck", "Could not read $url", e)
+                answer(Result.NotAFeed("could not read that address"))
+            } finally {
+                connection?.disconnect()
+            }
+        }.start()
+    }
+
+    /** What was typed, as an address: "bbc.co.uk/rss" is meant as https. */
+    fun normalise(address: String): String {
+        val typed = address.trim()
+        if (typed.isEmpty()) return ""
+        return if (typed.contains("://")) typed else "https://$typed"
+    }
+
+    /** The site an address belongs to, which is how a feed is shown under its name. */
+    fun host(url: String): String = try {
+        URL(url).host.orEmpty().removePrefix("www.").ifBlank { url }
+    } catch (e: Exception) {
+        url
+    }
+
+    /**
+     * The feed's own title, and how many stories are in it.
+     *
+     * Only as far as the first few: the question is whether this document is a feed, and a
+     * document that has produced three stories is one - reading the other fifty to find out
+     * again would be the whole fetch done twice. Titles inside a story are passed over; the
+     * one wanted is the channel's, which RSS and Atom both put before the stories.
+     */
+    private fun inspect(input: java.io.InputStream): Pair<String, Int> {
+        val parser = Xml.newPullParser()
+        parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
+        parser.setInput(input, null)
+
+        var title = ""
+        var named = false
+        var stories = 0
+        var inItem = false
+        var tag: String? = null
+
+        while (parser.next() != XmlPullParser.END_DOCUMENT) {
+            when (parser.eventType) {
+                XmlPullParser.START_TAG -> {
+                    tag = parser.name
+                    if (tag.equals("item", true) || tag.equals("entry", true)) {
+                        inItem = true
+                        stories++
+                        if (named && stories >= ENOUGH) return title to stories
+                    }
+                }
+
+                XmlPullParser.TEXT, XmlPullParser.CDSECT -> {
+                    if (!inItem && !named && tag.equals("title", true)) {
+                        title += parser.text?.trim().orEmpty()
+                    }
+                }
+
+                XmlPullParser.END_TAG -> {
+                    when {
+                        parser.name.equals("item", true) ||
+                            parser.name.equals("entry", true) -> inItem = false
+                        // The channel's title is the first one closed outside a story.
+                        // Anything after it - a picture's caption, most often - is a title
+                        // for something that is not the feed.
+                        !inItem && parser.name.equals("title", true) &&
+                            title.isNotBlank() -> named = true
+                    }
+                    tag = null
+                }
+            }
+        }
+        return title to stories
+    }
+
+    /**
+     * What to call the feed.
+     *
+     * A feed's title is written for a list of search results rather than for the top of a
+     * section: "BBC News - World" and "Ars Technica - All content" are each a name followed
+     * by a note saying which of that outlet's feeds this one is. The name is the part in
+     * front of the dash. Where there is nothing usable in front of it, or no title at all,
+     * the site it came from is a better answer than a blank.
+     */
+    private fun name(title: String, url: String): String {
+        val text = NewsFeed.clean(title)
+        val outlet = when {
+            // "Ars Technica - All content": the outlet, and then which of its feeds this
+            // is. Nearly every title with a dash in it is written that way round.
+            text.contains(" - ") -> text.substringBefore(" - ")
+            text.contains(" – ") -> text.substringBefore(" – ")
+            text.contains(" — ") -> text.substringBefore(" — ")
+            // "World news | The Guardian": the same two things the other way about, which
+            // is what a bar means nearly everywhere a feed uses one.
+            text.contains(" | ") -> text.substringAfterLast(" | ")
+            else -> text
+        }.trim()
+        val chosen = outlet.ifBlank { text }.ifBlank { host(url) }
+        return if (chosen.length <= MAX_NAME) chosen
+        else chosen.take(MAX_NAME).trimEnd() + "…"
+    }
+
+    /** How many stories are enough to call something a feed. */
+    private const val ENOUGH = 3
+
+    /**
+     * How long a name may be.
+     *
+     * It is a section heading on a panorama, where it is set large and lowercase, and a
+     * heading that runs past the edge of the screen takes the next section's name with it.
+     */
+    private const val MAX_NAME = 28
 }

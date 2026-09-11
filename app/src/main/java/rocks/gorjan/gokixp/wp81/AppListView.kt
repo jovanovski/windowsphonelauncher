@@ -426,6 +426,12 @@ class AppListView(
          * with: white on a square of the accent. An app with none of those keeps the icon
          * it was installed with, unboxed, which is also what WP8.1 did with art a developer
          * had not drawn for a tile.
+         *
+         * An icon pack's artwork keeps the square. It replaces the mark that was standing
+         * on one, and a pack full of round or cut-out icons would otherwise leave the list
+         * a column of shapes floating on the page where a column of accent squares had
+         * been - so the square stays and the pack's picture is drawn on it. A pack that
+         * draws full-bleed squares covers it, which is the same list it was.
          */
         private fun drawGlyph(item: AppInfo) {
             if (!glyphs.containsKey(item.packageName)) {
@@ -443,7 +449,9 @@ class AppListView(
                     icon.setBackgroundColor(palette.accent)
                     placeGlyph(icon, glyph.drawable, item.packageName)
                 }
-                is MonochromeIconProvider.Glyph.FullColor -> drawPlain(glyph.drawable)
+                is MonochromeIconProvider.Glyph.FullColor ->
+                    if (glyph.fromPack) drawOnAccent(glyph.drawable)
+                    else drawPlain(glyph.drawable)
                 null -> drawPlain(null)
             }
         }
@@ -458,6 +466,20 @@ class AppListView(
             icon.setImageDrawable(drawable)
             icon.imageTintList = null
             icon.background = null
+        }
+
+        /**
+         * A picture on the accent square: the pack's artwork, untinted and unshrunk.
+         *
+         * Filling the square rather than placed at [GLYPH_DP] like a mark is, because this
+         * is a picture and not a silhouette - there is no ink box to line up with the rest
+         * of the column, and a pack's icons are already drawn to one size as a set.
+         */
+        private fun drawOnAccent(drawable: android.graphics.drawable.Drawable) {
+            icon.scaleType = ImageView.ScaleType.FIT_CENTER
+            icon.setImageDrawable(drawable)
+            icon.imageTintList = null
+            icon.setBackgroundColor(palette.accent)
         }
 
         /** A glyph has landed; take it if this row is still the one waiting for it. */

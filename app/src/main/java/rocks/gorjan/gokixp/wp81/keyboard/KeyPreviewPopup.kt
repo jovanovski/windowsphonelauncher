@@ -9,7 +9,6 @@ import android.view.Gravity
 import android.view.View
 import android.widget.PopupWindow
 import androidx.core.content.res.ResourcesCompat
-import androidx.core.graphics.ColorUtils
 import rocks.gorjan.gokixp.R
 import rocks.gorjan.gokixp.wp81.WP81Palette
 
@@ -20,8 +19,8 @@ import rocks.gorjan.gokixp.wp81.WP81Palette
  * typing is what you have just typed. Every keyboard's answer is the same and has been since
  * the first one: lift the character clear of the finger for as long as the finger is there.
  * Windows Phone lit the key itself in the accent, which is a good answer on a keyboard held
- * in two hands and a thin one under a thumb - so the accent stays, and this is the part
- * somebody can switch on when it is not enough.
+ * in two hands and a thin one under a thumb - so the key still lights, and this is the part
+ * somebody can switch on when that is not enough.
  *
  * It has to be its own window, for the same reason the alternates row does: the flag belongs
  * *above* the key, and above the top row is off the top of the input method's window
@@ -29,10 +28,11 @@ import rocks.gorjan.gokixp.wp81.WP81Palette
  * clipped away for the fourth. A [PopupWindow] with [PopupWindow.setClippingEnabled] turned
  * off is the way out, and is what AOSP's own keyboard does with its key previews.
  *
- * Drawn in the same idiom as [AlternatesPopup] - a flat cell, a step lighter than a function
- * key - because those are the only two things on this keyboard that float above it, and two
- * floating surfaces that looked different would read as two different mechanisms rather than
- * as the same key saying two things.
+ * Painted the accent, like the key it came off: a flag in one colour above a key in another
+ * would read as two things happening rather than as one key saying what it is. That also puts
+ * it in step with [AlternatesPopup], whose chosen cell is the accent for the same reason -
+ * those are the only two things on this keyboard that float above it, and two floating
+ * surfaces that behaved differently would read as two different mechanisms.
  *
  * **The window is kept up between keystrokes.** Dismissing on release and showing again on
  * the next press is a window torn down and built twenty times in ten seconds, which is
@@ -142,12 +142,12 @@ internal class KeyPreviewPopup(
 
         override fun onDraw(canvas: Canvas) {
             if (text.isEmpty()) return
-            face.color = ColorUtils.blendARGB(palette.background, palette.foreground, FILL_ALPHA)
+            face.color = palette.accent
             canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), face)
 
             ink.typeface = font
             ink.textAlign = Paint.Align.CENTER
-            ink.color = palette.foreground
+            ink.color = palette.onAccent()
             // Centred on the ink of this particular character rather than on the font's line,
             // which is right here for the same reason it is wrong on the suggestion bar: this
             // is one character alone in a box, not a row of words that has to sit on a line.
@@ -174,9 +174,6 @@ internal class KeyPreviewPopup(
          * or shorter.
          */
         const val TEXT_FRACTION = 0.62f
-
-        /** The same fill as an unchosen cell of the alternates row. See [AlternatesPopup]. */
-        const val FILL_ALPHA = 0.42f
 
         /**
          * How long the flag stays up after the finger leaves.

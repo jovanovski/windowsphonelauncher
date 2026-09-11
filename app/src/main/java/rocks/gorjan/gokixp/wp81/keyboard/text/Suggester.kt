@@ -54,6 +54,27 @@ class Suggester(
     private val proximity = Proximity(layout)
 
     /**
+     * Whether this language writes its first-person pronoun with a capital.
+     *
+     * English does, alone among the languages that ship here, and it is the one thing a
+     * word list of this shape cannot say for itself: the dictionary is lowercase throughout
+     * because that is what makes it searchable - the walk folds the case of everything typed
+     * before it looks anything up, so a word stored as `I'll` could never be found from `ill`
+     * at all. What comes back is therefore always the lowercase spelling, and for every other
+     * word in the language that is exactly right. For this one it is a misspelling, and one
+     * the keyboard would be putting into people's sentences on their behalf.
+     *
+     * See [presented], which is the whole of the fix, and note what it is *not*: proper nouns
+     * typed in lower case have the same problem - `illinois` comes back for `ill` without its
+     * capital - and they need the builder to record how the corpus capitalised each word,
+     * which is a change to the file format. `I` is worth doing on its own in the meantime
+     * because it is not a name that happens to be common, it is a closed set of five of the
+     * commonest words in English. A proper noun the user *does* capitalise is a different
+     * matter and is handled: see [typedCase].
+     */
+    private val capitalPronoun = layout.language == "en"
+
+    /**
      * The letters that sit directly above the space bar on this layout.
      *
      * Which is to say: the letters somebody gets when they reach for a space and land short.
@@ -121,6 +142,22 @@ class Suggester(
      */
     private var searching: String = ""
 
+    /**
+     * How what was typed was capitalised, held for the duration of one call like [searching].
+     *
+     * The dictionary is lowercase throughout - see [capitalPronoun] for why it has to be - so
+     * every word that comes back out of it is lowercase too, and until this was here the
+     * keyboard threw away capitals the user had gone out of their way to type: `Skop` was
+     * corrected to `skopje`, having been told in the plainest way available that the word was
+     * a name. Shift is not a typo to be fixed.
+     *
+     * Deliberately not a question about which words are names. It cannot be - the word list
+     * does not know - and it does not need to be, because the person typing has already
+     * answered it. Whatever shape the capitals were typed in is the shape the answer comes
+     * back in, and a word that was typed in lower case is left exactly as it was before.
+     */
+    private var typedCase = Case.NONE
+
     /** Nodes touched by the current completion walk, against [MAX_COMPLETION_NODES]. */
     private var visited = 0
 
@@ -172,6 +209,7 @@ class Suggester(
         if (typed.isEmpty() || typed.length > MAX_TYPED) return emptyList()
 
         searching = typed.toString()
+        typedCase = caseOf(typed)
         this.abandoned = abandoned
         val budget = budgetFor(typed.length)
 
@@ -280,7 +318,7 @@ class Suggester(
     fun following(previousWord: String?): List<Candidate> {
         val word = previousWord ?: return emptyList()
         return followers(word).take(LIMIT).map { (next, weight) ->
-            Candidate(next, weight, corrected = true)
+            Candidate(presented(next), weight, corrected = true)
         }
     }
 
@@ -297,7 +335,7 @@ class Suggester(
         bigrams?.starters().orEmpty()
             .filter { user?.isBlocked(it.first) != true }
             .take(LIMIT)
-            .map { (word, weight) -> Candidate(word, weight, corrected = true) }
+            .map { (word, weight) -> Candidate(presented(word), weight, corrected = true) }
 
     /**
      * Everything known to follow [previousWord], from both sources, best first.
@@ -658,18 +696,22 @@ class Suggester(
      * and because everything here is O(the list): a list of hundreds turns the duplicate check
      * into the most expensive thing in the keyboard.
      */
-    private fun keep(word: String, score: Int) {
+    private fun keep(spelling: String, score: Int) {
         // Never the literal text. The caller offers that itself, first and always, so that
         // rejecting a correction is one tap; offering it twice would push a real suggestion
         // out of a bar that only holds a handful.
-        if (word.equals(searching, ignoreCase = true)) return
+        if (spelling.equals(searching, ignoreCase = true)) return
 
         // And never something thrown in the bin. Here rather than in each search, because
         // this is the one place every candidate from every source passes through, and a word
         // the user has deleted coming back from the *other* search would be the whole point
         // of the gesture missed. Costs a field read when nothing has ever been binned, which
         // is almost every keyboard - see [UserDictionary.isBlocked].
-        if (user?.isBlocked(word) == true) return
+        if (user?.isBlocked(spelling) == true) return
+
+        // Both tests above are against the spelling the dictionary and the bin keep, which is
+        // the lowercase one. Only what is handed out is respelled.
+        val word = presented(spelling)
 
         for (i in found.indices) {
             if (found[i].word == word) {
@@ -691,6 +733,75 @@ class Suggester(
             found[worst] = Candidate(word, score, corrected = true)
         }
         recomputeWorst()
+    }
+
+    /**
+     * The spelling a word is *offered* in, which is not always the one it is stored in.
+     *
+     * Two things happen here, in this order, and the order matters for the one word they both
+     * have an opinion about.
+     *
+     * First the pronoun. `I`, `I'm`, `I'll`, `I've`, `I'd` - the only words in English that
+     * carry a capital wherever they stand, and the whole of the rule: an `i` on its own, or
+     * one with an apostrophe straight after it. Nothing else in the language begins `i'`, so
+     * this cannot reach a word it was not meant for. Worth being exact about what was wrong
+     * before it, because "the suggestion was lowercase" undersells it: the keyboard was
+     * offering `i'll` and `i'm` as the *correction* for `ill` and `im`, so somebody who typed
+     * the shortcut and took what was offered - which is the entire point of the feature - got
+     * a misspelling put into their sentence by the thing that was supposed to be fixing their
+     * spelling.
+     *
+     * Then the typed capitals, over the top. Somebody who typed `IM` gets `I'M`, which is why
+     * the pronoun goes first: it puts the word into its own correct spelling, and this then
+     * shouts that spelling rather than reinventing it.
+     */
+    private fun presented(word: String): String {
+        val spelled = if (capitalPronoun && (word == "i" || word.startsWith("i'"))) {
+            word.replaceFirstChar { it.uppercaseChar() }
+        } else {
+            word
+        }
+        return when (typedCase) {
+            Case.NONE -> spelled
+            Case.FIRST -> spelled.replaceFirstChar { it.uppercaseChar() }
+            Case.ALL -> spelled.uppercase()
+        }
+    }
+
+    /**
+     * The three shapes a word can be typed in, because there are only three anybody means.
+     *
+     * `skopje` is nothing in particular, `Skopje` is a name or the start of a sentence, and
+     * `SKOPJE` is shouting. Anything else - `sKopje`, `McDonald` - is left alone rather than
+     * guessed at: a suggestion is a whole word and there is nothing sensible to do with the
+     * capital in the middle of a fragment of one.
+     */
+    private enum class Case { NONE, FIRST, ALL }
+
+    /**
+     * Which of the three [Case] shapes [typed] is in.
+     *
+     * Letters only, so that an apostrophe or a digit in the middle does not get a vote, and
+     * [Case.ALL] needs two of them: a lone `A` is far more likely to be the first letter of a
+     * sentence than the first letter of shouting, and reading it as shouting would turn every
+     * capitalised one-letter start into a bar full of block capitals.
+     */
+    private fun caseOf(typed: CharSequence): Case {
+        var letters = 0
+        var capitals = 0
+        var firstIsCapital = false
+        for (c in typed) {
+            if (!c.isLetter()) continue
+            if (letters == 0) firstIsCapital = c.isUpperCase()
+            letters++
+            if (c.isUpperCase()) capitals++
+        }
+        return when {
+            capitals == 0 -> Case.NONE
+            capitals == letters && letters > 1 -> Case.ALL
+            firstIsCapital -> Case.FIRST
+            else -> Case.NONE
+        }
     }
 
     private fun recomputeWorst() {

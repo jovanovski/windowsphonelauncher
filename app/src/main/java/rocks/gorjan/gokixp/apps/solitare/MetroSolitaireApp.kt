@@ -3,8 +3,14 @@ package rocks.gorjan.gokixp.apps.solitare
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
+import android.graphics.ColorFilter
+import android.graphics.LinearGradient
 import android.graphics.Paint
+import android.graphics.PixelFormat
+import android.graphics.RadialGradient
+import android.graphics.Rect
 import android.graphics.RectF
+import android.graphics.Shader
 import android.graphics.drawable.Drawable
 import android.os.Handler
 import android.os.Looper
@@ -30,11 +36,12 @@ import rocks.gorjan.gokixp.wp81.WP81Program
  *
  * Klondike is Klondike - the same seven piles, the same four homes, the same deck the
  * desktop version deals from and the same card faces on it, down to the back you picked in
- * that one. What changes is everything around them. The green baize goes, because it was a
- * picture of a card table drawn for a screen pretending to be a desk; the board is the
- * page's own colour, the empty places are outlines in it, and the two numbers that say how
- * the game is going are set above the board in the accent, in the same hand as the rest of
- * the shell.
+ * that one. What changes is everything around them. The green baize stays, because a card
+ * table is green and the faces were drawn to be read on one - and it is the page and not a
+ * panel in it: the cloth begins under the two numbers that say how the game is going and
+ * runs to the foot of the screen, under the strip, so the only thing standing off it is the
+ * title. The empty places are outlines scored into it, and the numbers are the shell's own
+ * accent, in the same hand as the rest of it.
  *
  * Cards are dragged, as cards are. A tap is the shortcut rather than the whole of the
  * input: it sends a card wherever it can go, home first, which is what a tap on a card
@@ -153,11 +160,12 @@ class MetroSolitaireApp(
     fun createView(): View {
         val root = FrameLayout(context).apply { setBackgroundColor(palette.background) }
         // The strip is over the page rather than part of the column, so the list behind
-        // its dots opens *across* the page instead of shortening it. The column keeps clear
-        // of the strip's own height, which is the only part of it that is always there.
+        // its dots opens *across* the page instead of shortening it. What keeps clear of
+        // the strip's own height - the only part of it that is always there - is the table
+        // below, and it keeps clear in its padding rather than in its size, so the cloth
+        // still runs under the strip instead of stopping in a band above it.
         val column = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, 0, 0, dp(MetroAppBar.HEIGHT_DP))
         }
 
         column.addView(TextView(context).apply {
@@ -173,7 +181,7 @@ class MetroSolitaireApp(
         timeLabel = counter()
         val counters = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(PAGE_MARGIN_DP), 0, dp(PAGE_MARGIN_DP), dp(6))
+            setPadding(dp(PAGE_MARGIN_DP), dp(8), dp(PAGE_MARGIN_DP), dp(6))
         }
         val movesBlock = counterBlock("moves", movesLabel)
         counters.addView(movesBlock, LinearLayout.LayoutParams(WRAP, WRAP))
@@ -191,10 +199,19 @@ class MetroSolitaireApp(
                 movesBlock.layoutParams = params
             }
         }
-        column.addView(counters, wide())
+        // Everything from the numbers down is the table, and it is one block with the
+        // cloth behind it: the green is behind the counters, behind the cards, and behind
+        // the empty run under the last of them, rather than being a rectangle the cards
+        // happen to sit inside with the page showing above and below.
+        val table = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            background = Felt()
+            setPadding(0, 0, 0, dp(MetroAppBar.HEIGHT_DP))
+        }
+        table.addView(counters, wide())
 
         board = BoardView(context)
-        column.addView(board, LinearLayout.LayoutParams(MATCH, 0, 1f))
+        table.addView(board, LinearLayout.LayoutParams(MATCH, 0, 1f))
 
         status = TextView(context).apply {
             typeface = ResourcesCompat.getFont(context, R.font.segoeui_semilight)
@@ -203,7 +220,8 @@ class MetroSolitaireApp(
             setTextColor(palette.accent)
             setPadding(dp(PAGE_MARGIN_DP), dp(2), dp(PAGE_MARGIN_DP), dp(8))
         }
-        column.addView(status, wide())
+        table.addView(status, wide())
+        column.addView(table, LinearLayout.LayoutParams(MATCH, 0, 1f))
 
         bar = MetroAppBar(context, palette)
         bar.addCommand(NEW_ICON) { deal() }
@@ -260,7 +278,7 @@ class MetroSolitaireApp(
         // the stock, face down, which is the whole of the deal.
         for (column in 0 until 7) {
             for (row in 0..column) {
-                val card = deck.removeLast()
+                val card = deck.removeAt(deck.lastIndex)
                 card.faceUp = row == column
                 tableaus[column].cards.add(card)
             }
@@ -354,7 +372,7 @@ class MetroSolitaireApp(
             // Back the way it came, so a second pass through the pack shows the same cards
             // in the same order as the first.
             while (waste.cards.isNotEmpty()) {
-                val card = waste.cards.removeLast()
+                val card = waste.cards.removeAt(waste.cards.lastIndex)
                 card.faceUp = false
                 stock.cards.add(card)
             }
@@ -362,7 +380,7 @@ class MetroSolitaireApp(
         } else {
             val turned = minOf(if (drawThree) 3 else 1, stock.cards.size)
             repeat(turned) {
-                val card = stock.cards.removeLast()
+                val card = stock.cards.removeAt(stock.cards.lastIndex)
                 card.faceUp = true
                 waste.cards.add(card)
             }
@@ -373,7 +391,7 @@ class MetroSolitaireApp(
 
     private fun move(from: Pile, to: Pile, count: Int) {
         val moving = from.cards.takeLast(count)
-        repeat(count) { from.cards.removeLast() }
+        repeat(count) { from.cards.removeAt(from.cards.lastIndex) }
         to.cards.addAll(moving)
         // The card a move uncovers turns over on its own: leaving it face down and asking
         // for a tap would be asking for a tap that has exactly one possible answer.
@@ -525,7 +543,7 @@ class MetroSolitaireApp(
         history.add(piles.map { pile ->
             pile.cards.map { Triple(it.suit, it.rank, it.faceUp) }
         })
-        if (history.size > HISTORY) history.removeFirst()
+        if (history.size > HISTORY) history.removeAt(0)
     }
 
     private fun undo() {
@@ -858,17 +876,18 @@ class MetroSolitaireApp(
         /**
          * An empty place on the table.
          *
-         * An outline in the page's own grey rather than a picture of a card: what is being
-         * drawn is the absence of one. The stock's carries a mark when it is empty, which is
-         * the one slot on the table that does something when it is tapped.
+         * An outline scored into the cloth rather than a picture of a card: what is being
+         * drawn is the absence of one. It is the table's own light and not the page's grey,
+         * which would go muddy on green. The stock's carries a mark when it is empty, which
+         * is the one slot on the table that does something when it is tapped.
          */
         private fun drawSlot(canvas: Canvas, x: Float, y: Float, recycles: Boolean) {
             outline.set(x, y, x + cardW, y + cardH)
-            slot.color = palette.inactive
+            slot.color = ON_FELT_FAINT
             slot.strokeWidth = dp(2).toFloat()
             canvas.drawRect(outline, slot)
             if (!recycles) return
-            marker.color = palette.foregroundSubtle
+            marker.color = ON_FELT
             marker.textSize = cardH * MARKER_SHARE
             canvas.drawText(
                 "↺",
@@ -913,6 +932,51 @@ class MetroSolitaireApp(
     }
 
     /**
+     * The cloth, in two passes over whatever it is put behind.
+     *
+     * Green down the height, for the light falling across a table, and then a darkening
+     * towards the edges so the middle of it is the middle of something rather than the
+     * middle of a filled rectangle. Both are shaders, which are dear to build and cheap to
+     * draw, so they are built when the block is given its size and not on the way past.
+     *
+     * It is a background and not something the board paints because the table is larger
+     * than the board: it has the two numbers above it and the strip's own height below.
+     */
+    private class Felt : Drawable() {
+
+        private val cloth = Paint()
+        private val edges = Paint()
+
+        override fun onBoundsChange(bounds: Rect) {
+            if (bounds.isEmpty) return
+            cloth.shader = LinearGradient(
+                0f, bounds.top.toFloat(), 0f, bounds.bottom.toFloat(),
+                FELT_LIT, FELT_DEEP, Shader.TileMode.CLAMP
+            )
+            // Clear well past the middle before it begins to darken, so the corners go
+            // down and the part of the table the cards are actually on does not.
+            edges.shader = RadialGradient(
+                bounds.exactCenterX(), bounds.exactCenterY(),
+                maxOf(bounds.width(), bounds.height()) * 0.72f,
+                intArrayOf(0, 0, FELT_EDGE), floatArrayOf(0f, 0.5f, 1f),
+                Shader.TileMode.CLAMP
+            )
+        }
+
+        override fun draw(canvas: Canvas) {
+            canvas.drawRect(bounds, cloth)
+            canvas.drawRect(bounds, edges)
+        }
+
+        override fun setAlpha(alpha: Int) = Unit
+
+        override fun setColorFilter(colorFilter: ColorFilter?) = Unit
+
+        @Deprecated("Drawable.getOpacity", ReplaceWith("PixelFormat.OPAQUE"))
+        override fun getOpacity() = PixelFormat.OPAQUE
+    }
+
+    /**
      * The picture for a card, kept once it has been asked for.
      *
      * The desktop game's own artwork, by the same names: this is the same deck in a
@@ -948,7 +1012,7 @@ class MetroSolitaireApp(
                 text = name
                 typeface = ResourcesCompat.getFont(context, R.font.segoeui_regular)
                 textSize = 13f
-                setTextColor(palette.foregroundSubtle)
+                setTextColor(ON_FELT)
             }, wide())
         }
 
@@ -972,6 +1036,25 @@ class MetroSolitaireApp(
     companion object {
         private const val MATCH = LinearLayout.LayoutParams.MATCH_PARENT
         private const val WRAP = LinearLayout.LayoutParams.WRAP_CONTENT
+
+        /**
+         * The cloth: lit at the head, deeper at the foot, darker still at the corners.
+         *
+         * Not from the palette. A card table is green in a light room and in a dark one,
+         * and the faces dealt onto it were drawn to be read on exactly this colour - a
+         * board that changed with the theme would be a different table twice.
+         */
+        private const val FELT_LIT = 0xFF227A4B.toInt()
+        private const val FELT_DEEP = 0xFF0E4327.toInt()
+        private const val FELT_EDGE = 0x66000000
+
+        /**
+         * What is written on the cloth rather than on the page: the cloth's own light, at
+         * two weights. Nothing here can be the palette's grey - it goes muddy on green in
+         * the dark theme and vanishes into it in the light one.
+         */
+        private const val ON_FELT = 0xA0FFFFFF.toInt()
+        private const val ON_FELT_FAINT = 0x5AFFFFFF
 
         private const val PAGE_MARGIN_DP = 12
         private const val TITLE_SP = 34f

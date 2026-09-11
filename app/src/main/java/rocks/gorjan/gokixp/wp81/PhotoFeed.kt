@@ -112,11 +112,17 @@ object PhotoFeed {
      * `DCIM` is tried rather than leaving the tile blank on those phones. Never wider than
      * that: outside `DCIM` is everything the phone has ever downloaded.
      */
-    fun recent(context: Context, limit: Int = RECENT, onReady: (List<Shot>) -> Unit) {
+    fun recent(
+        context: Context,
+        limit: Int = RECENT,
+        includeVideo: Boolean = true,
+        onReady: (List<Shot>) -> Unit
+    ) {
         val resolver = context.applicationContext.contentResolver
         executor.execute {
             val shots = try {
-                roll(resolver, CAMERA_PATH, limit).ifEmpty { roll(resolver, DCIM_PATH, limit) }
+                roll(resolver, CAMERA_PATH, limit, includeVideo)
+                    .ifEmpty { roll(resolver, DCIM_PATH, limit, includeVideo) }
             } catch (e: Exception) {
                 Log.w(TAG, "Could not read the camera roll", e)
                 emptyList()
@@ -132,14 +138,24 @@ object PhotoFeed {
      * is no query that spans them - so each is asked for its own newest [limit] and the
      * two are merged. Taking [limit] from each is what makes the merge correct: a roll of
      * twenty clips and one photograph has to be able to come back as twenty clips.
+     *
+     * [includeVideo] false leaves the second collection unasked rather than filtering the
+     * merge afterwards, which is the same distinction the other way round: a roll of
+     * twenty clips and one photograph has to come back as that one photograph, not as one
+     * still and nineteen gaps. See WP81Settings.getWP81PhotoTileVideos.
      */
     private fun roll(
         resolver: android.content.ContentResolver,
         path: String,
-        limit: Int
+        limit: Int,
+        includeVideo: Boolean
     ): List<Shot> = (
         query(resolver, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, path, limit, false) +
-            query(resolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, path, limit, true)
+            if (includeVideo) {
+                query(resolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, path, limit, true)
+            } else {
+                emptyList()
+            }
         )
         .sortedByDescending { it.takenAt }
         .take(limit)

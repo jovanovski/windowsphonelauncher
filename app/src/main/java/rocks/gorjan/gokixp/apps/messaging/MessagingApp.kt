@@ -362,6 +362,7 @@ class MessagingApp(
             onAddContact = { onNewContact(it) },
             onRequestPermissions = onRequestPermissions,
             onMenu = { title, items, anchor -> showMenu(title, items, anchor) },
+            onConfirm = { title, question, accept, act -> ask(title, question, accept, act) },
             onNotify = { message -> notify(message) }
         )
         openThread = page
