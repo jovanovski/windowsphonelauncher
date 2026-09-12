@@ -233,6 +233,23 @@ data class Tile(
             get() = this == LIVE_CALENDAR || isProgramWidget
 
         /**
+         * Whether the tile comes back to its icon between the faces it turns through.
+         *
+         * The News tile does, and it is the only one that should: a run of headlines is
+         * somebody else's words arriving on the wall one after another, and a tile that
+         * only ever showed those is a tile that stops looking like the program it belongs
+         * to - which is how it looked on Windows Phone, where every story was followed by
+         * the tile itself. The others have nothing to come back to: a reading *is* the
+         * clock, the camera roll *is* Files' tile, and standing either of those down to a
+         * mark every other turn is a tile that spends half its life saying nothing.
+         *
+         * A tile that rests this way keeps its stories on its reverse and its icon on its
+         * front, so the two never have to share a face. See TileView.restsOnIcon.
+         */
+        val restsOnIcon: Boolean
+            get() = this == LIVE_NEWS
+
+        /**
          * Tiles the shell provides rather than the user pinning them.
          *
          * They can be moved and resized but not removed: they are rebuilt on every

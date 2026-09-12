@@ -63,9 +63,9 @@ object FileThumbnails {
     /**
      * The picture of [file] if one is already held, and null if reading it would be work.
      *
-     * For a list being rebuilt rather than opened - which in this app is every tap in
-     * select mode - so a row that already had its picture can put it back as it is drawn,
-     * instead of showing a glyph until the queue comes round to it again.
+     * For a list being rebuilt rather than opened - a sort, a rename, a refresh - so a row
+     * that already had its picture can put it back as it is drawn, instead of showing a
+     * glyph until the queue comes round to it again.
      */
     fun held(file: File, sizePx: Int): Bitmap? = cache.get(keyOf(file, sizePx))
 
@@ -80,7 +80,7 @@ object FileThumbnails {
      *
      * Two rows asking for the same file at once are answered by one decode. That is not
      * the scrolling case - a folder holds each name once - it is the case where the list is
-     * rebuilt while a decode is in flight, which happens on every tap in select mode.
+     * rebuilt while a decode is in flight, which a sort or a refresh can easily do.
      */
     fun load(file: File, kind: Kind, sizePx: Int, onReady: (Bitmap?) -> Unit) {
         val box = bucket(sizePx)

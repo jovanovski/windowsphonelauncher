@@ -561,10 +561,18 @@ class StartScreenView(
         forEachTileView { it.backdropLoader = loader }
     }
 
-    /** Which face a rotating widget is on, so the host knows what a tap should open. */
-    fun rotationIndexOf(tileId: String): Int {
-        var index = 0
-        forEachTileView { if (it.tile.id == tileId) index = it.rotationIndex }
+    /**
+     * Which face a rotating widget is on, so the host knows what a tap should open.
+     *
+     * Null where this surface is not holding the tile at all - Start and an open folder
+     * are both asked and only one of them has it - so that the answer of the one that does
+     * is not read alongside a stand-in from the one that does not. And -1 where the tile
+     * is resting on its icon rather than showing one of its faces; see
+     * TileView.rotationIndexShowing.
+     */
+    fun rotationIndexOf(tileId: String): Int? {
+        var index: Int? = null
+        forEachTileView { if (it.tile.id == tileId) index = it.rotationIndexShowing }
         return index
     }
 
@@ -894,10 +902,12 @@ class StartScreenView(
         // animation to hide behind. It simply appears, so it waits for the wall to have
         // actually gone: handed over early, it arrived over a screen still visibly turning.
         val at = if (tile.kind == Tile.Kind.APP) LAUNCH_AT else 1f
-        // A tile with something waiting on it opens that rather than the program it came
-        // from: the tap is on the message, so it lands on the conversation. What that
-        // means is the host's to decide - see TileView.notificationOpening - and a tile
-        // with nothing waiting, or with nothing to open, launches as it always did.
+        // A tile turned over to a notification opens that rather than the program it came
+        // from: the tap is on the message, so it lands on the conversation. Only the face
+        // that is actually up counts - a tile showing its icon and its name is a tile the
+        // tap was aimed at as a program, however much is waiting behind it. Which face that
+        // is, and what the line opens, are the tile's to decide - see
+        // TileView.notificationOpening - and everything else launches as it always did.
         val open = view.notificationOpening() ?: { onLaunch?.invoke(tile) }
         // A folder is opened to get at what is inside it, so opening one of those is the
         // end of what the folder was for. Left standing, it is what the user comes back

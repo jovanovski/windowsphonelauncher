@@ -5,7 +5,9 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.Rect
+import android.graphics.RectF
 import android.graphics.RenderEffect
 import android.graphics.Shader
 import android.graphics.Typeface
@@ -85,6 +87,12 @@ class TileView(
      * margin between their boxes is.
      */
     private var countBearing = 0
+
+    /**
+     * The middle of the digits' ink, against their baseline - negative, since digits stand
+     * above it. What the count is centred by. See [applyCountSize].
+     */
+    private var countInkMid = 0f
 
     /** And the blank after the last mark, which is what the pair is centred against. */
     private var countTrailing = 0
@@ -426,6 +434,34 @@ class TileView(
         private set
 
     /**
+     * Whether this tile turns back to its icon between the faces it shows.
+     *
+     * The News tile's cycle, and only while it has stories: a headline, then the tile
+     * itself, then the next headline. See [Tile.Kind.restsOnIcon] for why, and
+     * [turnPastIcon] for the turn.
+     *
+     * The two never share a face. A story is always the reverse and the icon always the
+     * front, so nothing has to be worked out from where the cycle has got to: whichever
+     * way up the tile is says which of the two it is showing.
+     */
+    private val restsOnIcon: Boolean
+        get() = tile.kind.restsOnIcon && rotation.isNotEmpty()
+
+    /** Whether the icon rather than a story is what the tile is showing this moment. */
+    private val restingOnIcon: Boolean
+        get() = restsOnIcon && !showingBack
+
+    /**
+     * Which of [rotation] a tap should open, or -1 for none.
+     *
+     * None while the tile is resting on its icon: it is not pointing at a story then, and
+     * the reader it opens should land at the top of the feed rather than on whichever
+     * headline happens to be queued up behind the icon. See [restsOnIcon].
+     */
+    val rotationIndexShowing: Int
+        get() = if (restingOnIcon) -1 else rotationIndex
+
+    /**
      * This tile's own offset into the flip cycle, 1-5 seconds.
      *
      * Fixed per tile rather than derived from its position, so the Start screen never
@@ -448,6 +484,8 @@ class TileView(
         override fun run() {
             if (canTurnOver()) {
                 when {
+                    // The News tile puts itself between its stories - see [restsOnIcon].
+                    restsOnIcon -> turnPastIcon()
                     // A run of faces turns to the next one rather than back and forth.
                     rotation.size > 1 -> advanceRotation()
                     else -> {
@@ -539,8 +577,13 @@ class TileView(
         pendingNotification = null
         notificationIndex = 0
         // A rotation's front face is bound at the halfway point of a turn that may never
-        // have got there, so it is bound again from what the tile is actually on.
-        if (rotation.isNotEmpty()) bindRotationFace(false)
+        // have got there, so it is bound again from what the tile is actually on - the
+        // front, since this is the tile put back on it. On a tile that rests on its icon
+        // the front *is* the icon, so what is bound is the story waiting behind it.
+        if (rotation.isNotEmpty()) bindRotationFace(restsOnIcon)
+        // And the icon put back up with it, since the face the tile has been returned to
+        // is the icon's on a tile that rests there. See [restsOnIcon].
+        if (restsOnIcon) applyLiveFace()
         applyNotificationState()
         restartFlipClock()
     }
@@ -642,6 +685,15 @@ class TileView(
 
     /** How much of its canvas the current glyph covers. See MonochromeIconProvider. */
     private var glyphContentRatio = 1f
+
+    /** Where that content sits inside the canvas, as fractions of it. See [placeGlyph]. */
+    private var glyphInk: RectF? = null
+
+    /** How wide the glyph's ink came out once placed, in pixels. See [placeGlyph]. */
+    private var glyphInkW = 0
+
+    /** The box [placeGlyph] last worked to, so a measure pass that changes it does nothing. */
+    private var glyphPlacedFor = 0
 
     // --- Start background -------------------------------------------------------------
     // With a Start background set, a tile is a window onto it rather than a solid block:
@@ -1509,19 +1561,25 @@ class TileView(
                 glyph.imageTintList =
                     android.content.res.ColorStateList.valueOf(palette.onAccent())
                 glyphContentRatio = g.contentRatio
+                glyphInk = g.ink
                 setNotificationIcon(g.drawable, tint = true)
             }
             is MonochromeIconProvider.Glyph.FullColor -> {
                 glyph.setImageDrawable(g.drawable)
                 glyph.imageTintList = null
                 glyphContentRatio = g.contentRatio
+                glyphInk = g.ink
                 setNotificationIcon(g.drawable, tint = false)
             }
             null -> {
                 glyph.setImageDrawable(null)
                 glyphContentRatio = 1f
+                glyphInk = null
             }
         }
+        // New artwork sits differently in its canvas, so whatever the last one was placed
+        // to says nothing about this one.
+        glyphPlacedFor = 0
         requestLayout()
     }
 
@@ -1892,13 +1950,27 @@ class TileView(
     fun setGlyphResource(res: Int) {
         glyph.setImageResource(res)
         glyph.imageTintList = android.content.res.ColorStateList.valueOf(palette.onAccent())
+        measureGlyph(glyph.drawable)
     }
 
     fun setGlyphDrawable(d: Drawable?, tint: Boolean) {
         glyph.setImageDrawable(d)
         glyph.imageTintList =
             if (tint) android.content.res.ColorStateList.valueOf(palette.onAccent()) else null
+        measureGlyph(d)
+    }
+
+    /**
+     * Measures artwork that arrives without a measurement of its own.
+     *
+     * The glyphs that come through [setGlyph] were measured by the provider, which caches
+     * per package; these two take a drawable and nothing else, so the raster is paid for
+     * here. Once per glyph set, not once per measure pass.
+     */
+    private fun measureGlyph(d: Drawable?) {
         glyphContentRatio = d?.let { MonochromeIconProvider.measureContentRatio(it) } ?: 1f
+        glyphInk = d?.let { MonochromeIconProvider.measureInk(it) }
+        glyphPlacedFor = 0
     }
 
     // The corner mark, one per face. A widget whose two faces are about different things -
@@ -1962,7 +2034,8 @@ class TileView(
         // Nor on a tile standing down to its icon: the mark in the corner and the mark in
         // the middle would be the same mark twice. See [showsLive].
         widgetGlyph.visibility =
-            if (widgetGlyph.drawable != null && !isEditMode && showsLive()) VISIBLE else GONE
+            if (widgetGlyph.drawable != null && !isEditMode && showsLive() && !restingOnIcon)
+                VISIBLE else GONE
     }
 
     /**
@@ -2124,7 +2197,9 @@ class TileView(
         // A widget standing down to its icon has nothing on either face - the reading and
         // the run of stories are both being held rather than shown. See [showsLive].
         tile.kind.isLiveWidget && !showsLive() -> false
-        rotation.isNotEmpty() -> rotation.size > 1
+        // A tile that rests on its icon has somewhere to turn on one story, because the
+        // icon is one of the two faces it turns between. See [restsOnIcon].
+        rotation.isNotEmpty() -> rotation.size > 1 || restsOnIcon
         tile.kind.isLiveWidget -> widgetBack != null
         else -> notifications.isNotEmpty()
     }
@@ -2140,6 +2215,14 @@ class TileView(
         // itself over a second later reads as the tile ignoring you - and on a rotation it
         // skips the story you just asked for.
         restartFlipClock()
+        if (restsOnIcon && canFlip() && !isEditMode) {
+            // A tap on the corner is a request to read something, so it always lands on a
+            // story: from the icon it brings the next one up, and from a story it goes on
+            // to the one after rather than putting the tile back to its mark. The icon is
+            // the clock's business - see [turnPastIcon].
+            turnToStory()
+            return
+        }
         if (rotation.size > 1 && !isEditMode) {
             advanceRotation()
             return
@@ -2277,6 +2360,9 @@ class TileView(
             bindNotification(next)
         }
         rotation.getOrNull(rotationIndex)?.let { bindBackdrop(it) }
+        // A tile that turns between its icon and a story swaps the two here, edge-on,
+        // where the change cannot be seen - the same moment the picture behind it changes.
+        if (restsOnIcon) applyLiveFace()
         if (showBack && tile.kind.isLiveWidget) bindWidgetBack()
         frontFace.visibility = if (showBack) GONE else VISIBLE
         backFace.visibility = if (showBack) VISIBLE else GONE
@@ -2350,8 +2436,10 @@ class TileView(
         if (faces.isEmpty()) return
         if (!same) rotationIndex = rotationIndex.coerceIn(0, faces.size - 1)
         // Re-bind whichever face is up, so refreshed content lands without waiting for the
-        // next turn - and without turning the tile under someone who is reading it.
-        bindRotationFace(showingBack)
+        // next turn - and without turning the tile under someone who is reading it. On a
+        // tile that rests on its icon that is always the reverse: either the story showing
+        // on it, or the one queued up there behind the icon. See [restsOnIcon].
+        bindRotationFace(restsOnIcon || showingBack)
         applyLiveTextSizes()
     }
 
@@ -2405,7 +2493,8 @@ class TileView(
         }
         // The still is still asked for below, clip or not: it is the frame the tile shows
         // while the clip opens, and what it keeps if the clip will not play at all.
-        if (face.motion && face.image.isNotBlank() && showsBackdrop && showsLive()) {
+        if (face.motion && face.image.isNotBlank() && showsBackdrop && showsLive() &&
+            !restingOnIcon) {
             playVideo(face.image)
         } else stopVideo()
         val loader = backdropLoader ?: return
@@ -2413,8 +2502,10 @@ class TileView(
         // of a picture - the request, the decode, the bitmap held for as long as the face
         // is up - belongs to the drawing, so switching it off has to switch that off too
         // rather than quietly go on paying for a picture nobody can see.
-        // Nor for a tile standing down to its icon, which has no face to put one behind.
-        if (face.image.isBlank() || !showsBackdrop || !showsLive()) return
+        // Nor for a tile standing down to its icon, which has no face to put one behind -
+        // whether it is too small for one (see [showsLive]) or resting on its icon between
+        // stories (see [restsOnIcon]).
+        if (face.image.isBlank() || !showsBackdrop || !showsLive() || restingOnIcon) return
         val wanted = face.image
         loader(wanted) { bitmap ->
             if (bitmap == null) return@loader
@@ -2594,14 +2685,66 @@ class TileView(
             return
         }
         rotationIndex = (rotationIndex + rotation.size - 1) % rotation.size
+        // A tile that rests on its icon keeps its stories on one face, so going back is a
+        // turn onto that same face with the previous story on it rather than a turn to the
+        // other side. From the icon that is the story just read, which is what going back
+        // from it means.
+        if (restsOnIcon) {
+            bindRotationText(true)
+            flipTo(true)
+            return
+        }
         // Words now, picture at the halfway point - see [advanceRotation], which is this
         // in the other direction.
         bindRotationText(!showingBack)
         flipTo(!showingBack)
     }
 
+    /**
+     * The News tile's turn: a story, the tile itself, then the next story.
+     *
+     * Half the cycle each way. Turning off a story steps the queue on as it goes, so the
+     * index is pointing at what comes up next for as long as the icon is showing - which
+     * is why a tap while it is up opens no story at all. See [rotationIndexShowing].
+     */
+    private fun turnPastIcon() {
+        if (showingBack) {
+            rotationIndex = (rotationIndex + 1) % rotation.size
+            flipTo(false)
+        } else {
+            // Words now, picture at the halfway point, exactly as [advanceRotation] does
+            // it - and onto the reverse, which is the only face a story is ever shown on.
+            bindRotationText(true)
+            flipTo(true)
+        }
+    }
+
+    /**
+     * Turns straight to the next story, past the icon, for a turn asked for by hand.
+     *
+     * A full turn where the tile is already on a story: the face it lands on is the one it
+     * left, so the animation is what says something changed.
+     */
+    private fun turnToStory() {
+        if (showingBack) {
+            // Unless there is no next one. A tile with a single story says so the way
+            // every other tile with nothing more to show says it. See [spinInPlace].
+            if (rotation.size < 2) {
+                spinInPlace()
+                return
+            }
+            rotationIndex = (rotationIndex + 1) % rotation.size
+        }
+        bindRotationText(true)
+        flipTo(true)
+    }
+
     /** Moves to the next face in the rotation and turns the tile over to it. */
     fun advanceRotation() {
+        if (restsOnIcon) {
+            turnPastIcon()
+            return
+        }
         if (rotation.size < 2) {
             spinInPlace()
             return
@@ -3170,17 +3313,29 @@ class TileView(
     /**
      * Where a tap on this tile should go, when what it is showing came from a notification.
      *
-     * The line being read if the tile is turned over to one, and the newest if it is not:
-     * a tile on its icon face with something waiting is a tile *about* that thing - the
-     * mark in its corner says so - and it is the face it is on its way to showing anyway.
+     * Only ever the line actually up at the moment of the tap. The face under the finger is
+     * the whole of what the tap was aimed at: on a message, it is on the message and lands
+     * on the conversation; on the icon and the name, it is on the program and launches it,
+     * whatever happens to be waiting behind. Opening the newest from either face - which is
+     * what this used to do - made the same tap on the same tile do two different things
+     * depending on where the tile's flip clock had got to, and opened a conversation the
+     * user had not been shown.
      *
-     * Null when there is nothing waiting, or when what is waiting has nowhere of its own
-     * to go, which is the tile's ordinary launch. See [Line.open].
+     * The corner dot is the way through to what is waiting while the icon is up; it turns
+     * the tile over rather than opening anything. See [showNotificationFace].
+     *
+     * Null on the icon face, null when what is waiting has nowhere of its own to go - the
+     * tile's ordinary launch, see [Line.open] - and null when there is nothing waiting.
      */
     fun notificationOpening(): (() -> Unit)? {
-        if (notifications.isEmpty()) return null
-        val index = if (showingBack) notificationIndex else 0
-        return notifications.getOrNull(index)?.open
+        if (!showingBack || notifications.isEmpty()) return null
+        // A widget's reverse is a second reading of its own - the rest of the forecast, the
+        // other half of the date - written over the notification face by [bindWidgetBack],
+        // and the only thing that earns a widget its turn in the first place (see
+        // [hasFlipContent]). Turning one over is not reading what is waiting on it, so a tap
+        // there is a tap on the widget.
+        if (tile.kind.isLiveWidget) return null
+        return notifications.getOrNull(notificationIndex)?.open
     }
 
     /**
@@ -3277,7 +3432,10 @@ class TileView(
         // The mosaic, the weather and the battery are the whole tile when they are up, so
         // nothing else on the front is showing whatever it was last handed.
         val taken = hasPeopleMosaic || hasWeatherFace || hasBatteryFace
-        val live = showsLive() && !taken && (liveReading != null || rotation.isNotEmpty())
+        // And a tile resting on its icon is showing the icon, whatever it is holding: the
+        // rest is on its reverse, waiting for the next turn. See [restsOnIcon].
+        val live = showsLive() && !taken && !restingOnIcon &&
+            (liveReading != null || rotation.isNotEmpty())
         liveBox.visibility = if (live) VISIBLE else GONE
         iconRow.visibility = if (live || taken || isEmptied) GONE else VISIBLE
         // The picture goes with the face it stood behind. A widget standing down to its
@@ -3555,6 +3713,7 @@ class TileView(
         countLabel.paint.getTextBounds(text, 0, text.length, bounds)
         countBearing = bounds.left
         countTrailing = (countLabel.paint.measureText(text) - bounds.right).toInt()
+        countInkMid = (bounds.top + bounds.bottom) / 2f
     }
 
     /**
@@ -3894,17 +4053,66 @@ class TileView(
         requestLayout()
     }
 
+    /**
+     * Puts the glyph's *ink* in a box of exactly the size it should read at, centred, and
+     * records how wide that ink came out.
+     *
+     * Artwork pads itself differently wherever it comes from - an adaptive icon's themed
+     * layer keeps the central safe zone and covers about half its canvas, a notification
+     * silhouette fills its bounds, this shell's own glyphs sit somewhere between - so
+     * fitting the canvas into the box gives neighbouring tiles marks of visibly different
+     * sizes. The ink is scaled and centred instead, which makes [GLYPH_FRACTION] a promise
+     * about what can be *seen*: that share of the tile's short side, at every footprint
+     * and on every screen, whatever margin the artwork arrived wrapped in.
+     *
+     * By matrix rather than by inflating the box, which is what this used to do and could
+     * not keep the promise for the icons that needed it most: a mark covering a third of
+     * its canvas wants a box three times the tile to read at the right size, and the cap
+     * that stopped it from asking for one is what left a wall of 1x1s wearing marks two
+     * thirds the size of the ones on the tiles beside them. What hangs over the edge of
+     * the box now is only that artwork's own margin, which has nothing drawn in it.
+     */
+    private fun placeGlyph(boxPx: Int) {
+        if (glyphPlacedFor == boxPx) return
+        glyphPlacedFor = boxPx
+        val d = glyph.drawable
+        val ink = glyphInk
+        val canvasW = d?.intrinsicWidth?.toFloat() ?: 0f
+        val canvasH = d?.intrinsicHeight?.toFloat() ?: 0f
+        // Artwork that drew nothing, or that will not say how large it is: an ImageView
+        // ignores the matrix for a drawable with no intrinsic size, so the plain fit is
+        // the only honest answer and what can be seen is the whole box.
+        if (ink == null || canvasW <= 0f || canvasH <= 0f) {
+            glyph.scaleType = ImageView.ScaleType.FIT_CENTER
+            glyphInkW = boxPx
+            return
+        }
+        val inkW = ink.width() * canvasW
+        val inkH = ink.height() * canvasH
+        val scale = boxPx / maxOf(inkW, inkH)
+        val centre = boxPx / 2f
+        glyphInkW = (inkW * scale).toInt().coerceIn(1, boxPx)
+        glyph.scaleType = ImageView.ScaleType.MATRIX
+        glyph.imageMatrix = Matrix().apply {
+            setScale(scale, scale)
+            postTranslate(
+                centre - scale * (ink.left * canvasW + inkW / 2f),
+                centre - scale * (ink.top * canvasH + inkH / 2f))
+        }
+    }
+
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         // The glyph is sized from the tile box rather than its intrinsic bounds, so a
-        // monochrome vector and a full-colour launcher icon occupy the same optical area.
+        // monochrome vector and a full-colour launcher icon occupy the same optical area,
+        // and a 1x1 and a 2x2 of one wall wear marks in proportion to themselves.
         val w = MeasureSpec.getSize(widthMeasureSpec)
         val h = MeasureSpec.getSize(heightMeasureSpec)
         val basis = minOf(w, h)
-        // Divide by how much of its canvas the artwork covers, so every tile shows its
-        // glyph at the same optical size no matter how the source was padded. Capped so a
-        // heavily-padded glyph cannot scale up and outgrow the tile.
-        val fraction = (GLYPH_FRACTION / glyphContentRatio).coerceAtMost(MAX_GLYPH_FRACTION)
-        val target = (basis * fraction).toInt().coerceAtLeast(1)
+        // A share of the tile, and nothing else - so a 1x1 wears a mark exactly half the
+        // size of the 2x2's beside it, on a phone of any density. What the artwork was
+        // padded with is corrected for in [placeGlyph] rather than here, because a box
+        // scaled by the padding's reciprocal is a correction the tile cannot always afford.
+        val target = (basis * GLYPH_FRACTION).toInt().coerceAtLeast(1)
         // A widget showing a reading has no glyph in the middle to size: its mark is the
         // corner one, which is sized against the tile in applyWidgetGlyphSize.
         //
@@ -3917,40 +4125,44 @@ class TileView(
         // are the rest of it.
         // The battery is the exception to the exception: its face is up at 1x1 as well, so
         // there is no mark in the middle to size there either. See [setBatteryFace].
-        if (tile.kind.isLiveWidget && !standingIn() && (showsLive() || hasBatteryFace)) {
+        // A tile resting on its icon between stories is the other case: the mark in the
+        // middle is the whole of what it is showing, and it wants sizing like anybody
+        // else's. See [restsOnIcon].
+        if (tile.kind.isLiveWidget && !standingIn() && !restingOnIcon &&
+            (showsLive() || hasBatteryFace)) {
             super.onMeasure(widthMeasureSpec, heightMeasureSpec)
             return
         }
-        // What the icon actually *looks* like, rather than the box it is given. The box is
-        // inflated to correct for the padding the artwork was drawn with, so setting the
-        // count against it made the digits taller than the icon reads and pushed them out
-        // to the edge of the tile.
-        val visible = (target * glyphContentRatio).toInt().coerceIn(1, target)
+        // What the icon actually *looks* like, rather than the box it is given: the ink is
+        // centred in the box and only its longer side reaches the edges, so a mark taller
+        // than it is wide leaves blank down both sides that the gap beside it and the
+        // centring of the pair both have to know about.
+        placeGlyph(target)
+        val inkW = glyphInkW
         val counting = countLabel.visibility == VISIBLE
 
         // Sized before the gap is worked out, because how far the digits have to be pulled
         // back depends on how much blank they turn out to be carrying.
         //
-        // Set against the tile rather than against the icon beside it. Every glyph on the
-        // wall is drawn at the same optical size already, but the *box* each one is given
-        // is not - it is inflated by however much padding that artwork was drawn with - so
-        // sizing the digits off it gave two identical tiles two different numbers. The
-        // footprint is the one thing they genuinely share.
+        // Set against the tile rather than against the icon beside it: the mark is a share
+        // of the tile already, and a tall mark and a wide one of that share are different
+        // heights, so digits set off the icon would not match from one tile to the next.
+        // The footprint is the one thing they genuinely share.
         val digits = (basis * COUNT_HEIGHT_FRACTION).toInt().coerceAtLeast(1)
         if (counting) {
             applyCountSize(digits, w - target - dp(COUNT_EDGE_DP) * 2)
         }
 
-        // What is wanted is a gap between the *marks*, and almost all of it is there before
-        // any margin is added: the glyph box is inflated past its artwork (see the fraction
-        // above) and the digits sit inside their own advance. Both are measured and taken
-        // back off, which means the margin is normally negative - the number is pulled into
+        // What is wanted is a gap between the *marks*, and some of it is there before any
+        // margin is added: a mark taller than it is wide leaves blank inside its own square
+        // box, and the digits sit inside their own advance. Both are measured and taken
+        // back off, which means the margin can come out negative - the number is pulled into
         // blank that already belongs to the pair rather than parked beyond it.
         //
         // Zero when there is nothing to count. A margin held for an absent number is what
         // shifted every glyph on the wall off centre, including the ones with nothing to say.
         val gap = if (counting) {
-            (visible * COUNT_GAP_FRACTION - (target - visible) / 2f - countBearing).toInt()
+            (inkW * COUNT_GAP_FRACTION - (target - inkW) / 2f - countBearing).toInt()
         } else {
             0
         }
@@ -3966,28 +4178,33 @@ class TileView(
             }
         }
 
-        // Stand the digits on the icon's own foot, rather than centring their box against
-        // it. A text view's box is lopsided - all of the descent is below the digits and
-        // none of it above - so centring the two boxes hangs the number below the mark it
-        // belongs to, which is the "1" sitting lower than the envelope beside it.
+        // Centre the digits on the icon: one middle line through both, whatever shape the
+        // mark beside them happens to be.
         //
-        // The lift is the correction for [visible] itself: it is the optical size the whole
-        // shell scales glyphs by, taken from the artwork's longest side, so for the usual
-        // mark - wider than it is tall - it reaches a little past the real foot of the icon.
+        // Neither box can be trusted to say where its middle is. A text view's is lopsided
+        // - all of the descent is below the digits and none of it above - so centring the
+        // boxes hangs the number below the mark, and the mark's own box is square around
+        // ink that usually is not. Both middles are therefore taken from the *ink*: the
+        // glyph's is the centre of its box by construction (see [placeGlyph]), and the
+        // digits' is [countInkMid] above their baseline, which is itself
+        // [baselineFromCentre] below the centre of the box the row lays out.
+        //
+        // Standing them on the icon's foot instead - which is what this used to do - put
+        // the number level with a wide mark and well under a tall one, since the two feet
+        // are in different places.
         if (counting) {
             val metrics = countLabel.paint.fontMetrics
             val baselineFromCentre = (-metrics.ascent - metrics.descent) / 2f
-            countLabel.translationY = visible / 2f - baselineFromCentre -
-                digits * COUNT_LIFT_FRACTION - dp(COUNT_LIFT_DP)
+            countLabel.translationY = -(baselineFromCentre + countInkMid)
         }
 
         // Centre what can be seen, not the boxes it is in.
         //
-        // The row is centred by its own width, and its two ends are not equally blank: the
-        // glyph box is inflated past its artwork on the left where the digits trail off
-        // into a side bearing on the right. Centring the boxes therefore puts the icon and
-        // its number visibly right of the middle. This takes the difference out again.
-        val leftBlank = (target - visible) / 2f
+        // The row is centred by its own width, and its two ends are not equally blank: a
+        // mark narrower than its square box leaves margin on the left where the digits
+        // trail off into a side bearing on the right. Centring the boxes therefore puts the
+        // icon and its number off the middle. This takes the difference out again.
+        val leftBlank = (target - inkW) / 2f
         iconRow.translationX = if (counting) -(leftBlank - countTrailing) / 2f else 0f
         // The app's mark is placed by the same rule as the widget's - see applyCornerMark.
         // Smaller on the media face, which is the one face that has something else in the
@@ -4376,17 +4593,16 @@ class TileView(
      * edge-on and the change is invisible - the same trick WP8.1's own live tiles use.
      */
     companion object {
-        /** Glyph edge as a fraction of the tile's short side, before any size correction. */
+        /**
+         * The visible glyph's longer edge, as a fraction of the tile's short side.
+         *
+         * What can be seen, not the box it is drawn in: the artwork's own padding is taken
+         * out by [placeGlyph], so this holds for every mark on the wall whatever it was
+         * drawn on, and a tile of any footprint on a screen of any density wears its mark
+         * at the same share of itself.
+         */
         private const val GLYPH_FRACTION = 0.42f
 
-        /**
-         * Ceiling for a corrected glyph.
-         *
-         * A capped glyph is the one case where two tiles do *not* end up matching, since
-         * the correction is being held back - so it sits high enough to catch only artwork
-         * with almost nothing in its canvas.
-         */
-        private const val MAX_GLYPH_FRACTION = 0.72f
         /**
          * The blur radius at full strength, in dp. See [setBlur].
          *
@@ -4502,11 +4718,6 @@ class TileView(
          */
         private const val COUNT_HEIGHT_FRACTION = 0.28f
 
-        // How far the digits are lifted off the icon's foot: a share of themselves, which
-        // corrects for the optical measurement overshooting the real foot, and then a flat
-        // distance, which is the clearance that looked right.
-        private const val COUNT_LIFT_FRACTION = 0.04f
-        private const val COUNT_LIFT_DP = 4
 
         /**
          * The count's weight: a step up from everything else on the tile.

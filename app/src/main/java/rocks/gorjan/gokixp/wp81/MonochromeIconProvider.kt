@@ -37,8 +37,17 @@ class MonochromeIconProvider(private val context: Context) {
          *
          * [contentRatio] is how much of its own canvas the artwork actually covers, so
          * the caller can scale every glyph to the same optical size. See [measureContentRatio].
+         *
+         * [ink] is where that content actually sits inside the canvas, as fractions of it,
+         * for a caller that places the artwork by matrix rather than scaling the box it is
+         * drawn in - which is the only way to hold an optical size for a mark that covers
+         * a fifth of what it arrived on. See [placeInk] and TileView's placeGlyph.
          */
-        data class Monochrome(val drawable: Drawable, val contentRatio: Float = 1f) : Glyph()
+        data class Monochrome(
+            val drawable: Drawable,
+            val contentRatio: Float = 1f,
+            val ink: RectF? = null,
+        ) : Glyph()
 
         /**
          * The app's real icon; must be drawn as-is, never tinted.
@@ -53,6 +62,7 @@ class MonochromeIconProvider(private val context: Context) {
             val drawable: Drawable,
             val contentRatio: Float = 1f,
             val fromPack: Boolean = false,
+            val ink: RectF? = null,
         ) : Glyph()
     }
 
@@ -92,15 +102,25 @@ class MonochromeIconProvider(private val context: Context) {
         if (!isTile || packOnTiles) packGlyph?.invoke(packageName)?.let {
             // Full colour, so it is never tinted: a pack's artwork is the picture, not a
             // silhouette of one, and washing it in white would leave a white square.
-            return Glyph.FullColor(it, ratioFor("pack:$packageName", it), fromPack = true)
+            return Glyph.FullColor(
+                it,
+                ratioFor("pack:$packageName", it),
+                fromPack = true,
+                ink = inkFor("pack:$packageName", it),
+            )
         }
         monochromeLayer(packageName)?.let {
-            return Glyph.Monochrome(it, ratioFor("mono:$packageName", it))
+            return Glyph.Monochrome(
+                it, ratioFor("mono:$packageName", it), inkFor("mono:$packageName", it))
         }
         NotificationListenerService.getSmallIcon(context, packageName)?.let {
-            return Glyph.Monochrome(it, ratioFor("notif:$packageName", it))
+            return Glyph.Monochrome(
+                it, ratioFor("notif:$packageName", it), inkFor("notif:$packageName", it))
         }
-        return fallback?.let { Glyph.FullColor(it, ratioFor("full:$packageName", it)) }
+        return fallback?.let {
+            Glyph.FullColor(
+                it, ratioFor("full:$packageName", it), ink = inkFor("full:$packageName", it))
+        }
     }
 
     private val ratioCache = mutableMapOf<String, Float>()

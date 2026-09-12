@@ -63,13 +63,13 @@ class WP81SettingsView(
     /** Fired while the blur slider moves, 0 (sharp) to 1. */
     var onBlurChanged: ((Float) -> Unit)? = null
 
-    /** Fired when the drift checkbox is toggled. */
+    /** Fired when the drift switch is toggled. */
     var onDriftChanged: ((Boolean) -> Unit)? = null
 
-    /** Fired when the hide-tile-colours checkbox is toggled. */
+    /** Fired when the hide-tile-colours switch is toggled. */
     var onHideTileColorsChanged: ((Boolean) -> Unit)? = null
 
-    /** Fired when the dim-all-tiles checkbox is toggled. */
+    /** Fired when the dim-all-tiles switch is toggled. */
     var onDimAllTilesChanged: ((Boolean) -> Unit)? = null
 
     /** Fired while the dim slider moves, 0 (untouched) to 1. */
@@ -245,23 +245,29 @@ class WP81SettingsView(
     }
     private val blurSlider = MetroSlider(context).apply { visibility = GONE }
 
-    private val driftRow = CheckRow("drift wallpaper") { on -> onDriftChanged?.invoke(on) }
+    private val driftRow = SwitchRow("drift wallpaper") { on -> onDriftChanged?.invoke(on) }
 
     /**
      * Puts every tile the user has painted back to the accent, for as long as it is on.
      *
      * A painted tile is a solid block - that is the whole point of painting one - and a
      * solid block is a hole in the photograph behind the wall. Turning them off is not the
-     * same as unpainting them: the colours are kept, and the switch is here, beside the
-     * picture it is in the way of, rather than in the tile menu where undoing it would
-     * mean visiting every tile that had one.
+     * same as unpainting them: the colours are kept, and the switch is here, on the
+     * wallpaper page beside the picture it is in the way of, rather than in the tile menu
+     * where undoing it would mean visiting every tile that had one.
+     *
+     * On the wallpaper page rather than under the accent, where it stood until now:
+     * what it is for is the photograph. The accent is only where the tiles land when
+     * their own colour is taken off them, and somebody who has just set a picture and
+     * found a wall of solid squares in front of it is looking at this page, not at the
+     * swatches.
      *
      * Always offered, unlike the background's own switches: a wall of painted tiles is
      * worth putting back to the accent on a plain Start screen too, and a switch that
      * appears only once a picture is set is one the user has no way of finding.
      */
     private val hideColorsRow =
-        CheckRow("hide custom tile colors") { on -> onHideTileColorsChanged?.invoke(on) }
+        SwitchRow("hide custom tile colors") { on -> onHideTileColorsChanged?.invoke(on) }
 
     /**
      * Darkens every tile showing the photo, not only the ones with words on them.
@@ -273,9 +279,9 @@ class WP81SettingsView(
      * picture rather than under the tiles because it is a setting about how much of the
      * picture comes through, which is what the blur and the drift above it are too.
      */
-    private val dimAllRow = CheckRow("dim all tiles") { on ->
+    private val dimAllRow = SwitchRow("dim all tiles") { on ->
         // Shown from here rather than waiting on the host to hand the page its settings
-        // back: the slider is the switch's own detail, and it should arrive with the tick.
+        // back: the slider is the switch's own detail, and it should arrive with it.
         applyDimSliderVisibility()
         onDimAllTilesChanged?.invoke(on)
     }
@@ -543,11 +549,6 @@ class WP81SettingsView(
         tiles.addView(sectionLabel("accent color"), wide())
         buildAccentGrid()
         tiles.addView(accentGrid, wide())
-        // Under the accent, because that is what it puts the painted tiles back to.
-        // Always offered, unlike the wallpaper's own switches, so it is shown here rather
-        // than by a seeding setter - see the row's own note.
-        hideColorsRow.setVisible(true)
-        tiles.addView(hideColorsRow.view, wide())
 
         // The word the answers share is said once, in the heading: at a share of the width
         // each there is no room to repeat "columns" beside every marker, and a row of one
@@ -596,7 +597,13 @@ class WP81SettingsView(
             setMargins(dp(22), 0, dp(22), dp(20))
         })
 
+        // Both of these are the picture's own and stand or fall with it, so they start
+        // off the page: the host hands the page its answers on the way in, and until it
+        // has there is nothing for either switch to be reporting. See
+        // [setBackgroundControls].
+        driftRow.setVisible(false)
         wallpaper.addView(driftRow.view, wide())
+        dimAllRow.setVisible(false)
         wallpaper.addView(dimAllRow.view, wide())
         dimSlider.onValueChanged = { v -> onDimAmountChanged?.invoke(v) }
         wallpaper.addView(dimLabel, wide())
@@ -605,6 +612,10 @@ class WP81SettingsView(
             LinearLayout.LayoutParams.WRAP_CONTENT).apply {
             setMargins(dp(22), 0, dp(22), dp(20))
         })
+        // Under the picture's own three, and unlike them always there: a wall of painted
+        // tiles is worth putting back to the accent with no photograph behind it too.
+        // See the row's own note for why it is on this page rather than under the accent.
+        wallpaper.addView(hideColorsRow.view, wide())
 
         // -------------------------------------------------------------- links
         val browser = categoryColumn(Category.BROWSER)
@@ -1372,11 +1383,14 @@ class WP81SettingsView(
     /**
      * A setting that is simply on or off, with the phone's own switch beside it.
      *
-     * [MetroToggle] rather than the ticked square [CheckRow] draws, and the difference is
-     * the one WP8.1 itself made: a square is one of a set being chosen, a switch is a
-     * thing that is running or is not. Both shapes are on this page because both cases
-     * are - the wallpaper's drift is a modifier of the picture above it, where the
-     * navigation bar's colour and where links open are settings in their own right.
+     * The one shape for every on/off setting here. There were two of them for a while -
+     * this and a ticked square - split on a distinction the phone itself made, a square
+     * being one of a set and a switch a thing that is running or is not. But none of the
+     * squares on this page was ever one of a set: the drift, the dim and the tile colours
+     * each stood alone, so what the shape actually said was "this setting is a lesser
+     * kind of setting", which is not a thing any of them is. The sets that really are
+     * sets - Dark against Light, the column counts, numbers against dots - carry the
+     * round marker, which is the shape that means one of these.
      *
      * The whole row answers a tap, not just the switch: the control is a 46dp rectangle
      * at the far edge of the screen, and a row whose label does nothing makes the user
@@ -1423,6 +1437,8 @@ class WP81SettingsView(
             toggle.set(value, animated = false)
         }
 
+        /** Where the setting stands, for a row that has a detail of its own to show. */
+        fun isOn(): Boolean = toggle.isOn()
 
         /** Takes the row off the page, for a setting that has stopped meaning anything. */
         fun setVisible(visible: Boolean) {
@@ -1432,59 +1448,6 @@ class WP81SettingsView(
         fun repaint() {
             label.setTextColor(palette.foreground)
             toggle.applyPalette(palette)
-        }
-    }
-
-    /**
-     * A switch on a line of its own: a ticked square when on, an empty one when off.
-     *
-     * Square, where the Dark/Light and column rows are round, because this one is not one
-     * of a set: nothing else is unchosen by turning it on. See [markerDrawable].
-     */
-    private inner class CheckRow(text: String, private val onChanged: (Boolean) -> Unit) {
-
-        val view = LinearLayout(context)
-        private val marker = View(context)
-        private val label = TextView(context)
-        private var isOn = false
-
-        init {
-            view.orientation = LinearLayout.HORIZONTAL
-            view.gravity = Gravity.CENTER_VERTICAL
-            view.setPadding(dp(24), dp(6), dp(24), dp(18))
-            view.isClickable = true
-            view.visibility = GONE
-            view.setOnClickListener {
-                isOn = !isOn
-                repaint()
-                onChanged(isOn)
-            }
-            TiltEffect.apply(view)
-
-            view.addView(marker, LinearLayout.LayoutParams(dp(20), dp(20)))
-
-            label.text = text
-            label.textSize = 17f
-            label.typeface = ResourcesCompat.getFont(context, R.font.segoeui_regular)
-            view.addView(label, LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(14) })
-        }
-
-        fun set(value: Boolean) {
-            isOn = value
-            repaint()
-        }
-
-        fun isOn(): Boolean = isOn
-
-        fun setVisible(visible: Boolean) {
-            view.visibility = if (visible) VISIBLE else GONE
-        }
-
-        fun repaint() {
-            marker.background = markerDrawable(round = false, on = isOn)
-            label.setTextColor(palette.foreground)
         }
     }
 
@@ -1643,7 +1606,7 @@ class WP81SettingsView(
     private enum class Category(val title: String, val detail: String) {
         THEME("theme", "dark or light, status bar, navigation bar"),
         TILES("tiles", "accent color, columns, notifications, icons"),
-        WALLPAPER("wallpaper", "picture, blur, dim, drift"),
+        WALLPAPER("wallpaper", "picture, blur, dim, drift, tile colors"),
         BROWSER("internet explorer", "where links open"),
         FILES("files & photos", "what the photos tile shows"),
         APP_LIST("app list", "opening into search"),

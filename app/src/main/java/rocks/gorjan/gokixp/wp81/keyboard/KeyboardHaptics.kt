@@ -96,12 +96,20 @@ internal object KeyboardHaptics {
             val effect = if (hasAmplitude) {
                 // Amplitude runs 1..255 and the bottom of that range does not reach the
                 // motor's starting threshold on most phones, so the slider's own range is
-                // mapped onto the part of it that can actually be felt.
-                val amplitude = MIN_AMPLITUDE +
-                    (level * (255 - MIN_AMPLITUDE) / WP81Settings.WP81_KB_VIBRATION_MAX)
-                VibrationEffect.createOneShot(baseMs, amplitude.coerceIn(1, 255))
+                // mapped onto the part of it that can actually be felt - and then halved,
+                // see [SOFTEN]. The floor survives the halving because under it there is no
+                // buzz at all rather than a fainter one.
+                val amplitude = (
+                    MIN_AMPLITUDE +
+                        (level * (255 - MIN_AMPLITUDE) / WP81Settings.WP81_KB_VIBRATION_MAX)
+                    ) / SOFTEN
+                VibrationEffect.createOneShot(baseMs, amplitude.coerceIn(MIN_AMPLITUDE, 255))
             } else {
-                val millis = baseMs * level / WP81Settings.WP81_KB_VIBRATION_MAX
+                // Halved here too, so that a given percentage means the same weight of knock
+                // whichever kind of motor it lands on. There is less room to move on this
+                // path - it runs into [MIN_MS] sooner - which is the same limitation it had
+                // before, one notch further along.
+                val millis = baseMs * level / WP81Settings.WP81_KB_VIBRATION_MAX / SOFTEN
                 VibrationEffect.createOneShot(
                     millis.coerceAtLeast(MIN_MS),
                     VibrationEffect.DEFAULT_AMPLITUDE
@@ -133,6 +141,18 @@ internal object KeyboardHaptics {
      */
     private const val KEY_MS = 12L
     private const val HOLD_MS = 24L
+
+    /**
+     * Half. Everything the slider asks for is delivered at half of it.
+     *
+     * The scale was pitched at what a key on a phone's keyboard feels like, and that turned
+     * out to be a good deal more than what a key on *this* keyboard wants to feel like -
+     * firm enough to be a knock rather than a tick, which is exactly the drumming the whole
+     * design is trying to avoid. This is a divisor rather than a rewritten range so that the
+     * percentages the slider shows keep meaning something relative to each other: 80% is
+     * still twice 40%, both are simply lighter than they were.
+     */
+    private const val SOFTEN = 2
 
     /** Below this the motor on most phones does not move at all. */
     private const val MIN_AMPLITUDE = 40

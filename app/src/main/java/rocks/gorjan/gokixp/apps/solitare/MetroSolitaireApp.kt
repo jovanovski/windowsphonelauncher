@@ -14,6 +14,7 @@ import android.graphics.Shader
 import android.graphics.drawable.Drawable
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.MotionEvent
 import android.view.View
 import android.view.Gravity
@@ -25,6 +26,8 @@ import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.core.content.res.ResourcesCompat
+import org.json.JSONArray
+import org.json.JSONObject
 import rocks.gorjan.gokixp.R
 import rocks.gorjan.gokixp.wp81.Haptics
 import rocks.gorjan.gokixp.wp81.MetroAppBar
@@ -243,7 +246,9 @@ class MetroSolitaireApp(
         root.addView(column, FrameLayout.LayoutParams(MATCH, MATCH))
         root.addView(bar, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
 
-        deal()
+        // Only an empty table is dealt. A rebuild for a new theme keeps the game that is on
+        // it, and a new window picks up the one the last was closed on - see [save].
+        if (piles.all { it.cards.isEmpty() } && !restore()) deal() else showTable()
         return root
     }
 
@@ -254,6 +259,8 @@ class MetroSolitaireApp(
         running = false
         main.removeCallbacks(tick)
         main.removeCallbacks(clearHint)
+        // Every move is written as it is made. What is not is the clock since the last one.
+        save()
     }
 
     // ------------------------------------------------------------------- dealing
@@ -291,6 +298,15 @@ class MetroSolitaireApp(
         // looked at counts the looking.
         running = false
         main.removeCallbacks(tick)
+        showCounters()
+        board.invalidate()
+        save()
+    }
+
+    /** Puts up a game that is already on the table: one picked up again, or rebuilt. */
+    private fun showTable() {
+        clearDrag()
+        if (won) status.text = "out in $moves moves"
         showCounters()
         board.invalidate()
     }
@@ -453,6 +469,7 @@ class MetroSolitaireApp(
         clearHint.run()
         if (foundations.all { it.cards.size == 13 }) finish()
         board.invalidate()
+        save()
     }
 
     private fun finish() {
@@ -540,18 +557,13 @@ class MetroSolitaireApp(
     // ------------------------------------------------------------------- undo
 
     private fun remember() {
-        history.add(piles.map { pile ->
-            pile.cards.map { Triple(it.suit, it.rank, it.faceUp) }
-        })
+        history.add(snapshot())
         if (history.size > HISTORY) history.removeAt(0)
     }
 
     private fun undo() {
         val previous = history.removeLastOrNull() ?: return
-        for ((pile, saved) in piles.zip(previous)) {
-            pile.cards.clear()
-            for ((suit, rank, faceUp) in saved) pile.cards.add(Card(suit, rank, faceUp))
-        }
+        lay(previous)
         // The move is not un-counted. It happened, and a counter that goes backwards is a
         // score rather than a count of what the player has done.
         moves++
@@ -560,12 +572,107 @@ class MetroSolitaireApp(
         clearDrag()
         showCounters()
         board.invalidate()
+        save()
+    }
+
+    private fun snapshot(): List<List<Triple<Suit, Int, Boolean>>> =
+        piles.map { pile -> pile.cards.map { Triple(it.suit, it.rank, it.faceUp) } }
+
+    /** Puts a [snapshot] back on the table, pile for pile. */
+    private fun lay(cards: List<List<Triple<Suit, Int, Boolean>>>) {
+        for ((pile, saved) in piles.zip(cards)) {
+            pile.cards.clear()
+            for ((suit, rank, faceUp) in saved) pile.cards.add(Card(suit, rank, faceUp))
+        }
     }
 
     private fun clearDrag() {
         dragFrom = null
         dragIndex = 0
     }
+
+    // ------------------------------------------------------------------- the game kept
+
+    /**
+     * Writes the game down, so that closing the window puts it aside rather than throwing
+     * it in.
+     *
+     * After every move and not only on the way out: a launcher is the process the system is
+     * least shy about stopping, and it does not ask first. A game that is out is the one
+     * thing not kept - there is nothing left in it to come back to, so the next window deals.
+     */
+    private fun save() {
+        if (won) {
+            prefs.edit { remove(PREF_GAME) }
+            return
+        }
+        val game = JSONObject().apply {
+            put("board", pack(snapshot()))
+            put("history", JSONArray().also { past -> history.forEach { past.put(pack(it)) } })
+            put("drawThree", drawThree)
+            put("wasteShowing", wasteShowing)
+            put("moves", moves)
+            put("seconds", seconds)
+        }
+        prefs.edit { putString(PREF_GAME, game.toString()) }
+    }
+
+    /**
+     * Puts the game the last window was closed on back on the table, if there is one.
+     *
+     * Undo comes back with it: a game picked up again is the same game, and the moves that
+     * led to it are part of it. The clock comes back stopped at what it said, and starts
+     * again on the next move as it did on the first - see [deal].
+     */
+    private fun restore(): Boolean {
+        val raw = prefs.getString(PREF_GAME, null) ?: return false
+        try {
+            val game = JSONObject(raw)
+            val cards = unpack(game.getJSONArray("board"))
+            // A whole deck on this table, or it is not a game that can be picked up.
+            if (cards.size != piles.size || cards.sumOf { it.size } != 52) return false
+            val past = game.getJSONArray("history").let { saved ->
+                (0 until saved.length()).map { unpack(saved.getJSONArray(it)) }
+            }
+            lay(cards)
+            history.clear()
+            history.addAll(past)
+            drawThree = game.getBoolean("drawThree")
+            wasteShowing = game.getInt("wasteShowing")
+            moves = game.getInt("moves")
+            seconds = game.getInt("seconds")
+            return true
+        } catch (e: Exception) {
+            Log.w(TAG, "The saved game could not be read", e)
+            return false
+        }
+    }
+
+    /**
+     * A board as numbers, one a card: its place in a sorted deck, negative while it is
+     * face down. Short enough that forty boards of undo are nothing to write every move.
+     */
+    private fun pack(cards: List<List<Triple<Suit, Int, Boolean>>>): JSONArray =
+        JSONArray().also { out ->
+            for (pile in cards) {
+                out.put(JSONArray().also { row ->
+                    for ((suit, rank, faceUp) in pile) {
+                        val place = suit.ordinal * 13 + rank
+                        row.put(if (faceUp) place else -place)
+                    }
+                })
+            }
+        }
+
+    private fun unpack(saved: JSONArray): List<List<Triple<Suit, Int, Boolean>>> =
+        (0 until saved.length()).map { p ->
+            val pile = saved.getJSONArray(p)
+            (0 until pile.length()).map { c ->
+                val n = pile.getInt(c)
+                val place = kotlin.math.abs(n) - 1
+                Triple(Suit.entries[place / 13], place % 13 + 1, n > 0)
+            }
+        }
 
     // ------------------------------------------------------------------- the board
 
@@ -1102,6 +1209,10 @@ class MetroSolitaireApp(
         /** The desktop game's own key: pick a deck on the phone and it is dealt on both. */
         private const val PREF_BACK = "cardBack"
         private const val PREF_FACES = "metroVistaCards"
+
+        /** The game on the table, kept between windows. See [save]. */
+        private const val PREF_GAME = "metroGame"
+        private const val TAG = "MetroSolitaire"
 
         private const val ICON_DIR = "custom_icons_8"
         private const val NEW_ICON = "$ICON_DIR/appbar.refresh.svg"

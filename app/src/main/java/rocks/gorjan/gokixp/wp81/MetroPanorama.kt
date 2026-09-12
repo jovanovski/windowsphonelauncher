@@ -60,7 +60,7 @@ class MetroPanorama(
      */
     private val titleRow = FrameLayout(context).apply { clipChildren = false }
 
-    private val titleLabel = TextView(context).apply {
+    private val titleLabel = TitleLabel(context).apply {
         typeface = ResourcesCompat.getFont(context, R.font.segoeui_light)
         textSize = APP_TITLE_SP
         includeFontPadding = false
@@ -139,41 +139,7 @@ class MetroPanorama(
     fun setTitle(text: String?) {
         titleLabel.text = text.orEmpty()
         titleLabel.visibility = if (text.isNullOrBlank()) View.GONE else View.VISIBLE
-        fitTitle()
         syncTitleRow()
-    }
-
-    /**
-     * Sets the name in the largest type the row has room for.
-     *
-     * [APP_TITLE_SP] is the size the platform wrote a panorama title in, and it is the
-     * size a title gets whenever it fits. What it was never asked to hold is a name chosen
-     * at runtime: Weather is headed with the town being shown, and a town with two words in
-     * it is half again as wide as any name an app was given by hand.
-     *
-     * So a name too wide is set smaller, in proportion, down to [APP_TITLE_MIN_SP] - below
-     * which it would stop being the largest thing on the panorama, which is what makes it
-     * read as the title at all. A name still too long at that size runs off the right edge,
-     * where a panorama's title is entitled to run: it is a surface wider than the phone,
-     * and the drift as the sections go past brings more of the name onto the screen.
-     */
-    private fun fitTitle() {
-        val text = titleLabel.text?.toString().orEmpty()
-        val base = sp(APP_TITLE_SP)
-        val room = width - paddingLeft - paddingRight - accessoryRoom()
-        if (text.isBlank() || room <= 0) {
-            // Nothing laid out yet - the first title is usually set before the panorama has
-            // a width. [onSizeChanged] does this again once there is a row to fit it to.
-            titleLabel.setTextSize(TypedValue.COMPLEX_UNIT_PX, base)
-            return
-        }
-        // Measured against a copy at the full size: the label's own paint is whatever the
-        // last name was set in, and fitting one name to the last one's size compounds.
-        val needed = TextPaint(titleLabel.paint).apply { textSize = base }.measureText(text)
-        val size =
-            if (needed <= room) base
-            else (base * room / needed).coerceAtLeast(sp(APP_TITLE_MIN_SP))
-        titleLabel.setTextSize(TypedValue.COMPLEX_UNIT_PX, size)
     }
 
     /** What the corner command takes out of the row, if there is one. */
@@ -195,7 +161,9 @@ class MetroPanorama(
     fun setTitleAccessory(view: View?, sizeDp: Int) {
         if (titleRow.childCount > 1) titleRow.removeViewAt(1)
         if (view == null) {
-            fitTitle()
+            // The name's room has changed while the row it sits in has not, so nothing
+            // else would ask the label to measure itself again. See [TitleLabel].
+            titleLabel.requestLayout()
             syncTitleRow()
             return
         }
@@ -205,7 +173,7 @@ class MetroPanorama(
             // the screen - so the corner is squared off by hand.
             marginEnd = paddingLeft
         })
-        fitTitle()
+        titleLabel.requestLayout()
         syncTitleRow()
     }
 
@@ -455,12 +423,6 @@ class MetroPanorama(
         }
     }
 
-    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        super.onSizeChanged(w, h, oldw, oldh)
-        // The width the name has to fit into, which it is usually set before knowing.
-        if (w != oldw) fitTitle()
-    }
-
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
         super.onLayout(changed, l, t, r, b)
         if (changed) applyOffset(offset)
@@ -471,6 +433,62 @@ class MetroPanorama(
     private fun sp(v: Float) = TypedValue.applyDimension(
         TypedValue.COMPLEX_UNIT_SP, v, resources.displayMetrics
     )
+
+    /**
+     * The app's name, in the largest type the row it is being measured into has space for.
+     *
+     * [APP_TITLE_SP] is the size the platform wrote a panorama title in, and it is the
+     * size a name gets whenever it fits. What that size was never asked to hold is a name
+     * chosen at runtime: Weather is headed with the town being shown, and a town with two
+     * words in it is half again as wide as any name an app was given by hand. So a name
+     * too wide is set smaller, in proportion, down to [APP_TITLE_MIN_SP] - below which it
+     * would stop being the largest thing on the panorama, which is what makes it read as
+     * the title at all.
+     *
+     * Fitted here, as the label is measured, rather than from a width handed to it
+     * afterwards. A program opens in a window laid out at a fraction of the screen and
+     * maximized on the frame after - see `WindowsDialog.setForceMaximized` - so the row a
+     * name was first fitted to is routinely narrower than the row it ends up in. Sizing
+     * the type from [onSizeChanged] asked for the re-measure that would have caught up
+     * with that, but asking for a layout in the middle of one is asking for nothing: the
+     * label is laid out immediately afterwards, which clears the request, and the name was
+     * left in the box measured for the narrow row while being drawn at the wide row's
+     * size. "files & photos" came out cut through the second o. A name sized as it is
+     * measured cannot come apart that way - there is one answer and the pass that asked
+     * for it is the pass that uses it.
+     */
+    private inner class TitleLabel(context: Context) : TextView(context) {
+
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            fitTo(MeasureSpec.getSize(widthMeasureSpec) - accessoryRoom())
+            // Measured to the name rather than to the row. A name too long for the row
+            // even at the smallest size is one a panorama lets run past the right edge -
+            // it is a surface wider than the phone, and the drift as the sections go by
+            // brings more of the name onto the screen - where a label held to the row
+            // would cut it off there instead.
+            super.onMeasure(
+                MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED),
+                heightMeasureSpec
+            )
+        }
+
+        private fun fitTo(room: Int) {
+            val name = text?.toString().orEmpty()
+            val base = sp(APP_TITLE_SP)
+            if (name.isBlank() || room <= 0) {
+                setTextSize(TypedValue.COMPLEX_UNIT_PX, base)
+                return
+            }
+            // Measured against a copy of the paint at the full size: this label's own is
+            // whatever the last name was set in, and fitting one name to the size the last
+            // one ended up at compounds.
+            val needed = TextPaint(paint).apply { textSize = base }.measureText(name)
+            val size =
+                if (needed <= room) base
+                else (base * room / needed).coerceAtLeast(sp(APP_TITLE_MIN_SP))
+            setTextSize(TypedValue.COMPLEX_UNIT_PX, size)
+        }
+    }
 
     /**
      * Holds the title strip at its true width, however far past the screen that runs.
@@ -601,7 +619,7 @@ class MetroPanorama(
         const val APP_TITLE_SP = 69f
 
         /**
-         * How small a name may be set to make it fit - see [fitTitle].
+         * How small a name may be set to make it fit - see [TitleLabel].
          *
          * Comfortably above [TITLE_SP], the section names under it. A title shrunk to the
          * size of the strip below it is not a title any more, and a name that long is

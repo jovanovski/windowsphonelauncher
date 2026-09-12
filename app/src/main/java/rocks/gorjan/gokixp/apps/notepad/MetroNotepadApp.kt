@@ -8,9 +8,13 @@ import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.text.InputFilter
+import android.text.Spanned
 import android.util.Log
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.animation.DecelerateInterpolator
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -40,6 +44,7 @@ import rocks.gorjan.gokixp.wp81.WP81Program
 import rocks.gorjan.gokixp.wp81.applyToPageText
 import java.util.UUID
 import java.util.concurrent.Executors
+import kotlin.math.abs
 
 /**
  * Notepad, as the phone would have had it.
@@ -103,6 +108,16 @@ class MetroNotepadApp(
     private var pictureStrip: HorizontalScrollView? = null
     private var pictureRow: LinearLayout? = null
     private var noteBar: MetroAppBar? = null
+
+    /** The formatting strip over the app bar, and the column it keeps the note clear of. */
+    private var formatBar: NoteFormatBar? = null
+    private var noteColumn: LinearLayout? = null
+
+    /** What the open note's markdown is drawn in. See NoteMarkdown. */
+    private var noteLook: NoteMarkdown.Look? = null
+
+    /** Restyles the open note for where the caret has got to. See [restyleSoon]. */
+    private val restyle = Runnable { restyleNow() }
 
     /** Set while the editor is being filled in, so loading a note does not count as typing. */
     private var binding = false
@@ -266,7 +281,8 @@ class MetroNotepadApp(
     }
 
     private fun previewOf(note: Note): String {
-        val line = note.content.lineSequence().firstOrNull { it.isNotBlank() }?.trim()
+        // The words, not the markdown: "# Shopping" is a note that says Shopping.
+        val line = NoteMarkdown.preview(note.content)
         if (!line.isNullOrEmpty()) return line
         val pictures = note.imageUris.size
         return when {
@@ -331,8 +347,21 @@ class MetroNotepadApp(
         noteHeader = header
         column.addView(header, wide())
 
-        body = EditText(context).apply {
+        val look = markdownLook().also { noteLook = it }
+        body = NoteEditor(context).apply {
             setText(note.content)
+            // Markdown drawn on the note, with its marks hidden until the caret comes to one.
+            // Drawn again after every change below and every move of the caret or focus.
+            // The text itself is untouched - see NoteMarkdown.
+            NoteMarkdown.style(text, look, null)
+            onSelection = { restyleSoon() }
+            setOnFocusChangeListener { _, focused ->
+                showFormatBar(focused)
+                restyleSoon()
+            }
+            // Return in a list carries the list on, and on an empty item ends it. Set after
+            // the text is in, so that loading a note is not read as typing its returns.
+            filters = arrayOf(ListReturn(::endList))
             typeface = font(R.font.segoeui_regular)
             textSize = 17f
             // Page colours, not a text box's: the note is the page. See
@@ -354,6 +383,7 @@ class MetroNotepadApp(
                 override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
                 override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
                 override fun afterTextChanged(s: android.text.Editable?) {
+                    s?.let { NoteMarkdown.style(it, look, caretOf(this@apply)) }
                     if (binding) return
                     note.content = s?.toString().orEmpty()
                     main.removeCallbacks(saveSoon)
@@ -375,6 +405,15 @@ class MetroNotepadApp(
         column.addView(pictureStrip, wide())
 
         page.addView(column, FrameLayout.LayoutParams(MATCH, MATCH))
+        noteColumn = column
+        // The formatting strip stands on the app bar. Added before it, so that the list
+        // behind the bar's dots opens over the strip rather than under it.
+        formatBar = NoteFormatBar(context, palette) { format(it) }.also { strip ->
+            strip.visibility = View.GONE
+            page.addView(strip, FrameLayout.LayoutParams(MATCH, dp(STRIP_DP), Gravity.BOTTOM).apply {
+                bottomMargin = dp(BAR_DP)
+            })
+        }
         page.addView(
             buildNoteBar(note),
             FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM)
@@ -404,6 +443,10 @@ class MetroNotepadApp(
         // Before the fields are let go of: the keyboard is dismissed through the view that
         // raised it, and there is no window token to reach once that view has been dropped.
         hideKeyboard()
+        main.removeCallbacks(restyle)
+        noteLook = null
+        formatBar = null
+        noteColumn = null
         current = null
         notePage = null
         noteHeader = null
@@ -780,6 +823,135 @@ class MetroNotepadApp(
 
     private fun font(res: Int) = ResourcesCompat.getFont(context, res)
 
+    private fun markdownLook() = NoteMarkdown.Look(
+        palette = palette,
+        bold = font(R.font.segoeui_semibold) ?: android.graphics.Typeface.DEFAULT_BOLD,
+        light = font(R.font.segoeui_semilight) ?: android.graphics.Typeface.DEFAULT,
+        density = context.resources.displayMetrics.density
+    )
+
+    /**
+     * Restyles the open note once the event that moved its caret is over.
+     *
+     * Not there and then: the caret is moved from inside the text's own bookkeeping, and
+     * adding and taking off spans while the text is still telling its watchers about the
+     * last change is how an Editable ends up notifying a span twice or not at all. Coalesced,
+     * since a tap moves the caret and the focus together.
+     */
+    private fun restyleSoon() {
+        main.removeCallbacks(restyle)
+        main.post(restyle)
+    }
+
+    private fun restyleNow() {
+        val field = body ?: return
+        val look = noteLook ?: return
+        val caret = caretOf(field)
+        NoteMarkdown.style(field.text, look, caret)
+        // The strip lights what is in force at the caret - with nothing selected, what is
+        // typed next.
+        if (caret != null) {
+            formatBar?.setActive(NoteFormat.active(field.text.toString(), caret.first, caret.last))
+        }
+    }
+
+    /** The caret, for the marks it uncovers: none while the note is only being read. */
+    private fun caretOf(field: EditText): IntRange? {
+        if (!field.isFocused) return null
+        val start = field.selectionStart
+        val end = field.selectionEnd
+        if (start < 0 || end < 0) return null
+        return minOf(start, end)..maxOf(start, end)
+    }
+
+    // ------------------------------------------------------------ formatting strip
+
+    /**
+     * The strip comes up while the note is being written and goes while it is being read,
+     * and the note's column keeps clear of it while it is up so the line being typed is
+     * never underneath it.
+     */
+    private fun showFormatBar(on: Boolean) {
+        val strip = formatBar ?: return
+        strip.visibility = if (on) View.VISIBLE else View.GONE
+        noteColumn?.setPadding(0, 0, 0, dp(BAR_DP) + if (on) dp(STRIP_DP) else 0)
+    }
+
+    /** One of the strip's commands, on the selection - or, with none, on what is typed next. */
+    private fun format(tool: NoteFormat.Tool) {
+        val field = body ?: return
+        val src = field.text.toString()
+        val s = minOf(field.selectionStart, field.selectionEnd).coerceAtLeast(0)
+        val e = maxOf(field.selectionStart, field.selectionEnd).coerceAtLeast(0)
+        if (tool == NoteFormat.Tool.LINK) {
+            askForLink(src, s, e)
+            return
+        }
+        NoteFormat.apply(tool, src, s, e)?.let { carryOut(field, it) }
+    }
+
+    /**
+     * Makes a command's changes and puts the selection where it says.
+     *
+     * As edits to the text like typing is, so the note saves, restyles and undoes the way it
+     * would if the marks had been typed by hand; batched, so the keyboard hears about them
+     * once rather than once each.
+     */
+    private fun carryOut(field: EditText, result: NoteFormat.Result) {
+        val text = field.text
+        field.beginBatchEdit()
+        for (c in result.changes) text.replace(c.start, c.end, c.text)
+        field.endBatchEdit()
+        field.setSelection(
+            result.selStart.coerceIn(0, text.length),
+            result.selEnd.coerceIn(0, text.length)
+        )
+    }
+
+    /**
+     * Asks for the address to link the selection to - or, inside a link already, for its
+     * new one, with an empty answer taking the link off.
+     *
+     * The selection is taken now and used when the answer comes back: the prompt takes the
+     * focus and the keyboard while it is up, and nothing can be typed into the note meanwhile.
+     */
+    private fun askForLink(src: String, s: Int, e: Int) {
+        val existing = NoteFormat.linkAt(src, s, e)
+        renameDialog.show(
+            title = if (existing == null) "add link" else "edit link",
+            initial = existing?.url.orEmpty(),
+            hint = "web address",
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_VARIATION_URI
+        ) { typed ->
+            val field = body ?: return@show
+            if (field.text.toString() != src) return@show
+            NoteFormat.link(src, s, e, typed)?.let { carryOut(field, it) }
+            // Back to writing, once the prompt has finished putting its own keyboard away.
+            main.post {
+                val f = body ?: return@post
+                f.requestFocus()
+                val manager = context.getSystemService(Context.INPUT_METHOD_SERVICE)
+                    as? android.view.inputmethod.InputMethodManager
+                manager?.showSoftInput(f, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+            }
+        }
+    }
+
+    /**
+     * Takes an empty list item's mark off, after the return that ended the list - see
+     * ListReturn - once it is certain the mark is still there to take.
+     */
+    private fun endList(start: Int, mark: String) {
+        main.post {
+            val text = body?.text ?: return@post
+            val end = start + mark.length
+            if (end <= text.length && text.subSequence(start, end).toString() == mark) {
+                text.delete(start, end)
+            }
+        }
+    }
+
     private fun wide() = LinearLayout.LayoutParams(MATCH, WRAP)
 
     private fun dp(v: Int) = (v * context.resources.displayMetrics.density).toInt()
@@ -801,6 +973,9 @@ class MetroNotepadApp(
         /** How much of the page the strip is standing on. See [MetroAppBar]. */
         private const val BAR_DP = MetroAppBar.HEIGHT_DP
 
+        /** The formatting strip on top of it: well under the bar, since it is the lesser. */
+        private const val STRIP_DP = 40
+
         /** How large a picture on the strip is drawn. */
         private const val THUMB_DP = 78
 
@@ -812,5 +987,138 @@ class MetroNotepadApp(
         private const val NEW_ICON = "$ICON_DIR/appbar.add.svg"
         private const val CAMERA_ICON = "$ICON_DIR/appbar.camera.svg"
         private const val PICTURE_ICON = "$ICON_DIR/appbar.image.svg"
+    }
+}
+
+/**
+ * The note's text, with a way to hear its caret move and a finger for its to-do boxes.
+ *
+ * EditText has no listener for the caret, and the markdown styling needs one: a mark is
+ * only shown while the caret is at it. A property set after construction rather than
+ * anything passed in, because TextView places the caret while it is still being built -
+ * before a subclass's own fields exist - and a callback read then has to be able to be null.
+ */
+private class NoteEditor(context: Context) : EditText(context) {
+
+    var onSelection: (() -> Unit)? = null
+
+    /** The box a finger went down on, while the touch is still only a tap. */
+    private var pressed: IntRange? = null
+    private var down: MotionEvent? = null
+    private val slop = ViewConfiguration.get(context).scaledTouchSlop
+
+    override fun onSelectionChanged(selStart: Int, selEnd: Int) {
+        super.onSelectionChanged(selStart, selEnd)
+        onSelection?.invoke()
+    }
+
+    /**
+     * A tap on a to-do's box ticks it, the way the phone's check box did.
+     *
+     * The tap is kept from the text altogether - no caret dropped beside the box, no
+     * keyboard - so a list can be ticked off while it is only being read. A finger that
+     * moves before it lifts was starting a scroll, not ticking anything, and the text is
+     * handed the press it missed so that the scroll carries on from there.
+     */
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                release()
+                val box = boxUnder(event.x, event.y)
+                if (box != null) {
+                    pressed = box
+                    down = MotionEvent.obtain(event)
+                    return true
+                }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val first = down ?: return super.onTouchEvent(event)
+                if (abs(event.x - first.x) <= slop && abs(event.y - first.y) <= slop) return true
+                super.onTouchEvent(first)
+                release()
+            }
+            MotionEvent.ACTION_UP -> {
+                val box = pressed
+                if (box != null) {
+                    release()
+                    NoteMarkdown.toggle(text, box)
+                    // A command, so the shell's one tick - see Haptics.
+                    Haptics.tap(this)
+                    performClick()
+                    return true
+                }
+            }
+            MotionEvent.ACTION_CANCEL -> if (pressed != null) {
+                release()
+                return true
+            }
+        }
+        return super.onTouchEvent(event)
+    }
+
+    override fun performClick(): Boolean = super.performClick()
+
+    private fun release() {
+        pressed = null
+        down?.recycle()
+        down = null
+    }
+
+    /**
+     * The to-do box under a finger at [x], [y], if there is one.
+     *
+     * Reached for generously to the left, where there is only the page's margin, and
+     * barely at all to the right, where the item's own words start: a tap meant to put the
+     * caret at the start of an item should put it there.
+     */
+    private fun boxUnder(x: Float, y: Float): IntRange? {
+        val layout = layout ?: return null
+        val boxes = NoteMarkdown.boxes(text)
+        if (boxes.isEmpty()) return null
+        val lx = x - totalPaddingLeft + scrollX
+        val ly = y - totalPaddingTop + scrollY
+        val density = resources.displayMetrics.density
+        for (box in boxes) {
+            val line = layout.getLineForOffset(box.first)
+            if (ly < layout.getLineTop(line) || ly >= layout.getLineBottom(line)) continue
+            val left = layout.getPrimaryHorizontal(box.first) - REACH_LEFT_DP * density
+            val right = layout.getPrimaryHorizontal(box.last) + REACH_RIGHT_DP * density
+            if (lx in left..right) return box
+        }
+        return null
+    }
+
+    private companion object {
+        const val REACH_LEFT_DP = 16f
+        const val REACH_RIGHT_DP = 4f
+    }
+}
+
+/**
+ * Return, in a list: the next line starts with the list's next mark.
+ *
+ * A filter on what is about to go in rather than a watcher on what has, so that the mark
+ * goes in with the new line as one edit - and the keyboard, which puts the caret after what
+ * it typed, puts it after the mark. Added after the fact, the keyboard's own caret lands
+ * between the new line and the mark, and the next word is typed in front of the bullet.
+ *
+ * Ending a list takes a mark off rather than putting one in, which a filter cannot do: it
+ * decides only what goes in. So there the return is swallowed and [onEnd] takes the mark off
+ * straight afterwards.
+ */
+private class ListReturn(private val onEnd: (Int, String) -> Unit) : InputFilter {
+
+    override fun filter(
+        source: CharSequence, start: Int, end: Int, dest: Spanned, dstart: Int, dend: Int
+    ): CharSequence? {
+        if (end - start != 1 || source[start] != '\n') return null
+        return when (val next = NoteFormat.onReturn(dest, dstart, dend)) {
+            is NoteFormat.Continue.Next -> "\n" + next.mark
+            is NoteFormat.Continue.End -> {
+                onEnd(next.start, next.mark)
+                ""
+            }
+            null -> null
+        }
     }
 }

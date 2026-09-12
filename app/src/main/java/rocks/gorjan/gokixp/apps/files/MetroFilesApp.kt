@@ -31,7 +31,6 @@ import rocks.gorjan.gokixp.wp81.MetroPanorama
 import rocks.gorjan.gokixp.wp81.MonochromeIconProvider
 import rocks.gorjan.gokixp.wp81.SvgIcon
 import rocks.gorjan.gokixp.wp81.TiltEffect
-import rocks.gorjan.gokixp.wp81.WP81ContextMenu
 import rocks.gorjan.gokixp.wp81.WP81InputDialog
 import rocks.gorjan.gokixp.wp81.WP81Palette
 import rocks.gorjan.gokixp.wp81.WP81Program
@@ -49,9 +48,9 @@ import java.util.Locale
  * is no ribbon, no tree in a left pane and no two-pane copy - a phone has one screen, and
  * the whole design follows from that.
  *
- * This is that app, on this shell's own furniture. The command strip, the hold menu, the
- * prompt and the press-and-tilt are all the shell's and arrived built; what is written
- * here is the list, the sorting, and the file work behind the commands.
+ * This is that app, on this shell's own furniture. The command strip, the prompt and the
+ * press-and-tilt are all the shell's and arrived built; what is written here is the list,
+ * the sorting, and the file work behind the commands.
  *
  * There is a third section on it that the phone kept in a separate program: photos. It is
  * here rather than in one of its own because on this shell the two apps would have been
@@ -60,8 +59,8 @@ import java.util.Locale
  * What actually differs is how a folder of photographs wants to be *drawn*, which is a
  * page rather than a program: a wall of albums, each showing what is newest in it, and the
  * pictures themselves laid out four across instead of one under the other. So the strip,
- * the clipboard, the hold menu and select mode are the same ones the other two sections
- * use, and the only thing photos brings of its own is the shape of the page.
+ * the clipboard and select mode are the same ones the other two sections use, and the
+ * only thing photos brings of its own is the shape of the page.
  *
  * Deliberately not the desktop's My Computer with a new coat of paint. My Computer is a
  * Windows window: drives named after letters, a folder rendered as icons on a grid, and
@@ -119,8 +118,17 @@ class MetroFilesApp(
 
     private lateinit var barSlot: FrameLayout
     private lateinit var viewer: PhotoViewer
-    private lateinit var contextMenu: WP81ContextMenu
     private lateinit var dialog: WP81InputDialog
+
+    /**
+     * The strip standing in [barSlot], and - in select mode - how to re-arm its rings.
+     *
+     * Kept so a tap on a checkbox can say what the strip now allows without building
+     * another one: a new strip is its icons read and parsed out of the assets again, and
+     * that is not something to pay for on every tick.
+     */
+    private var shownBar: MetroAppBar? = null
+    private var syncSelectBar: (() -> Unit)? = null
 
     private val roots = rootsOf()
 
@@ -170,6 +178,20 @@ class MetroFilesApp(
      */
     private var selectPage = PAGE_RECENTS
 
+    /**
+     * How each thing on a page shows whether it is picked out, by the file it stands for.
+     *
+     * What lets select mode touch one row rather than a page. A tap in it used to draw the
+     * whole listing again to move one tick - a readdir, a sort that asked the disk for a
+     * date at every comparison, every row's icon parsed afresh - and on a folder of any
+     * size that was a pause you could feel between the tap and the tick. Now each row
+     * leaves behind how to paint itself, and a tap paints the one that was tapped.
+     *
+     * Emptied and filled again as a page is drawn. In listing order, which is the order
+     * "select all" picks things out in.
+     */
+    private val picks = List(PAGE_COUNT) { LinkedHashMap<File, (Boolean, Boolean) -> Unit>() }
+
     /** True while a copy, move or delete is running. The strip is dead until it is not. */
     private var busy = false
 
@@ -215,13 +237,9 @@ class MetroFilesApp(
             page = at
             // Select mode belongs to the listing it was started in, and swiping off that
             // listing is leaving it: a strip of commands about a selection no longer on
-            // screen is a strip that gets used by mistake. The page redrawn is the one the
-            // selection was made on, because that is the one still wearing the checkboxes.
-            if (moved && selecting) {
-                selecting = false
-                selection.clear()
-                fillPage(selectPage)
-            }
+            // screen is a strip that gets used by mistake. The marks come off the page the
+            // selection was made on, because that is the one still wearing them.
+            if (moved && selecting) endSelecting(refresh = false)
             // Nothing else is rebuilt. Arriving on a section is not a reason to draw its
             // list again - it has been on screen throughout the swipe - and rebuilding it
             // would throw away where the reader had scrolled to on their way out of it.
@@ -236,8 +254,9 @@ class MetroFilesApp(
         barSlot = FrameLayout(context)
         root.addView(barSlot, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
 
-        // Over the pages and their strip, and under the two below: a picture being looked
-        // at covers the app, and the prompt asking whether to delete it covers the picture.
+        // Over the pages and their strip, and under the prompt below: a picture being
+        // looked at covers the app, and the prompt asking whether to delete it covers the
+        // picture.
         viewer = PhotoViewer(
             context = context,
             palette = palette,
@@ -247,10 +266,7 @@ class MetroFilesApp(
         )
         root.addView(viewer.view(), FrameLayout.LayoutParams(MATCH, MATCH))
 
-        // Both of these sit over everything: a menu that dims the page it belongs to
-        // cannot be inside it.
-        contextMenu = WP81ContextMenu(context, palette)
-        root.addView(contextMenu, FrameLayout.LayoutParams(MATCH, MATCH))
+        // Over everything: a prompt that dims the page it belongs to cannot be inside it.
         dialog = WP81InputDialog(context, palette)
         root.addView(dialog, FrameLayout.LayoutParams(MATCH, MATCH))
 
@@ -381,16 +397,18 @@ class MetroFilesApp(
     /**
      * The back key, on the way out of wherever it currently is.
      *
-     * Four things in order, and the order is the point: a prompt, then a menu, then select
-     * mode, then a folder. Only when none of those is standing does the key mean what it
-     * means everywhere else, and the window closes.
+     * Five things in order, and the order is the point: a prompt, then a picture, then the
+     * strip's list, then select mode, then a folder. Only when none of those is standing
+     * does the key mean what it means everywhere else, and the window closes.
      */
     fun handleBack(): Boolean {
         if (dialog.isShowing()) { dialog.dismiss(); return true }
-        if (contextMenu.isShowing()) { contextMenu.dismiss(); return true }
         // Before select mode, because a picture opened out of a listing covers that
         // listing: the key the user is pressing is the one that puts the page back.
         if (viewer.handleBack()) return true
+        // The list behind the dots, which is where a held thing's commands are now. It
+        // goes the way the hold menu they came from did, and the thing stays picked out.
+        if (shownBar?.closeMenu() == true) return true
         if (selecting) { endSelecting(); return true }
         // Recents is flat, with nothing above it to climb to: on that page the key means
         // what it means everywhere else and the window closes. Photos has exactly one step
@@ -500,7 +518,7 @@ class MetroFilesApp(
      * touch.
      *
      * One page rather than three, because the two that are not showing have not changed:
-     * a tap on a checkbox, a step into a folder and a rename all happen inside one
+     * a step into a folder, a new folder and a change of sort all happen inside one
      * listing. Drawing the other two would cost a folder listing each and throw away
      * where the reader had scrolled to on them, to arrive at exactly what was there.
      */
@@ -628,6 +646,7 @@ class MetroFilesApp(
         // unanswered rows with it - and only its own: the recents page beside it may be
         // part-way through a queue of its own.
         waitingRows.removeAll { it.scroller === scroller }
+        picks[PAGE_BROWSE].clear()
 
         val here = current
         if (here == null) {
@@ -817,8 +836,10 @@ class MetroFilesApp(
                 // nothing but an order - it would sit at the bottom saying nothing.
                 val at = child.lastModified()
                 if (at <= 0L) continue
-                keep.add(Recent(child, "", at, child.length()))
-                if (keep.size > RECENTS_MAX) keep.poll()
+                if (!working(child)) {
+                    keep.add(Recent(child, "", at, child.length()))
+                    if (keep.size > RECENTS_MAX) keep.poll()
+                }
                 if (isPicture(child)) pictures.add(child to at)
             }
             if (pictures.isEmpty()) continue
@@ -889,12 +910,44 @@ class MetroFilesApp(
      * gigabytes of caches and databases, rewritten constantly, so *always* the newest
      * things on the phone - and on most phones unreadable anyway. A recents page that let
      * them in would be a list of nothing anybody put there. Android/media is left alone,
-     * because that is where several messaging apps keep what they have actually received.
+     * because that is where several messaging apps keep what they have actually received -
+     * the working files those apps keep there too are dealt with one at a time, by
+     * [working], rather than by shutting the folder.
      */
     private fun skipped(dir: File): Boolean {
         if (!dir.canRead()) return true
         val name = dir.name
         return (name == "data" || name == "obb") && dir.parentFile?.name == "Android"
+    }
+
+    /**
+     * Whether a file is a program's own working copy rather than something somebody put on
+     * the phone.
+     *
+     * The companion to [skipped], for the folders that cannot simply be left out.
+     * Android/media is walked on purpose - it is where several messaging apps keep what
+     * they have actually received - but it is also where those same apps keep their chat
+     * databases, and a chat database is rewritten every night while the phone is charging.
+     * Left in, it is permanently the newest thing on the phone: the top of recents becomes
+     * msgstore.db.crypt14 and stays there, above the photograph the user took this
+     * afternoon. Nobody opens one, and nobody can - it is encrypted with a key the app
+     * keeps to itself.
+     *
+     * Answered by extension, the way every other question this page asks about a file is,
+     * and deliberately a short list: the types that are always a program's and never a
+     * person's, rather than a guess at what is interesting. A chat backup is numbered by
+     * its format - crypt12 through crypt15 so far, and another every year or two - so that
+     * family is recognised by its shape instead of being listed and going stale.
+     *
+     * Recents only. Browsing is somebody walking to the file deliberately, and a page that
+     * hid what is plainly in the folder would be lying about the disk.
+     */
+    private fun working(file: File): Boolean {
+        val type = file.extension.lowercase(Locale.getDefault())
+        if (type in WORKING_TYPES) return true
+        return type.length > CRYPT_PREFIX.length &&
+            type.startsWith(CRYPT_PREFIX) &&
+            type.drop(CRYPT_PREFIX.length).all { it.isDigit() }
     }
 
     /**
@@ -955,6 +1008,7 @@ class MetroFilesApp(
         recentsColumn.removeAllViews()
         // Only this page's queue. The browse list may be part-way through its own.
         waitingRows.removeAll { it.scroller === recentsScroller }
+        picks[PAGE_RECENTS].clear()
 
         if (recents.isEmpty()) {
             say(
@@ -975,6 +1029,7 @@ class MetroFilesApp(
         photosColumn.removeAllViews()
         // Only this page's queue. The two lists beside it may be part-way through theirs.
         waitingRows.removeAll { it.scroller === photosScroller }
+        picks[PAGE_PHOTOS].clear()
 
         val inside = album
         if (inside == null) fillAlbumWall() else fillAlbum(inside)
@@ -1104,8 +1159,6 @@ class MetroFilesApp(
      */
     private fun albumTile(a: Album, strip: LinearLayout, side: Int): View {
         val tile = Square(context)
-        val picked = selecting && a.dir in selection
-        dressForSelection(tile, picked)
 
         val lattice = latticeFor(a.shots.size)
         val cellPx = side / lattice
@@ -1126,15 +1179,11 @@ class MetroFilesApp(
         }
         tile.addView(mosaic, FrameLayout.LayoutParams(MATCH, MATCH))
         tile.addView(namePlate(a), FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
-        if (selecting) tile.addView(tickMark(picked), tickParams())
+        tileMarks(tile, a.dir, resting = Color.TRANSPARENT)
 
         tile.isClickable = true
         tile.setOnClickListener { if (selecting) toggle(a.dir) else openAlbum(a.dir) }
-        tile.setOnLongClickListener { view ->
-            val open = !selecting && !busy
-            if (open) showAlbumMenu(a, anchorY(view))
-            open
-        }
+        tile.setOnLongClickListener { hold(a.dir) }
         TiltEffect.apply(tile)
         return tile
     }
@@ -1201,19 +1250,13 @@ class MetroFilesApp(
      */
     private fun photoCell(shot: File, strip: LinearLayout, side: Int): View {
         val square = Square(context).apply { setBackgroundColor(emptyCell()) }
-        val picked = selecting && shot in selection
-        dressForSelection(square, picked)
         pictureIn(square, shot, strip, side, playDp = PLAY_ON_PHOTO_DP)
         // After the picture, so the mark stays on top of it however late it arrives.
-        if (selecting) square.addView(tickMark(picked), tickParams())
+        tileMarks(square, shot, resting = emptyCell())
 
         square.isClickable = true
         square.setOnClickListener { if (selecting) toggle(shot) else openFile(shot) }
-        square.setOnLongClickListener { view ->
-            val open = !selecting && !busy
-            if (open) showItemMenu(shot, anchorY(view))
-            open
-        }
+        square.setOnLongClickListener { hold(shot) }
         TiltEffect.apply(square)
         return square
     }
@@ -1225,18 +1268,40 @@ class MetroFilesApp(
      * on a bright picture is a tick nobody sees, while a tile that has visibly shrunk into
      * a coloured frame reads across the whole wall at once.
      */
-    private fun dressForSelection(tile: FrameLayout, picked: Boolean) {
+    private fun dressForSelection(tile: FrameLayout, picked: Boolean, resting: Int) {
         if (picked) {
             tile.setBackgroundColor(palette.accent)
             val inset = dp(SELECT_INSET_DP)
             tile.setPadding(inset, inset, inset, inset)
         } else {
+            // Back to the ground it had, because the accent was painted on the same frame:
+            // a cell whose picture has not arrived would otherwise stay a block of it.
+            tile.setBackgroundColor(resting)
             tile.setPadding(0, 0, 0, 0)
         }
     }
 
-    private fun tickMark(picked: Boolean): View = View(context).apply {
-        background = MetroMarker.drawable(context, palette, round = false, on = picked)
+    /**
+     * Lets select mode mark a tile where it stands: the tick in its corner while its page
+     * is being picked from, and the block of accent around it once it is picked.
+     *
+     * [resting] is what the tile is painted when it is not picked. See [dressForSelection].
+     */
+    private fun tileMarks(tile: FrameLayout, file: File, resting: Int) {
+        var tick: View? = null
+        pickable(PAGE_PHOTOS, file) { marked, picked ->
+            dressForSelection(tile, marked && picked, resting)
+            if (marked) {
+                val mark = tick ?: View(context).also {
+                    tile.addView(it, tickParams())
+                    tick = it
+                }
+                paintMark(mark, picked)
+            } else {
+                tick?.let { tile.removeView(it) }
+                tick = null
+            }
+        }
     }
 
     private fun tickParams() = FrameLayout.LayoutParams(
@@ -1292,20 +1357,11 @@ class MetroFilesApp(
                 else if (entry.isDirectory) navigateTo(entry)
                 else openFile(entry)
             },
-            onHold = { view ->
-                // A hold in select mode would be a second way to do what a tap already
-                // does there, and the menu's commands are all about one thing. It is also
-                // shut while work is running: the strip's commands go dim then, and a menu
-                // that stayed live would be the way to start a second copy on top of the
-                // first, which is the one thing the dimming is there to prevent.
-                val open = !selecting && !busy
-                if (open) showItemMenu(entry, anchorY(view))
-                open
-            }
+            onHold = { hold(entry) }
         )
-        if (selecting) row.addView(checkMark(entry in selection), checkParams())
         row.addView(iconSlot(row, entry, scroller), glyphParams())
         row.addView(labels(entry.name, detailOf(entry)), textParams())
+        rowMarks(row, PAGE_BROWSE, entry)
         return row
     }
 
@@ -1322,21 +1378,17 @@ class MetroFilesApp(
     private fun recentRow(entry: Recent): View {
         val row = rowShell(
             onTap = { if (selecting) toggle(entry.file) else openFile(entry.file) },
-            onHold = { view ->
-                val open = !selecting && !busy
-                if (open) showRecentMenu(entry, anchorY(view))
-                open
-            }
+            onHold = { hold(entry.file) }
         )
-        if (selecting) row.addView(checkMark(entry.file in selection), checkParams())
         row.addView(iconSlot(row, entry.file, recentsScroller), glyphParams())
         row.addView(labels(entry.file.name, detailOfRecent(entry)), textParams())
+        rowMarks(row, PAGE_RECENTS, entry.file)
         return row
     }
 
     private fun rowShell(
         onTap: () -> Unit,
-        onHold: ((View) -> Boolean)? = null
+        onHold: (() -> Boolean)? = null
     ): LinearLayout {
         val row = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1344,10 +1396,10 @@ class MetroFilesApp(
             setPadding(0, dp(9), dp(PAGE_MARGIN_DP), dp(9))
             isClickable = true
             // No buzz for opening something. The phone answered a command with one - a
-            // thing deleted, a hold that brought up a menu - and going into a folder is
+            // thing deleted, a hold that picked something out - and going into a folder is
             // not a command, it is just going somewhere.
             setOnClickListener { onTap() }
-            if (onHold != null) setOnLongClickListener { view -> onHold(view) }
+            if (onHold != null) setOnLongClickListener { onHold() }
         }
         TiltEffect.apply(row)
         return row
@@ -1442,15 +1494,35 @@ class MetroFilesApp(
     }
 
     /**
-     * The square beside a row in select mode.
+     * Lets select mode put the square beside a row, and take it away again, where the row
+     * stands - see [picks].
+     */
+    private fun rowMarks(row: LinearLayout, forPage: Int, file: File) {
+        var box: View? = null
+        pickable(forPage, file) { marked, picked ->
+            if (marked) {
+                val mark = box ?: View(context).also {
+                    row.addView(it, 0, checkParams())
+                    box = it
+                }
+                paintMark(mark, picked)
+            } else {
+                box?.let { row.removeView(it) }
+                box = null
+            }
+        }
+    }
+
+    /**
+     * The square beside a row in select mode, and in the corner of a tile.
      *
      * The shell's own square, the same one the settings page draws beside a switch: off is
      * an outline, on is a block of the accent with a tick in it. Drawn here rather than
      * again from scratch, because a checkbox that is nearly the settings one is a checkbox
      * the user has to look twice at to be sure it means the same thing.
      */
-    private fun checkMark(on: Boolean): View = View(context).apply {
-        background = MetroMarker.drawable(context, palette, round = false, on = on)
+    private fun paintMark(mark: View, on: Boolean) {
+        mark.background = MetroMarker.drawable(context, palette, round = false, on = on)
     }
 
     // ------------------------------------------------------------------- the thumbnails
@@ -1504,7 +1576,7 @@ class MetroFilesApp(
         val waiting = Pending(row, slot, mark, entry, kind, within, size, PLAY_DP)
         // Read once already: this listing is being rebuilt rather than opened, so the
         // picture goes back as the row is drawn. Waiting for the queue instead would mean
-        // a glyph flashing in place of every photograph on every tap in select mode.
+        // a glyph flashing in place of every photograph on every sort, rename and refresh.
         val held = FileThumbnails.held(entry, size)
         if (held != null) show(waiting, held, fade = false) else waitingRows += waiting
         return slot
@@ -1701,6 +1773,8 @@ class MetroFilesApp(
 
     private fun installBar() {
         barSlot.removeAllViews()
+        shownBar = null
+        syncSelectBar = null
 
         // One screen has nothing to command: the roots page, whose rows are "phone" and
         // "sd card". Selecting a volume to copy it, or making a folder beside it, are not
@@ -1719,6 +1793,7 @@ class MetroFilesApp(
         val bar = MetroAppBar(context, palette)
         if (selecting) fillSelectBar(bar) else fillBrowseBar(bar)
         barSlot.addView(bar, FrameLayout.LayoutParams(MATCH, WRAP))
+        shownBar = bar
     }
 
     /**
@@ -1780,9 +1855,9 @@ class MetroFilesApp(
     /**
      * Whether this page has anything on it worth picking out.
      *
-     * Asked cheaply, and that is the point: the strip is rebuilt on every tap in select
-     * mode, and a listing of the folder to find out whether it has one file in it would be
-     * a readdir per checkbox.
+     * Asked cheaply, and that is the point: the strip is rebuilt every time the page is
+     * drawn, and a listing of the folder to find out whether it has one file in it would
+     * be a second readdir on every one of those.
      */
     private fun anythingToPick(): Boolean = when (page) {
         PAGE_BROWSE -> current?.canRead() == true
@@ -1791,49 +1866,52 @@ class MetroFilesApp(
     }
 
     /**
-     * What the page being shown is a listing of.
-     *
-     * Only ever asked when the overflow menu is opened, because every one of these answers
-     * costs a listing of a folder.
+     * The strip in select mode: three rings for what can be done to any number of things
+     * at once, and behind the dots, everything else.
      */
-    private fun shownHere(): List<File> = when (page) {
-        PAGE_BROWSE -> current?.let { entriesOf(it) }.orEmpty()
-        PAGE_PHOTOS -> album?.let { picturesIn(it) } ?: albums.map { it.dir }
-        else -> recents.map { it.file }
-    }
-
     private fun fillSelectBar(bar: MetroAppBar) {
-        val picked = selection.isNotEmpty()
-        // Asked of what is picked rather than of the folder the page is in, because on
-        // recents there is no such folder and the files are from all over the phone: what
-        // decides whether a thing can be moved away is the folder holding it.
-        val movable = picked && selection.all { it.parentFile?.canWrite() == true }
-
         val copy = bar.addCommand(COPY_ICON) { takeToClipboard(ClipMode.COPY) }
-        bar.setCommandEnabled(copy, picked && !busy)
-
         val cut = bar.addCommand(CUT_ICON) { takeToClipboard(ClipMode.CUT) }
-        bar.setCommandEnabled(cut, movable && !busy)
-
         val remove = bar.addCommand(DELETE_ICON) { askToDelete(selection.toList()) }
-        bar.setCommandEnabled(remove, movable && !busy)
+
+        // Kept rather than run once, because every tick changes what the rings can do - and
+        // re-arming three of them is a great deal cheaper than a new strip. See [toggle].
+        val sync = {
+            val picked = selection.isNotEmpty()
+            // Asked of what is picked rather than of the folder the page is in, because on
+            // recents there is no such folder and the files are from all over the phone:
+            // what decides whether a thing can be moved away is the folder holding it.
+            // Each folder once - a whole album picked out is one folder, not a thousand.
+            val movable = picked &&
+                selection.mapTo(HashSet()) { it.parentFile }.all { it?.canWrite() == true }
+            bar.setCommandEnabled(copy, picked && !busy)
+            bar.setCommandEnabled(cut, movable && !busy)
+            bar.setCommandEnabled(remove, movable && !busy)
+        }
+        sync()
+        syncSelectBar = sync
 
         bar.menu = {
             buildList {
-                if (selection.size == 1) {
-                    val only = selection.first()
-                    if (only.parentFile?.canWrite() == true) {
-                        add(MetroAppBar.Item("rename") { askToRename(only) })
-                    }
-                }
-                if (picked && selection.none { it.isDirectory }) {
+                // What holding a thing used to put up in a menu of its own, now that a hold
+                // picks it out instead - the way Android's own lists do it. Copy, cut and
+                // delete are the rings just above, so the list says the rest rather than
+                // saying those twice.
+                val only = selection.singleOrNull()
+                if (only != null) {
+                    addAll(commandsFor(only))
+                } else if (selection.isNotEmpty() && selection.none { it.isDirectory }) {
                     add(MetroAppBar.Item("share") { share(selection.toList()) })
                 }
-                val all = shownHere()
-                if (all.isNotEmpty() && selection.size < all.size) {
+                // Everything on the page, as the page drew it - which it has already listed,
+                // so finding out costs nothing.
+                val all = picks[selectPage].keys
+                if (selection.size < all.size) {
                     add(MetroAppBar.Item("select all") {
                         selection.addAll(all)
-                        redraw()
+                        paintPicks(selectPage)
+                        titleThePage()
+                        syncSelectBar?.invoke()
                     })
                 }
                 add(MetroAppBar.Item("done") { endSelecting() })
@@ -1861,118 +1939,113 @@ class MetroFilesApp(
         selectPage = page
         selection.clear()
         if (first != null) selection.add(first)
-        redraw()
+        // Onto the rows already on the page, rather than the page drawn again with them on:
+        // a hold picks out the thing under the finger, and the list should not blink.
+        paintPicks(page)
+        titleThePage()
+        installBar()
     }
 
+    /**
+     * Out of select mode. [refresh] false is for a caller about to draw the page itself,
+     * which leaves the count and the strip to it.
+     */
     private fun endSelecting(refresh: Boolean = true) {
         if (!selecting && selection.isEmpty()) return
-        val was = selectPage
         selecting = false
         selection.clear()
+        // Off the page the selection was made on, which is not always the one showing, and
+        // in place, the way they went on.
+        paintPicks(selectPage)
         if (!refresh) return
-        // The page the selection was made on is the one still wearing the checkboxes, and
-        // it is not always the one showing - a delete finishing after a swipe lands here.
-        if (was != page) fillPage(was)
-        redraw()
+        titleThePage()
+        installBar()
     }
 
     private fun toggle(entry: File) {
-        if (!selection.remove(entry)) selection.add(entry)
-        // The header counts and the strip switches on whether anything is picked, so both
-        // are rebuilt rather than only the row that was tapped.
-        redraw()
-    }
-
-    // ------------------------------------------------------------------- the hold menu
-
-    private fun showItemMenu(entry: File, y: Float) {
-        // Asked of the folder holding it rather than of the folder the page is standing
-        // in, because those are not always the same one: a photograph held down on the
-        // photos page is in the album, not in whatever browse was last looking at.
-        val writable = entry.parentFile?.canWrite() == true
-        contextMenu.show(
-            entry.name,
-            buildList {
-                add(WP81ContextMenu.Item("open") {
-                    if (entry.isDirectory) navigateTo(entry) else openFile(entry)
-                })
-                // Straight into select mode with this one already picked out, which is
-                // what a hold on the thing you want was always about. The strip's own
-                // select command starts on an empty selection and then wants a tap on the
-                // row underneath the menu that has just closed - the same two steps, in
-                // the order nobody would choose.
-                add(WP81ContextMenu.Item("select") { beginSelecting(entry) })
-                add(WP81ContextMenu.Item("copy") { takeToClipboard(ClipMode.COPY, listOf(entry)) })
-                if (writable) {
-                    add(WP81ContextMenu.Item("cut") { takeToClipboard(ClipMode.CUT, listOf(entry)) })
-                    add(WP81ContextMenu.Item("rename") { askToRename(entry) })
-                }
-                if (!entry.isDirectory) add(WP81ContextMenu.Item("share") { share(listOf(entry)) })
-                if (writable) add(WP81ContextMenu.Item("delete") { askToDelete(listOf(entry)) })
-            },
-            y
-        )
+        val picked = entry !in selection
+        if (picked) selection.add(entry) else selection.remove(entry)
+        // The thing tapped, the count above the list and what the strip allows - and
+        // nothing else, because nothing else has changed. See [picks].
+        picks[selectPage][entry]?.invoke(marking(selectPage), picked)
+        titleThePage()
+        // A list opened before the tick is a list about what was picked then.
+        shownBar?.closeMenu()
+        val sync = syncSelectBar
+        if (sync != null) sync() else installBar()
     }
 
     /**
-     * The hold menu on a recents row.
-     *
-     * Shorter than the browse one, and deliberately: cut, rename and select are all about a
-     * folder you are standing in, and on this page you are not standing anywhere. What it
-     * has instead is the way out of the page - "show in folder", which is the answer to the
-     * question a recents list mostly raises, being where on earth this thing was saved.
+     * Whether [forPage] wears its marks: only the page the selection was started on does,
+     * whichever page happens to be drawing itself.
      */
-    private fun showRecentMenu(entry: Recent, y: Float) {
-        val holding = entry.file.parentFile
-        contextMenu.show(
-            entry.file.name,
-            buildList {
-                add(WP81ContextMenu.Item("open") { openFile(entry.file) })
-                if (holding != null && holding.canRead()) {
-                    add(WP81ContextMenu.Item("show in folder") { showInFolder(holding) })
-                }
-                add(WP81ContextMenu.Item("select") { beginSelecting(entry.file) })
-                add(WP81ContextMenu.Item("copy") {
-                    takeToClipboard(ClipMode.COPY, listOf(entry.file))
-                })
-                add(WP81ContextMenu.Item("share") { share(listOf(entry.file)) })
-                if (holding?.canWrite() == true) {
-                    add(WP81ContextMenu.Item("delete") { askToDelete(listOf(entry.file)) })
-                }
-            },
-            y
-        )
+    private fun marking(forPage: Int) = selecting && selectPage == forPage
+
+    /** Registers how [file] shows itself picked out on [forPage], and shows it so now. */
+    private fun pickable(forPage: Int, file: File, paint: (Boolean, Boolean) -> Unit) {
+        picks[forPage][file] = paint
+        paint(marking(forPage), file in selection)
+    }
+
+    /** Puts every mark on [forPage] right for the selection as it now stands. */
+    private fun paintPicks(forPage: Int) {
+        val marked = marking(forPage)
+        for ((file, paint) in picks[forPage]) paint(marked, file in selection)
+    }
+
+    // ------------------------------------------------------------------------- holding
+
+    /**
+     * A hold on anything in a listing, which picks it out.
+     *
+     * It used to put up a menu of commands about the thing held, one of which was
+     * "select" - the long way round to what a hold is nearly always for, and not how
+     * Android's own lists answer one. The hold goes straight into select mode with the
+     * held thing already ticked, and the rest of that menu is behind the dots on the strip
+     * that comes up: see [commandsFor]. Held again in select mode, it is a tap.
+     *
+     * Refused while work is running, as the strip's own select command is. What select
+     * mode can do goes dead until the work is done, and a copy started on top of another
+     * copy is exactly what the dimming is there to prevent.
+     */
+    private fun hold(entry: File): Boolean {
+        if (busy) return false
+        if (selecting) toggle(entry) else beginSelecting(entry)
+        return true
     }
 
     /**
-     * The hold menu on an album's tile.
+     * What can be done to the one thing picked out, besides the rings: the hold menu each
+     * section used to put up, now behind the dots.
      *
-     * An album is a folder, so this is the folder menu - minus cut, which has nowhere on
-     * this page to be pasted: the wall is an order rather than a tree, and there is no
-     * "into" on it. The way to do that, and the way to see what else is in the folder
-     * besides its pictures, is "show in folder" - the same door out that a recents row has,
-     * and it opens the album itself in browse rather than the page it was tapped on.
+     * Which section it was picked out on decides a little of it, as it decided the menus.
+     * Recents and the wall of albums are lists of things from elsewhere, so they carry the
+     * way over to where the thing actually lives; browse is already standing in it.
      */
-    private fun showAlbumMenu(a: Album, y: Float) {
-        val holding = a.dir.parentFile
-        contextMenu.show(
-            a.label,
-            buildList {
-                add(WP81ContextMenu.Item("open") { openAlbum(a.dir) })
-                if (holding != null && holding.canRead()) {
-                    add(WP81ContextMenu.Item("show in folder") { showInFolder(a.dir) })
+    private fun commandsFor(only: File): List<MetroAppBar.Item> = buildList {
+        val holding = only.parentFile
+        val isAlbum = selectPage == PAGE_PHOTOS && album == null
+        add(MetroAppBar.Item("open") {
+            when {
+                isAlbum -> openAlbum(only)
+                only.isDirectory -> navigateTo(only)
+                else -> {
+                    endSelecting()
+                    openFile(only)
                 }
-                add(WP81ContextMenu.Item("select") { beginSelecting(a.dir) })
-                add(WP81ContextMenu.Item("copy") {
-                    takeToClipboard(ClipMode.COPY, listOf(a.dir))
-                })
-                if (holding?.canWrite() == true) {
-                    add(WP81ContextMenu.Item("rename") { askToRename(a.dir) })
-                    add(WP81ContextMenu.Item("delete") { askToDelete(listOf(a.dir)) })
-                }
-            },
-            y
-        )
+            }
+        })
+        if (holding?.canRead() == true) {
+            // An album opens in browse as itself rather than as the folder it is in, which
+            // is where the rest of what is in it can be seen.
+            if (isAlbum) {
+                add(MetroAppBar.Item("show in folder") { showInFolder(only) })
+            } else if (selectPage == PAGE_RECENTS) {
+                add(MetroAppBar.Item("show in folder") { showInFolder(holding) })
+            }
+        }
+        if (holding?.canWrite() == true) add(MetroAppBar.Item("rename") { askToRename(only) })
+        if (!only.isDirectory) add(MetroAppBar.Item("share") { share(listOf(only)) })
     }
 
     /** Over to browse, standing in the folder the file was found in. */
@@ -2113,7 +2186,7 @@ class MetroFilesApp(
             else "Delete $subject? This cannot be undone.",
             "delete"
         ) {
-            endSelecting(refresh = false)
+            endSelecting()
             work {
                 var gone = 0
                 for (entry in what) if (deleteTree(entry)) gone++
@@ -2359,15 +2432,6 @@ class MetroFilesApp(
 
     // -------------------------------------------------------------------------- plumbing
 
-    /** Where in the page a view sits, for a menu that has to come down beside it. */
-    private fun anchorY(view: View): Float {
-        val here = IntArray(2)
-        val there = IntArray(2)
-        root.getLocationOnScreen(here)
-        view.getLocationOnScreen(there)
-        return (there[1] - here[1] + view.height / 2f)
-    }
-
     private fun font(res: Int) = ResourcesCompat.getFont(context, res)
 
     private fun wide() = LinearLayout.LayoutParams(MATCH, WRAP)
@@ -2414,9 +2478,23 @@ class MetroFilesApp(
         private const val PAGE_RECENTS = 0
         private const val PAGE_PHOTOS = 1
         private const val PAGE_BROWSE = 2
+        private const val PAGE_COUNT = 3
 
         /** How many of the newest files the page holds. A screenful is about eight. */
         private const val RECENTS_MAX = 60
+
+        /**
+         * What recents leaves out: databases and the journals kept beside them, logs,
+         * half-finished downloads, the copy a program made before rewriting something.
+         * See [working].
+         */
+        private val WORKING_TYPES = setOf(
+            "db", "db-journal", "db-wal", "db-shm", "sqlite", "sqlite3", "journal",
+            "log", "tmp", "temp", "part", "crdownload", "bak", "thumbdata",
+        )
+
+        /** What a chat backup's extension starts with, before the format number. */
+        private const val CRYPT_PREFIX = "crypt"
 
         /** How long a walk's answer stands before the page goes and looks again. */
         private const val RESCAN_MS = 30_000L

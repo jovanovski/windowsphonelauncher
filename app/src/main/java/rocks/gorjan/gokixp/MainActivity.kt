@@ -7958,7 +7958,10 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      *
      * The tile turns through [NewsFeed.stories] in order and knows how far along it is, so
      * the face is a lookup rather than anything the tile has to be asked to remember. Null
-     * while the tile is still showing the line it puts up in place of a story.
+     * where it is not pointing at a story at all: while it is still showing the line it
+     * puts up in place of one, and while it is resting on its icon between two of them -
+     * see Tile.Kind.restsOnIcon. The reader then opens at the top of the feed, which is
+     * what a tap on a tile showing nothing in particular is asking for.
      *
      * Which tile is asked matters now that the News tile is the News program's, and a
      * program's tile can be pinned twice: two of them turn independently, and the one that
@@ -7968,9 +7971,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         tile: rocks.gorjan.gokixp.wp81.Tile
     ): rocks.gorjan.gokixp.wp81.NewsStory? {
         // Whichever surface holds it answers with where it has got to; the others do not
-        // have it and answer with the first story, which is what a tile nobody can find
-        // should open on anyway.
-        val face = wp81TileSurfaces().maxOfOrNull { it.rotationIndexOf(tile.id) } ?: 0
+        // have it and do not answer at all, so a tile nobody can find falls back to the
+        // first story, which is what such a tile should open on anyway.
+        val face = wp81TileSurfaces().mapNotNull { it.rotationIndexOf(tile.id) }.maxOrNull() ?: 0
         return wp81NewsFeed.stories().getOrNull(face)
     }
 
@@ -9139,7 +9142,8 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             .getDrawable(this, res) ?: return null
         return rocks.gorjan.gokixp.wp81.MonochromeIconProvider.Glyph.Monochrome(
             drawable,
-            wp81IconProvider.ratioFor("res:$res", drawable)
+            wp81IconProvider.ratioFor("res:$res", drawable),
+            wp81IconProvider.inkFor("res:$res", drawable)
         )
     }
 
@@ -9155,7 +9159,8 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             getAppIcon(tile.packageName)?.let { drawable ->
                 return rocks.gorjan.gokixp.wp81.MonochromeIconProvider.Glyph.FullColor(
                     drawable,
-                    wp81IconProvider.ratioFor("custom:${tile.packageName}", drawable)
+                    wp81IconProvider.ratioFor("custom:${tile.packageName}", drawable),
+                    ink = wp81IconProvider.inkFor("custom:${tile.packageName}", drawable)
                 )
             }
         }
@@ -11123,33 +11128,29 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      * Whether this home gesture is the user coming back to something, not leaving it.
      *
      * The home key does two jobs from one intent, and which it is depends on where the
-     * user was standing when they made the gesture. Made from inside another app, home is
-     * the way back to the launcher - and the launcher they left had People, or Zune, or
-     * the settings page open on it, so that is what they are coming back to. Reset, and
-     * the gesture that was meant to bring them home instead threw away what they had been
-     * in the middle of, for a Start screen they never asked for.
+     * user was standing when they made the gesture. Made while already looking at the
+     * launcher, it means Start, which is what [resetWP81ToStart] does - Windows key
+     * included: see the nav bar's onStart, which puts programs away first.
      *
-     * Made while already looking at the launcher, the same gesture means Start, which is
-     * what [resetWP81ToStart] does - and it is one press away, because coming back here
-     * puts the launcher in front of the user, so the next home gesture is that one.
-     * Windows key included: see the nav bar's onStart, which puts programs away first.
+     * Made from inside another app it is the way back here, and that lands on Start as
+     * well. A program the user left open - People, Zune, the browser - is where they put
+     * the shell down before going somewhere else entirely; coming home to it hands them
+     * back a page they finished with, and the wall they were asking for is another press
+     * away. Home from an app means the tiles.
      *
-     * Settings counts for a reason of its own: half of what is on that page sends the user
-     * out to Android's own settings to answer it - the default browser, app access, the
-     * notification listener - and the way back from each of those is this gesture. Landing
-     * on Start after granting something means walking back into the page to see whether it
-     * took. See [refreshWP81SettingsPermissions], which makes sure it says so.
+     * The settings page is the one thing kept, for a reason of its own: half of what is on
+     * that page sends the user out to Android's own settings to answer it - the default
+     * browser, app access, the notification listener - and the way back from each of those
+     * is this gesture. Landing on Start after granting something means walking back into
+     * the page to see whether it took. See [refreshWP81SettingsPermissions], which makes
+     * sure it says so.
      *
-     * A folder page and the app list are not on the list: both are already put back to rest
-     * when the launcher stops - see onStop - so there is nothing of those to come back to.
+     * A folder page and the app list are not kept either, and need no undoing here: both
+     * are already put back to rest when the launcher stops - see onStop.
      */
     private fun wp81ReturningToWhatWasOpen(): Boolean {
         if (!wp81AwayBehindAnotherApp) return false
-        return when (wp81Shell?.where()) {
-            rocks.gorjan.gokixp.wp81.WP81Shell.Place.PROGRAM,
-            rocks.gorjan.gokixp.wp81.WP81Shell.Place.SETTINGS -> true
-            else -> false
-        }
+        return wp81Shell?.where() == rocks.gorjan.gokixp.wp81.WP81Shell.Place.SETTINGS
     }
 
     private fun resetWP81ToStart() {

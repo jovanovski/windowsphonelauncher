@@ -14,6 +14,7 @@ import android.os.Looper
 import android.inputmethodservice.InputMethodService
 import android.os.SystemClock
 import android.text.InputType
+import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
@@ -32,6 +33,7 @@ import rocks.gorjan.gokixp.wp81.keyboard.text.Dictionary
 import rocks.gorjan.gokixp.wp81.keyboard.text.Suggester
 import rocks.gorjan.gokixp.wp81.keyboard.text.UserDictionary
 import java.io.File
+import java.text.BreakIterator
 import java.util.concurrent.Executors
 import rocks.gorjan.gokixp.wp81.WP81Settings
 
@@ -1676,30 +1678,23 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
      * that is half-typed in front of it. So the word comes out of the field and back into the
      * composer, one character shorter, exactly as though it had never been finished.
      *
-     * Three conditions, and each of them is a way this goes wrong:
-     * - **Not while repeating.** Long-press delete runs twenty-five times a second and this
-     *   asks the app three questions; two blocking round-trips in that loop is what froze the
-     *   phone once already. Held backspace stays the one-way path it was made into.
-     * - **Not with a selection.** Backspace over selected text deletes the selection, and
-     *   there is no word being edited.
+     * Three conditions, and each of them is a way this goes wrong. Two of them are the
+     * caller's, because they decide whether the question behind [around] is asked at all -
+     * not while repeating, where twenty-five blocking round-trips a second is what froze the
+     * phone once already, and not with a selection, which backspace deletes whole. The third
+     * is here:
      * - **Not mid-word.** Composing text has to cover the whole word. If the cursor is inside
      *   one, recomposing the part in front of it would leave the rest outside the region, and
      *   taking a suggestion would then insert it into the middle of the word.
      *
+     * @param around what [backspace] already asked for - the text either side of the caret.
      * @return true when the word was resumed and the caller should do nothing further.
      */
-    private fun resumeWordBeforeCursor(ic: InputConnection): Boolean {
-        // A password field has no suggestions and learns nothing, so there is no word to pick
-        // up - only a round-trip asking the field to hand back its own contents, which is
-        // exactly the thing not to do there.
-        if (privateField) return false
-        // Selected text is deleted by backspace, and there is no word being edited then. Read
-        // from what the field last reported rather than by asking it: [onUpdateSelection] is
-        // told about every selection there ever is, so asking would be paying for an answer
-        // already in hand.
-        if (selStart != selEnd) return false
+    private fun resumeWordBeforeCursor(
+        ic: InputConnection,
+        around: Pair<String, CharSequence?>
+    ): Boolean {
         try {
-            val around = around(ic) ?: return false
             val before = around.first
             val after = around.second?.firstOrNull()
             if (after != null && composer.extendsWord(after.toString())) return false
@@ -1999,25 +1994,59 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
             return
         }
 
-        // Nothing was being composed, so the cursor is in text the field already owns. If it
-        // is sitting at the end of a word, that word is picked back up rather than having a
-        // character quietly shaved off it - see [resumeWordBeforeCursor].
-        if (!repeating && resumeWordBeforeCursor(ic)) return
+        // Nothing was being composed, so the cursor is in text the field already owns. One
+        // question, and its answer is used twice: first to see whether the caret is sitting
+        // at the end of a word, which is picked back up rather than having a character
+        // quietly shaved off it (see [resumeWordBeforeCursor]), and failing that to see what
+        // is actually behind the caret, which is what the deletion below needs to know.
+        //
+        // Not asked while repeating - that path stays the one-way one it was made into - and
+        // not of a password field, which has no word to resume and should never be asked to
+        // hand its contents back. A selection is deleted whole, so there is nothing to look
+        // at there either; that is read from what the field last reported rather than asked
+        // for, because [onUpdateSelection] is told about every selection there ever is.
+        var before: String? = null
+        if (!repeating && !privateField && selStart == selEnd) {
+            val around = around(ic)
+            if (around != null) {
+                if (resumeWordBeforeCursor(ic, around)) return
+                before = around.first
+            }
+        }
 
         try {
             if (repeating) {
                 // One-way, and no questions. `deleteSurroundingText` is dispatched and
                 // forgotten where a question waits for a reply.
                 ic.deleteSurroundingText(1, 0)
-            } else if (selStart == selEnd) {
-                // Sent as a key event rather than as a deletion so that fields which watch
-                // for the key - a search box that closes on an empty backspace, a chip field
-                // that removes a chip - still see it.
-                ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL))
-                ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL))
-            } else {
+            } else if (selStart != selEnd) {
                 // Something is selected, and backspace takes the whole of it.
                 ic.commitText("", 1)
+            } else if (!before.isNullOrEmpty()) {
+                // Deleted as text, not as a key event.
+                //
+                // A key event is the older way of saying this and it is not a reliable one:
+                // a field that handles its own keys - and the newer ones built on Compose
+                // often do - can drop a soft keyboard's KEYCODE_DEL on the floor. The
+                // symptom is peculiar enough to be worth writing down, because it is what
+                // gave this away: in such a field letters delete fine and a full stop cannot
+                // be deleted at all, since letters are composing text and never go anywhere
+                // near a key event - and *holding* backspace works, because the repeat above
+                // has always deleted as text.
+                //
+                // A whole grapheme rather than a single `char`, because that is what the key
+                // event would have taken. An emoji, a flag, a letter with a combining accent
+                // on it are each one thing to the person pressing the key and two or more
+                // chars underneath, and a keyboard that leaves half an emoji behind is worse
+                // than one that cannot delete a comma.
+                ic.deleteSurroundingText(lastGrapheme(before), 0)
+            } else {
+                // Nothing behind the caret to take, so the press is worth passing on as the
+                // key itself: fields that watch for it - a search box that closes on an empty
+                // backspace, a chip field that gives up a chip - only ever see the key. This
+                // is also where a field that would not say what is behind the caret lands: a
+                // password box, or one that has stopped answering.
+                sendKey(ic, KeyEvent.KEYCODE_DEL)
             }
         } catch (e: Exception) {
             return
@@ -2062,14 +2091,74 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
                 offer(emptyList())
                 offeredFor = ""
                 host?.bar?.clear()
+            } else if (multiLine) {
+                // A new line put in as text rather than as a key event. In a box that has
+                // said it takes more than one line there is nothing else the key can mean,
+                // and the key event is the unreliable way of saying it - the same fields
+                // that drop a soft KEYCODE_DEL drop KEYCODE_ENTER, and then pressing return
+                // in a chat box simply does nothing at all. See [backspace].
+                ic.commitText("\n", 1)
             } else {
-                ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))
-                ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER))
+                // One line, and no action to perform on it. The key goes through as a key,
+                // because whatever this field does with return is the field's business.
+                sendKey(ic, KeyEvent.KEYCODE_ENTER)
             }
         } catch (e: Exception) {
             return
         }
         updateAutoCaps()
+    }
+
+    /**
+     * A key, pressed and released, as though there were a keyboard there.
+     *
+     * How the event is built matters and the short constructor gets it wrong. `KeyEvent(
+     * action, code)` carries no timestamps, claims device 0 - the built-in keyboard - and
+     * sets no flags, and applications do look at all three: one that sees what appears to be
+     * a hardware keypress is entitled to answer it differently from a soft one, and one that
+     * does any filtering of its own on event time throws away an event stamped zero. So it
+     * is built the way the platform's own keyboards build it: the virtual device, the two
+     * flags that say a soft key sent this, and a real clock.
+     *
+     * Callers wrap this: the field can go away between the down and the up.
+     */
+    private fun sendKey(ic: InputConnection, keyCode: Int) {
+        val now = SystemClock.uptimeMillis()
+        for (action in intArrayOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP)) {
+            ic.sendKeyEvent(
+                KeyEvent(
+                    now, now, action, keyCode, 0, 0,
+                    KeyCharacterMap.VIRTUAL_KEYBOARD, 0,
+                    KeyEvent.FLAG_SOFT_KEYBOARD or KeyEvent.FLAG_KEEP_TOUCH_MODE
+                )
+            )
+        }
+    }
+
+    /**
+     * How many `char`s the last visible thing in [text] is made of.
+     *
+     * One press of backspace takes one *thing* off the end, and a thing is not a `char`: a
+     * flag is two, an emoji with a skin tone on it is four, a family is a dozen or more, and
+     * an `e` with a combining acute is two that look like one. Deleting a fixed number of
+     * chars off the end of any of those leaves a stump on screen - half a flag, an emoji
+     * with its modifier orphaned - which is why the platform's own key handling breaks text
+     * this way rather than counting chars, and why anything deleting text by hand has to do
+     * the same.
+     *
+     * [text] is only the tail of the field, so a boundary can in principle be misjudged at
+     * its far end. It cannot here: what is looked at is the *last* break in a window
+     * [RESUME_LOOKBACK] chars wide, and nothing that reads as one character is that long.
+     */
+    private fun lastGrapheme(text: String): Int = try {
+        val breaks = BreakIterator.getCharacterInstance()
+        breaks.setText(text)
+        val start = breaks.preceding(text.length)
+        // A start of 0 is an answer, not a failure: it means the whole of what was looked at
+        // reads as one character, which is what a field holding nothing but an emoji says.
+        if (start == BreakIterator.DONE || start >= text.length) 1 else text.length - start
+    } catch (e: Exception) {
+        1
     }
 
     /**
