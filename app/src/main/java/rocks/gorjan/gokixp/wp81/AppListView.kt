@@ -63,6 +63,18 @@ class AppListView(
     var metroGlyph: ((AppInfo) -> Int?)? = null
 
     /**
+     * The icon the user picked for an app by hand, or null where they have not picked one.
+     *
+     * The same answer the app's tile wears, handed in by the host so the two cannot drift:
+     * a picked icon is chosen per app, not per surface. Outranks [metroGlyph] as well as
+     * the provider, exactly as it does on Start.
+     *
+     * Volatile because it is asked on the worker that resolves artwork, and set here.
+     */
+    @Volatile
+    var customGlyph: ((AppInfo) -> MonochromeIconProvider.Glyph?)? = null
+
+    /**
      * Pressing search with a query that matched nothing installed.
      *
      * The list has said everything it can at that point; where the query goes next is the
@@ -257,6 +269,7 @@ class AppListView(
     }
 
     private fun resolveGlyph(app: AppInfo): MonochromeIconProvider.Glyph? {
+        customGlyph?.invoke(app)?.let { return it }
         metroGlyph?.invoke(app)?.let { res ->
             val drawable = AppCompatResources.getDrawable(context, res) ?: return null
             return MonochromeIconProvider.Glyph.Monochrome(
@@ -450,7 +463,7 @@ class AppListView(
                     placeGlyph(icon, glyph.drawable, item.packageName)
                 }
                 is MonochromeIconProvider.Glyph.FullColor ->
-                    if (glyph.fromPack) drawOnAccent(glyph.drawable)
+                    if (glyph.chosen) drawOnAccent(glyph.drawable)
                     else drawPlain(glyph.drawable)
                 null -> drawPlain(null)
             }

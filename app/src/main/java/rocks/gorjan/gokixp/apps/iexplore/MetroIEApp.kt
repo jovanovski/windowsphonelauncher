@@ -11,6 +11,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.drawable.Drawable
@@ -56,6 +57,8 @@ import com.google.gson.reflect.TypeToken
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.UUID
+import java.util.concurrent.Executors
 import kotlin.math.abs
 import rocks.gorjan.gokixp.MainActivity
 import rocks.gorjan.gokixp.R
@@ -77,8 +80,17 @@ import rocks.gorjan.gokixp.wp81.applyToField
  * [lastUsed] is when the tab was last looked at, which is what decides whether it is
  * still worth putting back. Zero means a tab written down before the browser kept that
  * clock: it is not stale, it is unknown, and it is restored and stamped afresh.
+ *
+ * [id] names the tab's picture on disk - see MetroIEApp.storeThumbnail. Null on a tab
+ * written down before the pictures were kept, which is given a new one and comes back
+ * without a picture until it is next looked at.
  */
-internal data class SavedTab(val url: String, val title: String, val lastUsed: Long = 0L)
+internal data class SavedTab(
+    val url: String,
+    val title: String,
+    val lastUsed: Long = 0L,
+    val id: String? = null
+)
 
 /**
  * One page this browser has been to. See MetroIEApp.recordVisit.
@@ -157,8 +169,26 @@ class MetroIEApp(
          */
         var lastUsed: Long = System.currentTimeMillis()
 
-        /** The last picture of this page, for the tabs grid. Captured on the way out. */
+        /** What this tab's picture is filed under between sessions. See [storeThumbnail]. */
+        var id: String = UUID.randomUUID().toString()
+
+        /**
+         * The last picture of this page, for the tabs grid. Captured on the way out, and
+         * kept on disk so a restored tab still has one. See [restoreThumbnails].
+         */
         var thumbnail: Bitmap? = null
+
+        /**
+         * Whether the event that put this page on screen is over.
+         *
+         * A page unhidden and photographed in the same breath has nothing drawn yet, and
+         * the white rectangle that comes out would be written over the good picture kept
+         * from before. Which is exactly what backing out of a page another app handed over
+         * does - the tab behind is brought forward and the window closed straight after.
+         * Cleared when the page is hidden, set a turn of the main loop after it is shown.
+         * See [cleanup].
+         */
+        var settled = false
 
         var loading = false
 
@@ -349,6 +379,7 @@ class MetroIEApp(
         // it comes off with it. Nothing reposts it until the downloads page is opened
         // again, which is where it is read.
         root.removeCallbacks(downloadsTick)
+        current?.let { if (it.settled) capture(it) }
         saveTabs()
         for (tab in tabs) {
             tab.webView.stopLoading()
@@ -430,6 +461,7 @@ class MetroIEApp(
             // its own tab on top of what was already there.
             if (initialUrl != null) openTab(initialUrl).external = fromAnotherApp
         }
+        restoreThumbnails()
         root.requestFocus()
         return root
     }
@@ -473,6 +505,7 @@ class MetroIEApp(
         tab.url = saved.url
         tab.title = saved.title
         tab.pending = saved.url
+        saved.id?.let { tab.id = it }
         if (saved.lastUsed > 0L) tab.lastUsed = saved.lastUsed
         tabs.add(tab)
         pages.addView(tab.webView, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -487,10 +520,12 @@ class MetroIEApp(
             // white rectangle.
             capture(it)
             it.webView.visibility = View.GONE
+            it.settled = false
         }
         current = tab
         tab.lastUsed = System.currentTimeMillis()
         tab.webView.visibility = View.VISIBLE
+        tab.webView.post { if (current === tab) tab.settled = true }
         showAddress(tab.url)
         paintPrivate(tab)
         showError(if (tab.failed) tab.failedUrl else null)
@@ -522,6 +557,7 @@ class MetroIEApp(
         pages.removeView(tab.webView)
         tab.webView.stopLoading()
         tab.webView.destroy()
+        forgetThumbnail(tab)
         if (current === tab) {
             current = null
             // The one before it, which is where the eye already was.
@@ -582,6 +618,7 @@ class MetroIEApp(
             canvas.scale(scale, scale)
             tab.webView.draw(canvas)
             tab.thumbnail = bitmap
+            storeThumbnail(tab, bitmap)
         } catch (e: Exception) {
             // A page too large to photograph is not a page that should stop working.
             Log.w(TAG, "Could not capture a thumbnail", e)
@@ -2775,7 +2812,7 @@ class MetroIEApp(
         context.getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE).edit()
             .putString(
                 KEY_TABS,
-                Gson().toJson(kept.map { SavedTab(it.url, it.title, it.lastUsed) })
+                Gson().toJson(kept.map { SavedTab(it.url, it.title, it.lastUsed, it.id) })
             )
             .putInt(KEY_ACTIVE_TAB, kept.indexOf(current).coerceAtLeast(0))
             .apply()
@@ -2799,6 +2836,76 @@ class MetroIEApp(
         } catch (e: Exception) {
             Log.w(TAG, "Unreadable tabs", e)
             emptyList()
+        }
+    }
+
+    /**
+     * Where the tabs page's pictures wait between sessions, one file per tab.
+     *
+     * Not in the preference with the rest of the tab: a picture is a few dozen kilobytes,
+     * and that preference is rewritten on every page load. Without them a restored tab is
+     * a grey card until it is gone back to - and restored tabs are not fetched until they
+     * are, so that is every card but one.
+     */
+    private fun thumbnailFile(id: String) = File(File(context.filesDir, THUMBNAIL_DIR), "$id.jpg")
+
+    /** Writes [bitmap] down as [tab]'s picture, off the main thread. Never a private tab's. */
+    private fun storeThumbnail(tab: Tab, bitmap: Bitmap) {
+        if (tab.inPrivate) return
+        val file = thumbnailFile(tab.id)
+        thumbnailDisk.execute {
+            try {
+                file.parentFile?.mkdirs()
+                // Written beside and moved over, so a launcher killed halfway through leaves
+                // the last picture rather than the top half of this one.
+                val partial = File(file.path + ".part")
+                partial.outputStream().use {
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, THUMB_QUALITY, it)
+                }
+                if (!partial.renameTo(file)) partial.delete()
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not keep a thumbnail", e)
+            }
+        }
+    }
+
+    private fun forgetThumbnail(tab: Tab) {
+        val file = thumbnailFile(tab.id)
+        thumbnailDisk.execute { file.delete() }
+    }
+
+    /**
+     * Reads back the pictures of the tabs that are open, and throws away every other one.
+     *
+     * Off the main thread, because a window of nine restored tabs is nine pictures to
+     * decode on the way in. A tab photographed in the meantime keeps the newer picture.
+     * Anything on disk that no open tab names - a tab dropped as stale by [loadTabs], one
+     * from before a crash - goes, so the folder never holds more than the grid does.
+     */
+    private fun restoreThumbnails() {
+        val wanted = tabs.filter { !it.inPrivate }.associateBy { it.id }
+        val dir = File(context.filesDir, THUMBNAIL_DIR)
+        thumbnailDisk.execute {
+            // A leftover "<id>.jpg.part" goes too: its name without the extension is not an id.
+            dir.listFiles()?.forEach { file ->
+                if (file.nameWithoutExtension !in wanted) file.delete()
+            }
+            val found = wanted.mapNotNull { (id, tab) ->
+                val file = thumbnailFile(id)
+                if (!file.exists()) return@mapNotNull null
+                BitmapFactory.decodeFile(file.path)?.let { tab to it }
+            }
+            if (found.isEmpty()) return@execute
+            onMain {
+                var changed = false
+                for ((tab, bitmap) in found) {
+                    // Gone since, or rebuilt into new tabs by a theme change.
+                    if (tab !in tabs || tab.thumbnail != null) continue
+                    tab.thumbnail = bitmap
+                    changed = true
+                }
+                if (changed && tabsPage.visibility == View.VISIBLE) buildTabsGrid()
+            }
         }
     }
 
@@ -2865,6 +2972,11 @@ class MetroIEApp(
             landings = null
         }
         arriving.clear()
+        // The page being read is photographed on the way out, as a page switched away from
+        // is - otherwise it comes back showing whatever it looked like the last time
+        // something else was switched to. The window fades before it is taken off, so the
+        // page is still attached and at full size here.
+        current?.let { if (it.settled) capture(it) }
         for (tab in tabs) {
             tab.webView.stopLoading()
             tab.webView.destroy()
@@ -2998,6 +3110,21 @@ class MetroIEApp(
 
         /** How wide a thumbnail is kept. Enough for a card, far less than a screen. */
         private const val THUMB_WIDTH_DP = 200
+
+        /** Where they are kept between sessions, and how hard they are squeezed. */
+        private const val THUMBNAIL_DIR = "ie_tab_thumbnails"
+        private const val THUMB_QUALITY = 80
+
+        /**
+         * The one thread the pictures are written, deleted and read on.
+         *
+         * Shared by every browser rather than owned by one, so that the window closed a
+         * moment ago has finished writing the page it was on before the window opened
+         * after it reads that page back.
+         */
+        private val thumbnailDisk = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "ie-thumbnails").apply { isDaemon = true }
+        }
 
         /** Cards in the set, and so the most pages the button could ever say. */
         private const val CARD_ICONS = 9

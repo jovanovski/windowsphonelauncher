@@ -1315,9 +1315,18 @@ class WP81ActionCenter(
         if (open) rebuild()
     }
 
+    /**
+     * The icon the user picked for an app by hand, or null where they have not picked one.
+     *
+     * The same answer the app's tile and its row in the app list wear, handed in by the
+     * host so the three cannot drift. Outranks everything the provider would infer.
+     */
+    var customGlyph: ((String) -> MonochromeIconProvider.Glyph?)? = null
+
     /** The mark for [packageName], as the panel and the status strip both draw it. */
     fun markFor(packageName: String): MonochromeIconProvider.Glyph? =
         marks.getOrPut(packageName) {
+            customGlyph?.invoke(packageName)?.let { return@getOrPut it }
             val fallback: Drawable? = try {
                 context.packageManager.getApplicationIcon(packageName)
             } catch (e: Exception) {
@@ -1543,7 +1552,7 @@ class WP81ActionCenter(
                 mark.scaleType = ImageView.ScaleType.FIT_CENTER
                 // A pack's artwork keeps the square it replaced a mark on; an app's own
                 // icon is a picture and stands on nothing.
-                if (glyph.fromPack) box.setBackgroundColor(palette.accent)
+                if (glyph.chosen) box.setBackgroundColor(palette.accent)
                 else box.background = null
             }
             null -> box.setBackgroundColor(palette.accent)
@@ -2027,12 +2036,18 @@ class WP81ActionCenter(
     /**
      * Forgets the marks this panel has cached.
      *
-     * An app installed, removed or re-skinned by an icon pack is one whose rows are now
-     * wearing the wrong mark, and the cache above would otherwise hold the old answer
-     * until the launcher was restarted.
+     * An app installed, removed, re-skinned by an icon pack or given an icon by hand is one
+     * whose rows are now wearing the wrong mark, and the cache above would otherwise hold
+     * the old answer until the launcher was restarted.
+     *
+     * The player and the strip are drawn again as well. Neither is rebuilt with the list:
+     * the player only when the session changes, and the strip only when the set of apps
+     * waiting does - so both went on wearing the old mark until something unrelated moved.
      */
     fun invalidateApps() {
         marks.clear()
+        miniPlayer.bind(playing)
+        onMarkedAppsChanged?.invoke(markedForStrip)
         drawnSignature = null
         if (open) rebuild()
     }

@@ -41,10 +41,10 @@ import rocks.gorjan.gokixp.wp81.WP81Program
  * desktop version deals from and the same card faces on it, down to the back you picked in
  * that one. What changes is everything around them. The green baize stays, because a card
  * table is green and the faces were drawn to be read on one - and it is the page and not a
- * panel in it: the cloth begins under the two numbers that say how the game is going and
- * runs to the foot of the screen, under the strip, so the only thing standing off it is the
- * title. The empty places are outlines scored into it, and the numbers are the shell's own
- * accent, in the same hand as the rest of it.
+ * panel in it: the cloth begins under the title and runs to the foot of the screen, under
+ * the strip. The empty places are outlines scored into it, and the title and the two numbers
+ * that say how the game is going are written in white on it, in the same hand as the rest
+ * of the shell.
  *
  * Cards are dragged, as cards are. A tap is the shortcut rather than the whole of the
  * input: it sends a card wherever it can go, home first, which is what a tap on a card
@@ -162,21 +162,28 @@ class MetroSolitaireApp(
 
     fun createView(): View {
         val root = FrameLayout(context).apply { setBackgroundColor(palette.background) }
-        // The strip is over the page rather than part of the column, so the list behind
-        // its dots opens *across* the page instead of shortening it. What keeps clear of
-        // the strip's own height - the only part of it that is always there - is the table
-        // below, and it keeps clear in its padding rather than in its size, so the cloth
-        // still runs under the strip instead of stopping in a band above it.
-        val column = LinearLayout(context).apply {
+        // The whole page is the table, and it is one block with the cloth behind it: the
+        // green is behind the title, behind the counters, behind the cards, and behind the
+        // empty run under the last of them, rather than being a rectangle the cards happen
+        // to sit inside with the page showing above and below.
+        //
+        // The strip is over the table rather than part of it, so the list behind its dots
+        // opens *across* the page instead of shortening it. What keeps clear of the strip's
+        // own height - the only part of it that is always there - is the table's padding
+        // rather than its size, so the cloth still runs under the strip instead of stopping
+        // in a band above it.
+        val table = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
+            background = Felt()
+            setPadding(0, 0, 0, dp(MetroAppBar.HEIGHT_DP))
         }
 
-        column.addView(TextView(context).apply {
+        table.addView(TextView(context).apply {
             text = "solitaire"
             typeface = ResourcesCompat.getFont(context, R.font.segoeui_light)
             textSize = TITLE_SP
             includeFontPadding = false
-            setTextColor(palette.foreground)
+            setTextColor(ON_FELT_BRIGHT)
             setPadding(dp(PAGE_MARGIN_DP), dp(14), dp(PAGE_MARGIN_DP), dp(2))
         }, wide())
 
@@ -202,15 +209,6 @@ class MetroSolitaireApp(
                 movesBlock.layoutParams = params
             }
         }
-        // Everything from the numbers down is the table, and it is one block with the
-        // cloth behind it: the green is behind the counters, behind the cards, and behind
-        // the empty run under the last of them, rather than being a rectangle the cards
-        // happen to sit inside with the page showing above and below.
-        val table = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            background = Felt()
-            setPadding(0, 0, 0, dp(MetroAppBar.HEIGHT_DP))
-        }
         table.addView(counters, wide())
 
         board = BoardView(context)
@@ -224,7 +222,6 @@ class MetroSolitaireApp(
             setPadding(dp(PAGE_MARGIN_DP), dp(2), dp(PAGE_MARGIN_DP), dp(8))
         }
         table.addView(status, wide())
-        column.addView(table, LinearLayout.LayoutParams(MATCH, 0, 1f))
 
         bar = MetroAppBar(context, palette)
         bar.addCommand(NEW_ICON) { deal() }
@@ -243,7 +240,7 @@ class MetroSolitaireApp(
                 MetroAppBar.Item("send home") { sendHome() }
             )
         }
-        root.addView(column, FrameLayout.LayoutParams(MATCH, MATCH))
+        root.addView(table, FrameLayout.LayoutParams(MATCH, MATCH))
         root.addView(bar, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
 
         // Only an empty table is dealt. A rebuild for a new theme keeps the game that is on
@@ -1047,7 +1044,8 @@ class MetroSolitaireApp(
      * draw, so they are built when the block is given its size and not on the way past.
      *
      * It is a background and not something the board paints because the table is larger
-     * than the board: it has the two numbers above it and the strip's own height below.
+     * than the board: it has the title and the two numbers above it and the strip's own
+     * height below.
      */
     private class Felt : Drawable() {
 
@@ -1108,7 +1106,7 @@ class MetroSolitaireApp(
         typeface = ResourcesCompat.getFont(context, R.font.segoeui_light)
         textSize = COUNTER_SP
         includeFontPadding = false
-        setTextColor(palette.accent)
+        setTextColor(ON_FELT_BRIGHT)
     }
 
     private fun counterBlock(name: String, value: TextView): View =
@@ -1157,9 +1155,10 @@ class MetroSolitaireApp(
 
         /**
          * What is written on the cloth rather than on the page: the cloth's own light, at
-         * two weights. Nothing here can be the palette's grey - it goes muddy on green in
+         * three weights. Nothing here can be the palette's grey - it goes muddy on green in
          * the dark theme and vanishes into it in the light one.
          */
+        private const val ON_FELT_BRIGHT = 0xFFFFFFFF.toInt()
         private const val ON_FELT = 0xA0FFFFFF.toInt()
         private const val ON_FELT_FAINT = 0x5AFFFFFF
 

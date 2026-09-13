@@ -52,16 +52,16 @@ class MonochromeIconProvider(private val context: Context) {
         /**
          * The app's real icon; must be drawn as-is, never tinted.
          *
-         * [fromPack] marks the ones an icon pack answered for rather than the app itself.
-         * The picture is drawn the same either way; what it says is that this row's mark
-         * was chosen for it, so a surface that stands its marks on an accent square can go
-         * on doing that instead of dropping the square the moment a pack is turned on.
-         * See AppListView's drawGlyph.
+         * [chosen] marks the ones an icon pack or the user's own pick answered for rather
+         * than the app itself. The picture is drawn the same either way; what it says is
+         * that this row's mark was chosen for it, so a surface that stands its marks on an
+         * accent square can go on doing that instead of dropping the square the moment a
+         * pack is turned on or an icon is picked. See AppListView's drawGlyph.
          */
         data class FullColor(
             val drawable: Drawable,
             val contentRatio: Float = 1f,
-            val fromPack: Boolean = false,
+            val chosen: Boolean = false,
             val ink: RectF? = null,
         ) : Glyph()
     }
@@ -105,7 +105,7 @@ class MonochromeIconProvider(private val context: Context) {
             return Glyph.FullColor(
                 it,
                 ratioFor("pack:$packageName", it),
-                fromPack = true,
+                chosen = true,
                 ink = inkFor("pack:$packageName", it),
             )
         }

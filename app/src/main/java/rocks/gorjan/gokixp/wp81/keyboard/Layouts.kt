@@ -51,6 +51,15 @@ object Layouts {
     private const val BOTTOM_ROW_SCALE = 0.75f
 
     /**
+     * How tall the number row is against the letters: the same as the bottom row.
+     *
+     * For the same reason, and so the shorter-bottom-row setting answers for both. The two
+     * rows either end of the letters are the two that are not letters, and a keyboard with
+     * one short and one tall would look like it had been put together from two others.
+     */
+    const val NUMBER_ROW_SCALE = BOTTOM_ROW_SCALE
+
+    /**
      * How far the space bar's touch area reaches up into the row above. See [Key.overhangTop].
      *
      * A sixth of a key's height. It was a third, which was too much and had to come down:
@@ -499,6 +508,53 @@ object Layouts {
     )
 
     fun byId(id: String): KeyboardLayout = ALL_LANGUAGES.firstOrNull { it.id == id } ?: EN_QWERTY
+
+    // ------------------------------------------------------------------ number row
+
+    /**
+     * A letter layout with a row of digits across the top, for the setting that asks for one.
+     *
+     * Made from the layout rather than declared beside it, so twenty-two alphabets do not turn
+     * into forty-four that have to be kept in step by hand. Anything that is not letters comes
+     * back untouched: the first symbol page already opens with the digits, and a number pad is
+     * nothing but digits.
+     *
+     * The digits share the full width between them rather than keeping a letter's width, so a
+     * twelve-column alphabet gets ten wide digits instead of ten narrow ones with a gap at
+     * either end. And the top row gives up the digits in its corners. Those were the number
+     * row the phone had no room for - see [Key.hint] - and with the real one directly above
+     * them they are the same ten characters said twice. A hold on a top-row key still offers
+     * its accents.
+     *
+     * The id is a different one, so the view keeps a grid for each and flipping the setting is
+     * a switch between two grids rather than one rebuilt into the other. Nothing outside the
+     * view ever sees it: the service goes on asking for the language, and the suggester goes
+     * on reading its geometry from the layout without the row, which has no letters in it.
+     */
+    fun withNumberRow(layout: KeyboardLayout): KeyboardLayout {
+        if (layout.language.isEmpty()) return layout
+        return numbered.getOrPut(layout.id) {
+            val span = layout.columns / DIGITS.length
+            val digits = Row(
+                symbols(DIGITS).map { it.copy(span = span) },
+                heightScale = NUMBER_ROW_SCALE
+            )
+            val top = layout.rows.first()
+            val unhinted = top.copy(keys = top.keys.map { it.copy(hint = null) })
+            layout.copy(
+                id = layout.id + NUMBER_ROW_ID,
+                rows = listOf(digits, unhinted) + layout.rows.drop(1)
+            )
+        }
+    }
+
+    /** One per language, made the first time it is asked for. See [withNumberRow]. */
+    private val numbered = mutableMapOf<String, KeyboardLayout>()
+
+    private const val DIGITS = "1234567890"
+
+    /** Added to a letter layout's id for its number-row twin. Never stored anywhere. */
+    private const val NUMBER_ROW_ID = "+numbers"
 
     /**
      * The layout for whichever subtype the system says the keyboard currently is.

@@ -91,6 +91,22 @@ class IconStore(
 
     fun has(packageName: String): Boolean = customIcons.containsKey(packageName)
 
+    /**
+     * Whether a package's hand-picked icon is one of the phone's own flat glyphs, as against
+     * a picture - an imported image, or one named out of an icon pack.
+     *
+     * The glyphs are drawn in white to be tinted (see wp81.SvgIcon), so a surface that
+     * draws marks in its own ink has to know to tint them, or a white glyph on the Light
+     * theme's white is nothing at all. Mirrors the path rules in
+     * WP81TileHost.loadIconFromPath, which is what decides how a path is drawn.
+     */
+    fun isGlyph(packageName: String): Boolean {
+        val path = customIcons[packageName] ?: return false
+        return !path.startsWith(IconPack.PATH_PREFIX) &&
+            !path.startsWith("${MainActivity.IMPORTED_ICONS_DIR}/") &&
+            path.endsWith(".svg", ignoreCase = true)
+    }
+
     /** Records a hand-picked icon, or clears it when [path] is "default". */
     fun set(packageName: String, path: String) {
         if (path == "default") customIcons.remove(packageName) else customIcons[packageName] = path

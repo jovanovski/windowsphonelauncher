@@ -39,6 +39,16 @@ class KeyboardView(
             grids.values.forEach { grid -> grid.forEach { it.listener = value } }
         }
 
+    /**
+     * The layout the service asked for, which is what [currentLayout] reports.
+     *
+     * Not always what is drawn - see [layout]. The service compares ids against the symbol
+     * pages and puts back whatever it was told, and none of that should have to know that the
+     * letters grew a row of digits on the way to the screen.
+     */
+    private var requested: KeyboardLayout = Layouts.EN_QWERTY
+
+    /** The layout on screen: [requested], with the number row if the setting wants one. */
     private var layout: KeyboardLayout = Layouts.EN_QWERTY
     /**
      * The keys of the layout on screen. Not the only ones attached - see [grids].
@@ -146,6 +156,57 @@ class KeyboardView(
             field = value
             requestLayout()
         }
+
+    /**
+     * Whether the letters have a row of digits across the top. See [Layouts.withNumberRow].
+     *
+     * Applied here rather than by the service choosing a different layout, for the same
+     * reason as [shortBottomRow]: the service's idea of which language is up, which page is
+     * showing and what to put back after a slide all stay exactly as they were.
+     */
+    var numberRow: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            // The symbol pages keep their grids and change height - see [stretch] - so the
+            // bounds cached for them are no longer where their keys go.
+            laidOutAt.clear()
+            layout = drawn(requested)
+            if (keys.isEmpty()) requestLayout() else rebuild()
+        }
+
+    private fun drawn(next: KeyboardLayout): KeyboardLayout =
+        if (numberRow) Layouts.withNumberRow(next) else next
+
+    /**
+     * Whether [layout] is a page the letters' number row has to be made up on.
+     *
+     * The symbol pages, which have no number row of their own and share the letters' bottom
+     * row. `&123` is pressed in the middle of a sentence, and a page a row shorter than the
+     * letters would resize the window - moving whatever is being typed into - on the way to
+     * every symbol and again on the way back. The number pads are left alone: they come up
+     * when a field changes, which moves the app anyway, and they were never the letters'
+     * height to begin with.
+     */
+    private fun fillsNumberRow(): Boolean =
+        numberRow && layout.language.isEmpty() &&
+            layout.rows.lastOrNull()?.keys?.any { it.action == Action.SPACE } == true
+
+    /** The height of the letters' number row, gutter included, for a page that has none. */
+    private fun missingRowHeight(): Float =
+        keyH * (if (shortBottomRow) Layouts.NUMBER_ROW_SCALE else 1f) + gap
+
+    /**
+     * What each row above the space bar is given on such a page, so the page comes to the
+     * letters' height. Shared out rather than put in one place, which would be one oddly tall
+     * row of symbols.
+     */
+    private fun stretch(): Float =
+        if (fillsNumberRow()) missingRowHeight() / (layout.rows.size - 1) else 0f
+
+    /** How tall a row is drawn: its own share of a key, and its share of any [stretch]. */
+    private fun heightOf(row: Row): Float =
+        keyH * scaleOf(row) + if (row !== layout.rows.last()) stretch() else 0f
 
     /** How long a hold takes, pushed down to every key. See [KeyView.holdMillis]. */
     var holdMillis: Long = KeyView.DEFAULT_HOLD_MS
@@ -379,7 +440,7 @@ class KeyboardView(
         if (popupKey != null) return
         val text = key.output()
         if (text.isBlank()) return
-        preview.show(this, key, text, keyH * scaleOf(rowOf(key)), gap)
+        preview.show(this, key, text, heightOf(rowOf(key)), gap)
     }
 
     /**
@@ -502,12 +563,13 @@ class KeyboardView(
     // ---------------------------------------------------------------- contents
 
     fun setLayout(next: KeyboardLayout) {
-        if (next.id == layout.id && keys.isNotEmpty()) return
-        layout = next
+        if (next.id == requested.id && keys.isNotEmpty()) return
+        requested = next
+        layout = drawn(next)
         rebuild()
     }
 
-    fun currentLayout(): KeyboardLayout = layout
+    fun currentLayout(): KeyboardLayout = requested
 
     fun applyPalette(p: WP81Palette) {
         palette = p
@@ -835,7 +897,7 @@ class KeyboardView(
         // keyboard shrink by a fifth: shorter keys, shorter rows, a shorter keyboard, and the
         // app above it reflowing every time the language changed. Only the width of a key
         // should answer to how many of them there are.
-        val reference = verticalUnit(resources, w, REFERENCE_COLUMNS, keyHeightScale)
+        val reference = verticalUnit(resources, w, REFERENCE_COLUMNS, keyHeightScale, numberRow)
         gap = reference * GAP
         keyH = reference * KEY_ASPECT * keyHeightScale
         // The keys still fill the width, whatever the height was capped to. That is the whole
@@ -855,7 +917,7 @@ class KeyboardView(
 
         var index = 0
         for (row in layout.rows) {
-            val rowH = keyH * scaleOf(row)
+            val rowH = heightOf(row)
             for (key in row.keys) {
                 val view = keys.getOrNull(index++) ?: continue
                 view.setMetrics(keyW, rowH, gap)
@@ -886,7 +948,7 @@ class KeyboardView(
         var y = gap / 2f
         for (row in layout.rows) {
             var x = gap / 2f + row.indentStart * (keyW + gap)
-            val rowH = keyH * scaleOf(row)
+            val rowH = heightOf(row)
             for (key in row.keys) {
                 val view = keys.getOrNull(index++) ?: continue
                 val painted = spanWidth(key.span)
@@ -934,7 +996,7 @@ class KeyboardView(
 
         // Down to the top of the last row, which is where the rows above it end.
         var top = gap / 2f
-        for (i in 0 until layout.rows.lastIndex) top += keyH * scaleOf(layout.rows[i]) + gap
+        for (i in 0 until layout.rows.lastIndex) top += heightOf(layout.rows[i]) + gap
         // And across to the far side of that row's first key.
         val after = gap / 2f + row.indentStart * (keyW + gap) + spanWidth(first.span) + gap
 
@@ -983,8 +1045,14 @@ class KeyboardView(
      * for by anything that has to be exactly as tall as the keyboard - the emoji panel, which
      * replaces it, and which would otherwise resize the window every time it opened.
      */
-    fun contentHeight(): Int =
-        layout.rows.sumOf { (keyH * scaleOf(it) + gap).toDouble() }.toInt()
+    fun contentHeight(): Int {
+        val rows = layout.rows.sumOf { (keyH * scaleOf(it) + gap).toDouble() }
+        // Added whole rather than summed row by row with the [stretch] in it. The letters add
+        // exactly this number for their number row, so the two pages come to exactly the same
+        // total - and one pixel between them is a window resize on every trip to `&123`.
+        val missing = if (fillsNumberRow()) missingRowHeight().toDouble() else 0.0
+        return (rows + missing).toInt()
+    }
 
     /** How tall a row is, allowing for the setting. See [shortBottomRow]. */
     private fun scaleOf(row: Row): Float = if (shortBottomRow) row.heightScale else 1f
@@ -1058,7 +1126,8 @@ class KeyboardView(
             resources: android.content.res.Resources,
             width: Int,
             columns: Float,
-            heightScale: Float = 1f
+            heightScale: Float = 1f,
+            numberRow: Boolean = false
         ): Float {
             val fromWidth = unitWidth(width, columns)
             // From the configuration rather than from `displayMetrics`. Both describe the
@@ -1069,7 +1138,7 @@ class KeyboardView(
             // wrong orientation is a keyboard built to the wrong height.
             val screen = resources.configuration.screenHeightDp * resources.displayMetrics.density
             if (screen <= 0f) return fromWidth
-            return minOf(fromWidth, screen * MAX_HEIGHT_SHARE / totalUnits(heightScale))
+            return minOf(fromWidth, screen * MAX_HEIGHT_SHARE / totalUnits(heightScale, numberRow))
         }
 
         /**
@@ -1103,9 +1172,14 @@ class KeyboardView(
          * keep it inside the share of the screen it is allowed. The result is a keyboard that
          * honours the setting as far as there is room for it and then stops, rather than one
          * that runs off the top of the screen.
+         *
+         * [numberRow] is a fifth row, counted full height for the same reason the bottom row
+         * is.
          */
-        fun totalUnits(heightScale: Float): Float =
-            4f * KEY_ASPECT * heightScale + 4f * GAP + CandidateBar.HEIGHT
+        fun totalUnits(heightScale: Float, numberRow: Boolean = false): Float {
+            val rows = if (numberRow) 5f else 4f
+            return rows * KEY_ASPECT * heightScale + rows * GAP + CandidateBar.HEIGHT
+        }
 
         /**
          * How far the key-height setting may be moved.

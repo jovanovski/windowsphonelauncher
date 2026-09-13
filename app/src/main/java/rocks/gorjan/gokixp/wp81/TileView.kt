@@ -250,9 +250,6 @@ class TileView(
     private val mediaPlayPause = ImageView(context)
     private val mediaNext = ImageView(context)
 
-    /** Play/pause shown in the corner of a small tile, where the dot would otherwise be. */
-    private val mediaBadge = ImageView(context)
-
     /**
      * How far into the track, in the corner beside the app's mark.
      *
@@ -359,12 +356,15 @@ class TileView(
     private var mediaArt: Bitmap? = null
 
     // --- Moving faces ------------------------------------------------------------------
-    // A clip from the camera roll plays where its still would otherwise sit, muted, for as
-    // long as its face is up. Built on first use: one tile in a wall of forty ever wants a
-    // video surface, and the rest should not be paying for one.
+    // A clip from the camera roll plays where its still would otherwise sit, picture only,
+    // for as long as its face is up. Built on first use: one tile in a wall of forty ever
+    // wants a video surface, and the rest should not be paying for one.
     private var videoView: android.view.TextureView? = null
-    private var videoPlayer: android.media.MediaPlayer? = null
+    private var videoClip: TileClip? = null
     private var videoSurface: android.view.Surface? = null
+
+    /** The clip last taken down, which may still be letting go of the surface. See [TileClip]. */
+    private var lastClip: TileClip? = null
 
     /** Which clip the surface is on, so re-binding the same face does not restart it. */
     private var videoUri: String? = null
@@ -596,7 +596,7 @@ class TileView(
 
     override fun onSizeChanged(w: Int, h: Int, oldW: Int, oldH: Int) {
         super.onSizeChanged(w, h, oldW, oldH)
-        videoPlayer?.let { applyVideoTransform(it.videoWidth, it.videoHeight) }
+        videoClip?.let { applyVideoTransform(it.videoWidth, it.videoHeight) }
         postSettle()
     }
 
@@ -892,6 +892,12 @@ class TileView(
     private var pressStartY = 0f
     private var pressDragged = false
 
+    /**
+     * Whether the finger went down on the app's name. Only true for the length of the
+     * tap it was set for - see [performClick] and [notificationOpening].
+     */
+    private var pressOnName = false
+
     private val tapSlop = android.view.ViewConfiguration.get(context).scaledTouchSlop
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -903,12 +909,17 @@ class TileView(
                 pressStartX = event.rawX
                 pressStartY = event.rawY
                 pressDragged = false
+                // The name runs the width of the tile along its foot, so the band it sits
+                // in is the target rather than the letters themselves: a short name is a
+                // word-sized mark to hit, and the band is what reads as "the name".
+                pressOnName = label.visibility == VISIBLE && event.y >= label.top
             }
             MotionEvent.ACTION_MOVE -> if (!pressDragged) {
                 val travelled =
                     kotlin.math.hypot(event.rawX - pressStartX, event.rawY - pressStartY)
                 if (travelled > tapSlop) pressDragged = true
             }
+            MotionEvent.ACTION_CANCEL -> pressOnName = false
         }
         swipeDetector.onTouchEvent(event)
         return super.onTouchEvent(event)
@@ -929,7 +940,14 @@ class TileView(
      */
     override fun performClick(): Boolean {
         if (pressDragged) return false
-        return super.performClick()
+        // The click listener asks where the tap landed while it runs, so the answer is
+        // cleared once it has: a click that comes with no touch behind it - accessibility,
+        // a keyboard - was not aimed at the name.
+        return try {
+            super.performClick()
+        } finally {
+            pressOnName = false
+        }
     }
 
     /**
@@ -1155,7 +1173,7 @@ class TileView(
      *
      * How much of it is shown depends on the tile - see [applyMediaLayout]. A wide tile
      * carries the full transport, a medium one just play/pause, and a small one has no
-     * room for text at all and shows only a badge.
+     * room for either: it shows the cover and nothing else, and a tap opens the app.
      */
     private fun buildMediaFace() {
         mediaTitle.maxLines = 2
@@ -1235,14 +1253,6 @@ class TileView(
             Gravity.TOP or Gravity.END).apply {
             topMargin = dp(CORNER_INSET_DP)
         })
-
-        mediaBadge.scaleType = ImageView.ScaleType.FIT_CENTER
-        mediaBadge.visibility = GONE
-        mediaBadge.isClickable = true
-        mediaBadge.setOnClickListener { onMediaPlayPause?.invoke() }
-        addView(mediaBadge, LayoutParams(
-            dp(NOTIFICATION_DOT_TARGET_DP), dp(NOTIFICATION_DOT_TARGET_DP),
-            Gravity.TOP or Gravity.END))
     }
 
     /**
@@ -1264,7 +1274,6 @@ class TileView(
             val icon = if (info.isPlaying) R.drawable.wp81_media_pause
                        else R.drawable.wp81_media_play
             mediaPlayPause.setImageResource(icon)
-            mediaBadge.setImageResource(icon)
             mediaPrevious.visibility = if (info.canSkipPrevious) VISIBLE else GONE
             mediaNext.visibility = if (info.canSkipNext) VISIBLE else GONE
         }
@@ -2558,7 +2567,7 @@ class TileView(
                     override fun onSurfaceTextureSizeChanged(
                         texture: android.graphics.SurfaceTexture, w: Int, h: Int
                     ) {
-                        videoPlayer?.let { applyVideoTransform(it.videoWidth, it.videoHeight) }
+                        videoClip?.let { applyVideoTransform(it.videoWidth, it.videoHeight) }
                     }
 
                     override fun onSurfaceTextureDestroyed(
@@ -2578,7 +2587,7 @@ class TileView(
 
     /** Puts a clip up, or leaves the one already playing alone if it is the same one. */
     private fun playVideo(uri: String) {
-        if (videoUri == uri && videoPlayer != null) return
+        if (videoUri == uri && videoClip != null) return
         stopVideo()
         videoUri = uri
         requireVideoView().visibility = VISIBLE
@@ -2588,47 +2597,29 @@ class TileView(
 
     private fun openPlayer(uri: String) {
         val surface = videoSurface ?: return
-        val player = android.media.MediaPlayer()
-        videoPlayer = player
-        try {
-            player.setDataSource(context, android.net.Uri.parse(uri))
-            player.setSurface(surface)
-            // Short clips loop rather than freezing on their last frame; long ones are cut
-            // off by the flip, which is the right length for a tile either way.
-            player.isLooping = true
-            // Silent, always. A tile is not somewhere a phone starts making noise from,
-            // and muting rather than asking for audio focus is what keeps whatever the
-            // user is actually listening to playing.
-            player.setVolume(0f, 0f)
-            player.setOnPreparedListener {
-                if (videoPlayer !== player) return@setOnPreparedListener
-                applyVideoTransform(player.videoWidth, player.videoHeight)
-                if (isShown && !isEditMode) player.start()
-            }
-            player.setOnErrorListener { _, what, extra ->
-                android.util.Log.w(TAG, "Could not play a clip on a tile: $what/$extra")
-                // The still is already up behind it, so there is nothing to put in its
-                // place - the face simply stops moving.
-                stopVideo()
-                true
-            }
-            player.prepareAsync()
-        } catch (e: Exception) {
-            android.util.Log.w(TAG, "Could not open a clip for a tile", e)
-            stopVideo()
-        }
+        // Picture only: the clip's sound is never decoded at all. Muting a player was not
+        // silent enough - see [TileClip].
+        val clip = TileClip(
+            context, android.net.Uri.parse(uri), surface,
+            previous = lastClip,
+            onSize = {
+                if (videoClip === it) applyVideoTransform(it.videoWidth, it.videoHeight)
+            },
+            // The still is already up behind it, so there is nothing to put in its place -
+            // the face simply stops moving.
+            onError = { if (videoClip === it) stopVideo() }
+        )
+        lastClip = null
+        videoClip = clip
+        clip.setPlaying(isShown && !isEditMode)
     }
 
     private fun stopVideo() {
         videoUri = null
-        videoPlayer?.let { player ->
-            videoPlayer = null
-            try {
-                player.reset()
-            } catch (e: IllegalStateException) {
-                android.util.Log.w(TAG, "Clip would not reset", e)
-            }
-            player.release()
+        videoClip?.let { clip ->
+            videoClip = null
+            clip.release()
+            lastClip = clip
         }
         videoView?.visibility = GONE
     }
@@ -2660,16 +2651,7 @@ class TileView(
      */
     override fun onVisibilityAggregated(isVisible: Boolean) {
         super.onVisibilityAggregated(isVisible)
-        val player = videoPlayer ?: return
-        try {
-            if (isVisible && !isEditMode) {
-                if (!player.isPlaying) player.start()
-            } else if (player.isPlaying) {
-                player.pause()
-            }
-        } catch (e: IllegalStateException) {
-            // Not prepared yet; the prepared listener will start it if it should be.
-        }
+        videoClip?.setPlaying(isVisible && !isEditMode)
     }
 
     /**
@@ -3324,11 +3306,17 @@ class TileView(
      * The corner dot is the way through to what is waiting while the icon is up; it turns
      * the tile over rather than opening anything. See [showNotificationFace].
      *
-     * Null on the icon face, null when what is waiting has nowhere of its own to go - the
-     * tile's ordinary launch, see [Line.open] - and null when there is nothing waiting.
+     * The name is the program's on either face. It stays put along the foot of the tile
+     * while a message turns over above it, so a tap on it is a tap on the program and
+     * launches it - the message has the rest of the tile to be tapped on.
+     *
+     * Null on the icon face, null on the name, null when what is waiting has nowhere of its
+     * own to go - the tile's ordinary launch, see [Line.open] - and null when there is
+     * nothing waiting.
      */
     fun notificationOpening(): (() -> Unit)? {
         if (!showingBack || notifications.isEmpty()) return null
+        if (pressOnName) return null
         // A widget's reverse is a second reading of its own - the rest of the forecast, the
         // other half of the date - written over the notification face by [bindWidgetBack],
         // and the only thing that earns a widget its turn in the first place (see
@@ -3441,7 +3429,7 @@ class TileView(
         // The picture goes with the face it stood behind. A widget standing down to its
         // icon wears the tile's own colour rather than the last story's photograph, and a
         // clip left playing under an icon is paying for frames nobody can see.
-        if (!live && (faceBackdrop != null || videoPlayer != null)) {
+        if (!live && (faceBackdrop != null || videoClip != null)) {
             faceBackdrop = null
             stopVideo()
             invalidate()
@@ -3511,6 +3499,8 @@ class TileView(
             // them would crush all three, so the name yields while there is content - and
             // a folder's preview is content, two rows of it.
             tile.size.isStrip && (contentShowing || hasFolderPreview) -> GONE
+            // And on a strip too short to keep the name clear of the icon at all.
+            !stripHasRoomForName() -> GONE
             else -> VISIBLE
         }
         // The same question this method opens with - is the tile showing content, or is it
@@ -3574,10 +3564,27 @@ class TileView(
      * down onto the word naming it. The constant stays as the floor, so nothing on a
      * phone at the ordinary size moves at all.
      */
-    private fun labelBand(): Int {
-        if (label.visibility != VISIBLE) return 0
+    private fun labelBand(): Int = if (label.visibility == VISIBLE) nameBand() else 0
+
+    /** What [labelBand] would be if the name were up, whether or not it is. */
+    private fun nameBand(): Int {
         val floor = dp(8) + dp(NOTIFICATION_LABEL_GAP_DP)
         return maxOf(floor, label.lineHeight + label.paddingTop + label.paddingBottom)
+    }
+
+    /**
+     * Whether a one-row tile is tall enough for its icon and its name both.
+     *
+     * The icon is lifted clear of the name's band and, if that is not enough, made smaller
+     * - see [onMeasure]. On a dense enough wall the band is most of the strip, and clearing
+     * it would leave a speck where the icon was; the name gives way there instead, as it
+     * does on a 1x1, since the icon is the one of the two that says what the tile is at a
+     * glance. Not yet measured counts as room, and [postSettle] asks again once it is.
+     */
+    private fun stripHasRoomForName(): Boolean {
+        if (!tile.size.isStrip || height <= 0) return true
+        val room = height - nameBand() - dp(STRIP_GLYPH_AIR_DP) * 2
+        return room >= height * STRIP_GLYPH_MIN_FRACTION
     }
 
     /**
@@ -3591,11 +3598,6 @@ class TileView(
      * onto the notification, where there is no icon left to count beside either.
      */
     private fun updateNotificationDot() {
-        // A small tile that is playing shows play/pause in the corner instead of the dot -
-        // the same spot, doing the more useful job.
-        val badge = media != null && !tile.size.canShowText && !isEditMode
-        mediaBadge.visibility = if (badge) VISIBLE else GONE
-
         val unread = notifications.isNotEmpty() && media == null && !isEditMode
         // The count belongs beside the glyph, so it is only ever asked for on the face
         // that has one.
@@ -3788,7 +3790,7 @@ class TileView(
         mediaArtist.setTextColor(p.onAccent())
         mediaTime.setTextColor(p.onAccent())
         val onAccent = android.content.res.ColorStateList.valueOf(p.onAccent())
-        for (control in listOf(mediaPrevious, mediaPlayPause, mediaNext, mediaBadge)) {
+        for (control in listOf(mediaPrevious, mediaPlayPause, mediaNext)) {
             control.imageTintList = onAccent
         }
         if (widgetGlyph.drawable != null) widgetGlyph.imageTintList = onAccent
@@ -4112,7 +4114,21 @@ class TileView(
         // size of the 2x2's beside it, on a phone of any density. What the artwork was
         // padded with is corrected for in [placeGlyph] rather than here, because a box
         // scaled by the padding's reciprocal is a correction the tile cannot always afford.
-        val target = (basis * GLYPH_FRACTION).toInt().coerceAtLeast(1)
+        val natural = (basis * GLYPH_FRACTION).toInt().coerceAtLeast(1)
+        // Except where that runs it into the name. A one-row tile's name band is most of
+        // the height below its middle, so a mark centred in the tile reached down into it,
+        // and any name long enough to pass under the icon was printed through it. The mark
+        // keeps its size and its centre wherever it can, is lifted only as far as it takes
+        // to clear the band, and is made smaller only when being lifted would put it into
+        // the top edge instead. By the band rather than by the name actually written in
+        // it, so every strip of a size wears its mark in the same place whatever it is
+        // called. See [stripHasRoomForName] for the strip too short for either.
+        val band = if (tile.size.isStrip) labelBand() else 0
+        val air = if (band > 0) dp(STRIP_GLYPH_AIR_DP) else 0
+        val target =
+            if (band > 0) natural.coerceAtMost(h - band - air * 2).coerceAtLeast(1)
+            else natural
+        val lift = if (band > 0) ((h + target) / 2f + band + air - h).coerceAtLeast(0f) else 0f
         // A widget showing a reading has no glyph in the middle to size: its mark is the
         // corner one, which is sized against the tile in applyWidgetGlyphSize.
         //
@@ -4148,7 +4164,11 @@ class TileView(
         // of the tile already, and a tall mark and a wide one of that share are different
         // heights, so digits set off the icon would not match from one tile to the next.
         // The footprint is the one thing they genuinely share.
-        val digits = (basis * COUNT_HEIGHT_FRACTION).toInt().coerceAtLeast(1)
+        //
+        // A mark made smaller to clear a strip's name takes its digits down with it, by the
+        // same share, or the number would stand taller than the icon it is counting for.
+        val shrunk = if (target < natural) target.toFloat() / natural else 1f
+        val digits = (basis * COUNT_HEIGHT_FRACTION * shrunk).toInt().coerceAtLeast(1)
         if (counting) {
             applyCountSize(digits, w - target - dp(COUNT_EDGE_DP) * 2)
         }
@@ -4206,6 +4226,9 @@ class TileView(
         // icon and its number off the middle. This takes the difference out again.
         val leftBlank = (target - inkW) / 2f
         iconRow.translationX = if (counting) -(leftBlank - countTrailing) / 2f else 0f
+        // The row is centred on the icon, so moving the row moves the icon and its count as
+        // one. Nothing when the tile has no name under it to clear.
+        iconRow.translationY = -lift
         // The app's mark is placed by the same rule as the widget's - see applyCornerMark.
         // Smaller on the media face, which is the one face that has something else in the
         // corner with it - see [SMALL_MARK_DP].
@@ -4296,13 +4319,7 @@ class TileView(
         // Nothing on a tile being arranged moves under the finger holding it.
         folderPreview?.setPaused(editing)
         peopleMosaic?.setPaused(editing)
-        videoPlayer?.let { player ->
-            try {
-                if (editing && player.isPlaying) player.pause() else if (!editing) player.start()
-            } catch (e: IllegalStateException) {
-                // Not prepared yet; the prepared listener decides whether it should run.
-            }
-        }
+        videoClip?.setPlaying(!editing && isShown)
         // Nothing is turned over while a tile is being arranged.
         applyFlipCornerSize()
         // The corner is the resize handle's while editing, so no indicator shows.
@@ -4601,7 +4618,22 @@ class TileView(
          * drawn on, and a tile of any footprint on a screen of any density wears its mark
          * at the same share of itself.
          */
-        private const val GLYPH_FRACTION = 0.42f
+        private const val GLYPH_FRACTION = 0.38f
+
+        /**
+         * Kept between a one-row tile's icon and its name, and between the icon and the top
+         * edge when there is so little height that it is pressed up against both.
+         * See [onMeasure].
+         */
+        private const val STRIP_GLYPH_AIR_DP = 4
+
+        /**
+         * The smallest a one-row tile's icon is made, against the tile's height, to keep its
+         * name. Short of this the name gives way instead - see [stripHasRoomForName]. Most
+         * of [GLYPH_FRACTION], so it still reads as the same mark as the tiles beside it
+         * rather than a smaller one.
+         */
+        private const val STRIP_GLYPH_MIN_FRACTION = 0.3f
 
         /**
          * The blur radius at full strength, in dp. See [setBlur].
@@ -4716,7 +4748,7 @@ class TileView(
          * see [applyCountSize]. That is the one case where two tiles of a size can differ,
          * and the alternative is a number running off the edge of one of them.
          */
-        private const val COUNT_HEIGHT_FRACTION = 0.28f
+        private const val COUNT_HEIGHT_FRACTION = 0.253f
 
 
         /**

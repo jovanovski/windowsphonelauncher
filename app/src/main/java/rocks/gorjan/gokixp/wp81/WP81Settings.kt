@@ -654,6 +654,22 @@ class WP81Settings(private val context: Context) {
     }
 
     /**
+     * Whether the letters have a row of digits across the top.
+     *
+     * **Off unless asked for.** The phone had no number row - the top row of letters carries
+     * the digits in its corners and produces them on a hold - and a fifth row is height taken
+     * from whatever is being typed into, every time the keyboard is up, for the sake of the
+     * occasional number. Somebody who types a lot of them can decide that trade is worth it.
+     * See `Layouts.withNumberRow`.
+     */
+    fun getWP81KeyboardNumberRow(): Boolean =
+        keyboardPrefs.getBoolean(KEY_WP81_KB_NUMBER_ROW, false)
+
+    fun setWP81KeyboardNumberRow(enabled: Boolean) {
+        keyboardPrefs.edit { putBoolean(KEY_WP81_KB_NUMBER_ROW, enabled) }
+    }
+
+    /**
      * Which engine dictates: Vosk on the phone, or the platform's own recogniser.
      *
      * **Vosk by default**, because that is the point: it runs on the phone and sends nothing
@@ -912,6 +928,7 @@ class WP81Settings(private val context: Context) {
             KEY_WP81_KB_AUTOCAPS,
             KEY_WP81_KB_OFFLINE_VOICE,
             KEY_WP81_KB_SHORT_BOTTOM,
+            KEY_WP81_KB_NUMBER_ROW,
             KEY_WP81_KB_LANGUAGES,
             KEY_WP81_KB_HOLD_MS,
             KEY_WP81_KB_VIBRATION,
@@ -927,6 +944,7 @@ class WP81Settings(private val context: Context) {
         const val KEY_WP81_KB_AUTOCAPS = "wp81_kb_autocaps"
         const val KEY_WP81_KB_OFFLINE_VOICE = "wp81_kb_offline_voice"
         const val KEY_WP81_KB_SHORT_BOTTOM = "wp81_kb_short_bottom"
+        const val KEY_WP81_KB_NUMBER_ROW = "wp81_kb_number_row"
         const val KEY_WP81_KB_LANGUAGES = "wp81_kb_languages"
 
         /** The one every keyboard starts with. Matches Layouts.EN_QWERTY's id. */

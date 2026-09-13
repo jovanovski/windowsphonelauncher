@@ -97,6 +97,7 @@ class KeyboardSettingsActivity : Activity() {
         column.addView(soundRow())
         column.addView(keyPreviewRow())
         column.addView(joystickRow())
+        column.addView(numberRowRow())
         column.addView(shortBottomRow())
         column.addView(keyHeightRow())
         column.addView(testBox())
@@ -624,6 +625,20 @@ class KeyboardSettingsActivity : Activity() {
             .coerceIn(WP81Settings.WP81_KB_KEY_HEIGHT_MIN, WP81Settings.WP81_KB_KEY_HEIGHT_MAX)
     }
 
+    /** Whether the letters have a row of digits across the top. */
+    private fun numberRowRow(): View {
+        val toggle = MetroToggle(this, palette).apply {
+            set(themeManager.getWP81KeyboardNumberRow(), animated = false)
+            onChanged = { themeManager.setWP81KeyboardNumberRow(it) }
+        }
+        return row(
+            "number row",
+            "a row of digits above the letters, so a number is a tap rather than a hold. " +
+                "the keyboard is a little taller for it.",
+            toggle
+        )
+    }
+
     /** Whether the bottom row is shorter than the letters above it. */
     private fun shortBottomRow(): View {
         val toggle = MetroToggle(this, palette).apply {
@@ -633,7 +648,7 @@ class KeyboardSettingsActivity : Activity() {
         return row(
             "shorter bottom row",
             "nothing on it is a letter, so it does not need a letter's height. " +
-                "turn this off for four even rows.",
+                "the number row follows it. turn this off for even rows.",
             toggle
         )
     }

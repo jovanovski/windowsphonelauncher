@@ -7549,6 +7549,8 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // a glyph on the accent. They are gone, so the set had come to name every system
         // program there is and the question always came back yes.
         shell.appList.metroGlyph = { app -> wp81SystemGlyphs[app.packageName] }
+        // A picked icon is the tile's and the row's alike. See wp81CustomGlyphFor.
+        shell.appList.customGlyph = { app -> wp81CustomGlyphFor(app.packageName) }
         shell.appList.onLongPress = { app, anchorY ->
             // No buzz of its own: the row gives the shell's tick as it claims the press.
             // See AppListView's long-click listener, and wp81.Haptics.
@@ -8351,6 +8353,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             NotificationListenerService.dismiss(entry.key)
         }
         panel.onOpenApp = { packageName -> launchInstalledApp(packageName) }
+        // A picked icon is worn here too, and on the status strip the panel feeds. See
+        // wp81CustomGlyphFor.
+        panel.customGlyph = { packageName -> wp81CustomGlyphFor(packageName) }
         // The mini player at the top of the panel. It reports which app is making the
         // sound and nothing else: the sessions - and the notification access they are read
         // through - are the activity's. See WP81ActionCenter.MiniPlayer.
@@ -9147,6 +9152,40 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         )
     }
 
+    /**
+     * The icon the user picked for [packageName], or null where they have not picked one.
+     *
+     * One answer for every place an app shows its icon - its tile, its row in the app list,
+     * and its marks in the Action Center and the status strip - so a pick made on any of
+     * them is worn on all of them. Asked from the list's worker thread as well as the main
+     * one, which the store and the provider's caches are both built for.
+     *
+     * The mapping is checked again after the load because a file that no longer reads is
+     * dropped by the store on the way, and what comes back then is the app's own icon -
+     * not something to put on a square as though it had been chosen.
+     *
+     * A glyph from the phone's own set is handed out as flat artwork, because that is what
+     * it is: white, and meant to take the ink of whatever it is drawn on. On an accent
+     * square that ink is white anyway, so a tile looks exactly as it did; in the status
+     * strip it is the strip's own, which is what keeps it from vanishing on the Light theme.
+     * A picture is a picture, and is never tinted.
+     */
+    private fun wp81CustomGlyphFor(
+        packageName: String
+    ): rocks.gorjan.gokixp.wp81.MonochromeIconProvider.Glyph? {
+        if (!iconStore.has(packageName)) return null
+        val drawable = getAppIcon(packageName)?.takeIf { iconStore.has(packageName) }
+            ?: return null
+        val ratio = wp81IconProvider.ratioFor("custom:$packageName", drawable)
+        val ink = wp81IconProvider.inkFor("custom:$packageName", drawable)
+        return if (iconStore.isGlyph(packageName)) {
+            rocks.gorjan.gokixp.wp81.MonochromeIconProvider.Glyph.Monochrome(drawable, ratio, ink)
+        } else {
+            rocks.gorjan.gokixp.wp81.MonochromeIconProvider.Glyph.FullColor(
+                drawable, ratio, chosen = true, ink = ink)
+        }
+    }
+
     /** Resolves the art for one tile: fixed glyph for built-ins, provider for real apps. */
     private fun wp81GlyphFor(
         tile: rocks.gorjan.gokixp.wp81.Tile
@@ -9155,15 +9194,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // layer, its notification silhouette, and the built-in glyphs for system tiles.
         // Without this check the provider preferred an app's Android 13 themed icon, and a
         // custom icon simply never appeared for any app that ships one.
-        if (iconStore.has(tile.packageName)) {
-            getAppIcon(tile.packageName)?.let { drawable ->
-                return rocks.gorjan.gokixp.wp81.MonochromeIconProvider.Glyph.FullColor(
-                    drawable,
-                    wp81IconProvider.ratioFor("custom:${tile.packageName}", drawable),
-                    ink = wp81IconProvider.inkFor("custom:${tile.packageName}", drawable)
-                )
-            }
-        }
+        wp81CustomGlyphFor(tile.packageName)?.let { return it }
 
         val fixed = when (tile.kind) {
             rocks.gorjan.gokixp.wp81.Tile.Kind.FOLDER -> R.drawable.wp81_glyph_folder
@@ -9760,6 +9791,11 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // is drawn scaled for the old one.
         wp81IconProvider.invalidate(packageName)
         refreshWP81Tiles()
+        // The app list keeps each row's resolved artwork until it is handed a fresh list,
+        // so without this the row went on wearing the old icon after the tile changed.
+        refreshWP81AppList()
+        // And the Action Center keeps its own copy of every app's mark, as does the strip.
+        wp81Shell?.actionCenter?.invalidateApps()
     }
 
     /** Hides a built-in tile from Start. Its position is kept for when it comes back. */

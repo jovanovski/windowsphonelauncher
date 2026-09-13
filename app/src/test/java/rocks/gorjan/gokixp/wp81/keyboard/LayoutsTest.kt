@@ -20,7 +20,7 @@ class LayoutsTest {
     private val everyLayout
         get() = Layouts.ALL_LANGUAGES + listOf(
             Layouts.SYMBOLS_1, Layouts.SYMBOLS_2, Layouts.NUMBER_PAD, Layouts.PHONE_PAD
-        )
+        ) + Layouts.ALL_LANGUAGES.map { Layouts.withNumberRow(it) }
 
     /**
      * Every row fills its layout's width exactly.
@@ -219,6 +219,36 @@ class LayoutsTest {
         // The symbol pages belong to no language, so they must not answer for one.
         assertEquals("", Layouts.SYMBOLS_1.language)
         assertEquals("", Layouts.SYMBOLS_2.language)
+    }
+
+    /**
+     * The number row is the digits in order, over letters that no longer repeat them.
+     *
+     * And only on letters: the first symbol page already starts with the digits, and a second
+     * row of them there would be a page that says the same thing twice.
+     */
+    @Test
+    fun theNumberRowReplacesTheTopRowHints() {
+        for (layout in Layouts.ALL_LANGUAGES) {
+            val numbered = Layouts.withNumberRow(layout)
+            assertTrue("${layout.id} kept its id", numbered.id != layout.id)
+            assertEquals(layout.rows.size + 1, numbered.rows.size)
+            assertEquals(
+                "${layout.id} number row",
+                "1234567890",
+                numbered.rows[0].keys.joinToString("") { it.output }
+            )
+            assertTrue(
+                "${layout.id} still hints digits under the number row",
+                numbered.rows[1].keys.all { it.hint == null }
+            )
+            assertEquals(layout.rows.drop(1), numbered.rows.drop(2))
+        }
+        for (page in listOf(
+            Layouts.SYMBOLS_1, Layouts.SYMBOLS_2, Layouts.NUMBER_PAD, Layouts.PHONE_PAD
+        )) {
+            assertEquals(page, Layouts.withNumberRow(page))
+        }
     }
 
     /** Where each hinted key's centre is, in units across the row. */

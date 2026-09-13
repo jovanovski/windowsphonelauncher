@@ -104,7 +104,8 @@ internal class KeyboardHost(
                 resources,
                 width,
                 KeyboardView.REFERENCE_COLUMNS,
-                keyboard.keyHeightScale
+                keyboard.keyHeightScale,
+                keyboard.numberRow
             )
             bar.setMetrics(unit, unit * KeyboardView.GAP)
         }

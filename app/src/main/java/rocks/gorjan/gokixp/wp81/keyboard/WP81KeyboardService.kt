@@ -211,6 +211,7 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
             WP81Settings.KEY_WP81_KB_AUTOCAPS,
             WP81Settings.KEY_WP81_KB_OFFLINE_VOICE,
             WP81Settings.KEY_WP81_KB_SHORT_BOTTOM,
+            WP81Settings.KEY_WP81_KB_NUMBER_ROW,
             WP81Settings.KEY_WP81_KB_SOUND,
             WP81Settings.KEY_WP81_KB_KEY_PREVIEW,
             WP81Settings.KEY_WP81_KB_JOYSTICK,
@@ -240,6 +241,7 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         offlineVoice = themeManager.getWP81KeyboardOfflineVoice()
         keyboard?.holdMillis = themeManager.getWP81KeyboardHoldMs().toLong()
         keyboard?.shortBottomRow = themeManager.getWP81KeyboardShortBottomRow()
+        keyboard?.numberRow = themeManager.getWP81KeyboardNumberRow()
         keyboard?.keyHeightScale = themeManager.getWP81KeyboardKeyHeight() / 100f
         keyboard?.keyPreview = themeManager.getWP81KeyboardKeyPreview()
         keyboard?.joystick = themeManager.getWP81KeyboardJoystick()

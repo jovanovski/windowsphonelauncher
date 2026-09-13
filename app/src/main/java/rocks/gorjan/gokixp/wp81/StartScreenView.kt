@@ -905,8 +905,9 @@ class StartScreenView(
         // A tile turned over to a notification opens that rather than the program it came
         // from: the tap is on the message, so it lands on the conversation. Only the face
         // that is actually up counts - a tile showing its icon and its name is a tile the
-        // tap was aimed at as a program, however much is waiting behind it. Which face that
-        // is, and what the line opens, are the tile's to decide - see
+        // tap was aimed at as a program, however much is waiting behind it - and so is a tap
+        // on the name, whichever face is up. Which face that is, where the tap landed, and
+        // what the line opens, are the tile's to decide - see
         // TileView.notificationOpening - and everything else launches as it always did.
         val open = view.notificationOpening() ?: { onLaunch?.invoke(tile) }
         // A folder is opened to get at what is inside it, so opening one of those is the
