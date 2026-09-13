@@ -612,7 +612,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         private const val WP81_ICON_FOLDER = "custom_icons_8"
 
         /** Inside this, an appointment is said as a countdown. See wp81EventWhen. */
-        private const val RELATIVE_EVENT_MINUTES = 120L
+        private const val RELATIVE_EVENT_MINUTES = 240L
 
         // The one tile the shell still provides itself. The rest of the widget ids are
         // WP81TileHost's, which is where what became of them is written down.
@@ -8868,8 +8868,10 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      *
      * Close to, a clock time is arithmetic the reader has to do: "14:20" is only useful
      * once you have worked out what it is now, and the answer they wanted was how long
-     * they have. Past a couple of hours that stops being true - "in 5 hours 40 minutes" is
-     * a number nobody holds on to - and the time of day is the better answer again.
+     * they have. Past four hours that stops being true - "in 5h 40m" is a number nobody
+     * holds on to - and the time of day is the better answer again.
+     *
+     * Said short - "in 45m", "in 2h", "in 2h 15m" - which is how a countdown is glanced at.
      */
     private fun wp81EventWhen(starts: Long): String {
         val locale = java.util.Locale.getDefault()
@@ -8877,16 +8879,11 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // Already running: it was found because it has not finished, not because it has
         // not begun.
         if (minutes <= 0L) return "now"
-        if (minutes < 60L) return if (minutes == 1L) "in 1 minute" else "in $minutes minutes"
+        if (minutes < 60L) return "in ${minutes}m"
         if (minutes <= RELATIVE_EVENT_MINUTES) {
             val hours = minutes / 60
             val rest = minutes % 60
-            val said = if (hours == 1L) "in 1 hour" else "in $hours hours"
-            return when (rest) {
-                0L -> said
-                1L -> "$said 1 minute"
-                else -> "$said $rest minutes"
-            }
+            return if (rest == 0L) "in ${hours}h" else "in ${hours}h ${rest}m"
         }
         val pattern = if (android.text.format.DateFormat.is24HourFormat(this)) "HH:mm" else "h:mm"
         return java.text.SimpleDateFormat(pattern, locale).format(java.util.Date(starts))
