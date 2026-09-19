@@ -56,18 +56,23 @@ object PeopleStore {
         val photoUri: String?,
         val starred: Boolean,
         /**
-         * Whether they came out of a directory rather than off this phone.
+         * The directory they came out of, where that is where they came from. Null for
+         * everybody on this phone.
          *
          * A work account's directory - a company's list of its own people - is answered
          * over the network and never stored here, so somebody found in one has no row in
-         * the address book, no id worth keeping and no card to open. What they have is a
-         * name, which is the thing that was missing. See [lookupDirectoryNow].
+         * the address book and no id worth keeping. They do have a card: the directory
+         * holds one, and [lookupKey] together with this is how it is asked for. See
+         * [directoryDetail].
          */
-        val directory: Boolean = false,
+        val directoryId: Long? = null,
         /** The number they were found by, for a directory result that can be saved. */
         val number: String? = null
     ) {
         val initials: String get() = initialsOf(name)
+
+        /** Whether they came out of a directory rather than off this phone. */
+        val directory: Boolean get() = directoryId != null
     }
 
     /** One way of reaching somebody: the number or address, and what they call it. */
@@ -212,59 +217,15 @@ object PeopleStore {
             )
         } ?: return null
 
-        val phones = mutableListOf<Entry>()
-        val emails = mutableListOf<Entry>()
-        var given = ""
-        var family = ""
-
+        val fields = Fields()
         resolver.query(
             ContactsContract.Data.CONTENT_URI,
-            arrayOf(
-                ContactsContract.Data.MIMETYPE,
-                ContactsContract.Data.DATA1,
-                ContactsContract.Data.DATA2,
-                ContactsContract.Data.DATA3
-            ),
+            FIELD_COLUMNS,
             "${ContactsContract.Data.CONTACT_ID} = ?",
             arrayOf(id.toString()),
             null
         )?.use { cursor ->
-            val resources = context.resources
-            while (cursor.moveToNext()) {
-                val value = cursor.getString(1)?.trim().orEmpty()
-                when (cursor.getString(0)) {
-                    ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE -> {
-                        if (value.isEmpty()) continue
-                        val type = cursor.getInt(2)
-                        val custom = cursor.getString(3)
-                        phones.add(
-                            Entry(
-                                value,
-                                ContactsContract.CommonDataKinds.Phone
-                                    .getTypeLabel(resources, type, custom)
-                                    .toString().lowercase()
-                            )
-                        )
-                    }
-                    ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE -> {
-                        if (value.isEmpty()) continue
-                        val type = cursor.getInt(2)
-                        val custom = cursor.getString(3)
-                        emails.add(
-                            Entry(
-                                value,
-                                ContactsContract.CommonDataKinds.Email
-                                    .getTypeLabel(resources, type, custom)
-                                    .toString().lowercase()
-                            )
-                        )
-                    }
-                    ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE -> {
-                        given = cursor.getString(2)?.trim().orEmpty()
-                        family = cursor.getString(3)?.trim().orEmpty()
-                    }
-                }
-            }
+            while (cursor.moveToNext()) fields.add(context, cursor)
         }
 
         val raw = writableRawOf(resolver, id)
@@ -272,13 +233,77 @@ object PeopleStore {
             contact = contact,
             // The same number synced twice by two accounts is one number to the person
             // reading it, however many rows the provider keeps for it.
-            phones = phones.distinctBy { normalise(it.value) },
-            emails = emails.distinctBy { it.value.lowercase() },
+            phones = fields.phones.distinctBy { normalise(context, it.value) },
+            emails = fields.emails.distinctBy { it.value.lowercase() },
             rawId = raw?.first,
             account = raw?.second,
-            givenName = given,
-            familyName = family
+            givenName = fields.given,
+            familyName = fields.family
         )
+    }
+
+    /** The columns [Fields.add] reads, in the order it reads them. */
+    private val FIELD_COLUMNS = arrayOf(
+        ContactsContract.Data.MIMETYPE,
+        ContactsContract.Data.DATA1,
+        ContactsContract.Data.DATA2,
+        ContactsContract.Data.DATA3
+    )
+
+    /**
+     * The numbers, addresses and name on a card, gathered a data row at a time.
+     *
+     * Shared by a card read out of the book and one read out of a directory, which hand
+     * back the same rows in the same shape from two different places.
+     */
+    private class Fields {
+        val phones = mutableListOf<Entry>()
+        val emails = mutableListOf<Entry>()
+        var given = ""
+        var family = ""
+
+        /** One row of a cursor laid out as [FIELD_COLUMNS]. Anything else on it is ignored. */
+        fun add(context: Context, cursor: android.database.Cursor) {
+            val value = cursor.getString(1)?.trim().orEmpty()
+            val resources = context.resources
+            // No kind at all reads as zero, which is the provider's "custom" - and a custom
+            // label with no label is the word "custom" under an address. A work directory
+            // leaves the kind off the address it files people under, so say "other".
+            val custom = cursor.getString(3)
+            val untyped = cursor.isNull(2) && custom.isNullOrBlank()
+            when (cursor.getString(0)) {
+                ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE -> {
+                    if (value.isEmpty()) return
+                    val type = if (untyped) ContactsContract.CommonDataKinds.Phone.TYPE_OTHER
+                        else cursor.getInt(2)
+                    phones.add(
+                        Entry(
+                            value,
+                            ContactsContract.CommonDataKinds.Phone
+                                .getTypeLabel(resources, type, custom)
+                                .toString().lowercase()
+                        )
+                    )
+                }
+                ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE -> {
+                    if (value.isEmpty()) return
+                    val type = if (untyped) ContactsContract.CommonDataKinds.Email.TYPE_OTHER
+                        else cursor.getInt(2)
+                    emails.add(
+                        Entry(
+                            value,
+                            ContactsContract.CommonDataKinds.Email
+                                .getTypeLabel(resources, type, custom)
+                                .toString().lowercase()
+                        )
+                    )
+                }
+                ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE -> {
+                    given = cursor.getString(2)?.trim().orEmpty()
+                    family = cursor.getString(3)?.trim().orEmpty()
+                }
+            }
+        }
     }
 
     /**
@@ -397,12 +422,14 @@ object PeopleStore {
     }
 
     /**
-     * Who owns [number], if anybody does.
+     * Who owns [number], if anybody does - on this phone, or in a directory it can ask.
      *
-     * `PhoneLookup` rather than a scan of the book: the provider keeps an index of numbers
-     * in the shape that matches them - country codes, trunk zeros and punctuation already
-     * dealt with - and matching by hand against a list this app happens to be holding
-     * would get the easy cases right and the interesting ones wrong.
+     * The book first, through [lookupNow]. Then, only if nobody on the phone owns the
+     * number, the directories: a colleague from a work account rings as a bare number
+     * otherwise, on the call screen and at the head of a conversation, when the account
+     * knows perfectly well who they are. The second question goes over the network, so it
+     * is asked on a thread of its own rather than this one - a directory taking its time
+     * must not hold up a lookup of somebody who is in the book.
      */
     fun lookup(context: Context, number: String, onReady: (Contact?) -> Unit) {
         if (number.isBlank() || !canRead(context)) {
@@ -411,8 +438,15 @@ object PeopleStore {
         }
         val app = context.applicationContext
         executor.execute {
-            val found = lookupNow(app, number)
-            main.post { onReady(found) }
+            val local = lookupNow(app, number)
+            if (local != null) {
+                main.post { onReady(local) }
+                return@execute
+            }
+            network.execute {
+                val found = lookupDirectoryNow(app, number)
+                main.post { onReady(found) }
+            }
         }
     }
 
@@ -609,18 +643,39 @@ object PeopleStore {
      * `PhoneLookup` is an index the provider builds, and a number can be in the book and
      * not in it: written in a country's format the phone is not set to, saved by an
      * account whose sync wrote the row without normalising it, or simply arrived since the
-     * index was last touched. When that happens a person is in the address book and their
-     * calls still say nothing but a number.
+     * index was last touched. It has also been seen to miss somebody saved as "070 341 074"
+     * who rings as "+389 70 341 074", which is the same number written the two ways a
+     * number always is. When that happens a person is in the address book and their calls
+     * still say nothing but a number.
      *
      * So the fallback is the direct question - every phone row on the phone, whatever
-     * account put it there, matched on [normalise], which is the last nine digits and
-     * therefore blind to country codes, trunk zeros and punctuation alike.
+     * account put it there - asked two ways. By [normalise] first, which is exact and one
+     * look into a map. Then, for whatever that misses, the loose comparison the platform
+     * itself makes: the last seven digits have to agree and whatever is left over has to be
+     * a country code on one side and a trunk prefix on the other. That is what still
+     * finds somebody when the phone has no idea which country it is in, which is exactly
+     * when [normalise] cannot place a number written without one.
      */
     private fun byNumber(context: Context, number: String): Contact? {
-        val wanted = normalise(number)
+        val wanted = normalise(context, number)
         if (wanted.isEmpty()) return null
-        return numberIndex(context)[wanted]
+        numberIndex(context)[wanted]?.let { return it }
+
+        val digits = number.filter { it.isDigit() }
+        if (digits.length < LOOSE_DIGITS) return null
+        val tail = digits.takeLast(LOOSE_DIGITS)
+        return rows(context)
+            .filter { it.digits.endsWith(tail) && looselyEqual(it.number, number) }
+            .maxByOrNull { rank(it.contact) }
+            ?.contact
     }
+
+    @Suppress("DEPRECATION")
+    private fun looselyEqual(a: String, b: String): Boolean =
+        // The loose comparison on purpose. Its replacement, areSamePhoneNumber, parses both
+        // numbers against a country and calls two numbers different when that country is
+        // the wrong one - which is the one situation this is here for.
+        android.telephony.PhoneNumberUtils.compare(a, b)
 
     private fun numberIndex(context: Context): Map<String, Contact> {
         val held = cachedNumbers
@@ -643,7 +698,12 @@ object PeopleStore {
     private fun readNumbers(context: Context): Map<String, Contact> {
         val index = HashMap<String, Contact>()
         for (row in rows(context)) {
-            val key = normalise(row.number)
+            // The provider's own international form where it worked one out, which is what
+            // [normalise] would come to anyway and costs nothing to read back - a few
+            // thousand numbers parsed again every few minutes would not be nothing.
+            val key = row.normalized?.filter { it.isDigit() }?.takeLast(MATCH_DIGITS)
+                ?.takeIf { it.isNotEmpty() }
+                ?: normalise(context, row.number)
             if (key.isEmpty()) continue
             val standing = index[key]
             // The same number from three accounts is one person; the row that says most
@@ -667,6 +727,8 @@ object PeopleStore {
     private class Row(
         val contact: Contact,
         val number: String,
+        /** The provider's E.164 form of [number], where it managed one. */
+        val normalized: String?,
         val digits: String,
         val words: List<String>
     )
@@ -689,7 +751,8 @@ object PeopleStore {
                     ContactsContract.CommonDataKinds.Phone.LOOKUP_KEY,
                     ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME_PRIMARY,
                     ContactsContract.CommonDataKinds.Phone.PHOTO_URI,
-                    ContactsContract.CommonDataKinds.Phone.STARRED
+                    ContactsContract.CommonDataKinds.Phone.STARRED,
+                    ContactsContract.CommonDataKinds.Phone.NORMALIZED_NUMBER
                 ),
                 null, null, null
             )?.use { cursor ->
@@ -710,6 +773,7 @@ object PeopleStore {
                     found.add(Row(
                         contact = person,
                         number = number,
+                        normalized = cursor.getString(6)?.trim()?.takeIf { it.isNotEmpty() },
                         digits = number.filter { it.isDigit() },
                         words = t9(person.name)
                     ))
@@ -775,10 +839,25 @@ object PeopleStore {
             if (budget <= 0) break
             // Only a question actually put to the network costs anything. One already
             // asked and remembered - found or not found - is free and does not count.
-            if (!directoryAnswers.containsKey(normalise(number))) budget--
+            if (remembered(normalise(context, number)) == null) budget--
             lookupDirectoryNow(context, number)?.let { named[number] = it }
         }
         return named
+    }
+
+    /**
+     * What a directory already said about [number], and nothing more.
+     *
+     * Never goes near the network: it is [lookupDirectoryNow]'s memory read on its own,
+     * for the pages that want the names a directory has already given up but cannot wait
+     * on one being asked. See [PhoneHistory.recent], which draws the log with these and
+     * asks about the rest afterwards.
+     */
+    fun rememberedName(context: Context, number: String): Contact? {
+        if (number.isBlank()) return null
+        val key = normalise(context, number)
+        if (key.isEmpty()) return null
+        return remembered(key)?.contact
     }
 
     /**
@@ -793,26 +872,25 @@ object PeopleStore {
      */
     fun lookupDirectoryNow(context: Context, number: String): Contact? {
         if (number.isBlank() || !canRead(context)) return null
-        val key = normalise(number)
+        val key = normalise(context, number)
         if (key.isEmpty()) return null
-        if (directoryAnswers.containsKey(key)) return directoryAnswers[key]
+        remembered(key)?.let { return it.contact }
 
         var found: Contact? = null
         for (id in directories(context)) {
-            found = askDirectory(context, id, number, key)
+            found = askDirectory(context, id, number)
             if (found != null) break
         }
         // Remembered either way. A number that no directory knows is the common case, and
         // asking again on every read of the calls page is the expensive way to learn it.
-        directoryAnswers[key] = found
+        directoryAnswers[key] = Answer(found, System.currentTimeMillis())
         return found
     }
 
     private fun askDirectory(
         context: Context,
         directory: Long,
-        number: String,
-        key: String
+        number: String
     ): Contact? = try {
         context.contentResolver.query(
             ContactsContract.CommonDataKinds.Phone.CONTENT_FILTER_URI.buildUpon()
@@ -820,33 +898,135 @@ object PeopleStore {
                 .appendQueryParameter(
                     ContactsContract.DIRECTORY_PARAM_KEY, directory.toString())
                 .build(),
-            arrayOf(
-                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME_PRIMARY,
-                ContactsContract.CommonDataKinds.Phone.PHOTO_URI,
-                ContactsContract.CommonDataKinds.Phone.NUMBER
-            ),
+            DIRECTORY_COLUMNS,
             null, null, null
         )?.use { cursor ->
             while (cursor.moveToNext()) {
                 val name = cursor.getString(0)?.trim().orEmpty()
+                val found = cursor.getString(2)?.trim().orEmpty()
                 // A filter is a search, not a match: a directory is free to answer with
                 // anything the text resembled. Only a row whose number really is this
                 // number is an answer to the question that was asked.
-                if (name.isEmpty() || normalise(cursor.getString(2).orEmpty()) != key) continue
+                if (name.isEmpty() || found.isEmpty()) continue
+                if (!sameNumber(context, found, number)) continue
                 return@use Contact(
                     id = 0L,
-                    lookupKey = null,
+                    lookupKey = cursor.getString(3),
                     name = name,
                     photoUri = cursor.getString(1),
                     starred = false,
-                    directory = true,
-                    number = cursor.getString(2)
+                    directoryId = directory,
+                    number = found
                 )
             }
             null
         }
     } catch (e: Exception) {
         Log.w(TAG, "A directory would not answer", e)
+        null
+    }
+
+    /** What a directory is asked for about a number. [askDirectory] reads it by position. */
+    private val DIRECTORY_COLUMNS = arrayOf(
+        ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME_PRIMARY,
+        ContactsContract.CommonDataKinds.Phone.PHOTO_URI,
+        ContactsContract.CommonDataKinds.Phone.NUMBER,
+        ContactsContract.CommonDataKinds.Phone.LOOKUP_KEY
+    )
+
+    /**
+     * Somebody a directory knows, opened up the way [detail] opens somebody in the book.
+     *
+     * Read from the directory itself - every number and address it holds for them, which
+     * is usually more than the one number they were found by - and never written down.
+     * [Detail.rawId] is null because there is no row on this phone for an edit to land on:
+     * what can be done with them is ring them, write to them, or save them.
+     *
+     * Never null. A directory that will not hand over the card still told us who this is
+     * and which number it was, and a card with that on it is a good deal better than one
+     * that says the contact is gone.
+     */
+    fun directoryDetail(context: Context, person: Contact, onReady: (Detail) -> Unit) {
+        val app = context.applicationContext
+        network.execute {
+            val detail = try {
+                readDirectoryDetail(app, person)
+            } catch (e: Exception) {
+                Log.w(TAG, "A directory would not open a card", e)
+                null
+            } ?: Detail(
+                contact = person,
+                phones = listOfNotNull(person.number?.let { Entry(it, "phone") }),
+                emails = emptyList(),
+                rawId = null,
+                account = person.directoryId?.let { directoryAccount(app, it) },
+                givenName = person.name.substringBefore(' ').trim(),
+                familyName = person.name.substringAfter(' ', "").trim()
+            )
+            main.post { onReady(detail) }
+        }
+    }
+
+    private fun readDirectoryDetail(context: Context, person: Contact): Detail? {
+        val directory = person.directoryId ?: return null
+        val key = person.lookupKey ?: return null
+        val fields = Fields()
+        var name = ""
+        var photo: String? = null
+        var rows = 0
+        context.contentResolver.query(
+            ContactsContract.Contacts.CONTENT_LOOKUP_URI.buildUpon()
+                .appendPath(key)
+                .appendPath(ContactsContract.Contacts.Entity.CONTENT_DIRECTORY)
+                .appendQueryParameter(ContactsContract.DIRECTORY_PARAM_KEY, directory.toString())
+                .build(),
+            FIELD_COLUMNS + arrayOf(
+                ContactsContract.Contacts.DISPLAY_NAME_PRIMARY,
+                ContactsContract.Contacts.PHOTO_URI
+            ),
+            null, null, null
+        )?.use { cursor ->
+            while (cursor.moveToNext()) {
+                rows++
+                fields.add(context, cursor)
+                // On whichever row carries them - a directory is not obliged to repeat the
+                // contact's own columns on every data row, and the one tried here doesn't.
+                if (name.isEmpty()) name = cursor.getString(4)?.trim().orEmpty()
+                if (photo == null) photo = cursor.getString(5)
+            }
+        }
+        if (rows == 0) return null
+        return Detail(
+            contact = person.copy(
+                name = name.ifEmpty { person.name },
+                photoUri = photo ?: person.photoUri
+            ),
+            phones = fields.phones.distinctBy { normalise(context, it.value) },
+            emails = fields.emails.distinctBy { it.value.lowercase() },
+            rawId = null,
+            account = directoryAccount(context, directory),
+            givenName = fields.given,
+            familyName = fields.family
+        )
+    }
+
+    /** The account a directory answers for, for the footnote a card puts under itself. */
+    private fun directoryAccount(context: Context, directory: Long): Account? = try {
+        context.contentResolver.query(
+            ContentUris.withAppendedId(ContactsContract.Directory.CONTENT_URI, directory),
+            arrayOf(
+                ContactsContract.Directory.ACCOUNT_NAME,
+                ContactsContract.Directory.ACCOUNT_TYPE
+            ),
+            null, null, null
+        )?.use { cursor ->
+            if (!cursor.moveToFirst()) return@use null
+            val name = cursor.getString(0)
+            val type = cursor.getString(1)
+            if (name.isNullOrBlank() || type.isNullOrBlank()) null else Account(name, type)
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "Could not read which account a directory belongs to", e)
         null
     }
 
@@ -865,7 +1045,7 @@ object PeopleStore {
             return
         }
         val app = context.applicationContext
-        executor.execute {
+        network.execute {
             val found = mutableListOf<Contact>()
             val seen = mutableSetOf<String>()
             for (id in directories(app)) {
@@ -891,11 +1071,7 @@ object PeopleStore {
                 .appendQueryParameter(
                     ContactsContract.LIMIT_PARAM_KEY, DIRECTORY_SEARCH_LIMIT.toString())
                 .build(),
-            arrayOf(
-                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME_PRIMARY,
-                ContactsContract.CommonDataKinds.Phone.PHOTO_URI,
-                ContactsContract.CommonDataKinds.Phone.NUMBER
-            ),
+            DIRECTORY_COLUMNS,
             null, null, null
         )?.use { cursor ->
             while (cursor.moveToNext() && people.size < DIRECTORY_SEARCH_LIMIT) {
@@ -905,15 +1081,15 @@ object PeopleStore {
                 // One row per person, not per number: a directory answers with each of
                 // somebody's numbers separately and a list that showed all of them would
                 // be the same colleague four times over.
-                if (!seen.add(name.lowercase() + "\u001f" + normalise(number))) continue
+                if (!seen.add(name.lowercase() + "\u001f" + normalise(context, number))) continue
                 people.add(
                     Contact(
                         id = 0L,
-                        lookupKey = null,
+                        lookupKey = cursor.getString(3),
                         name = name,
                         photoUri = cursor.getString(1),
                         starred = false,
-                        directory = true,
+                        directoryId = directory,
                         number = number
                     )
                 )
@@ -958,12 +1134,44 @@ object PeopleStore {
 
     private var cachedDirectories: List<Long>? = null
 
+    /** One directory answer, and when it was had. [contact] is null for a miss. */
+    private class Answer(val contact: Contact?, val at: Long)
+
     /** Answers already had from the directories, misses included. See [lookupDirectoryNow]. */
     private val directoryAnswers =
-        java.util.Collections.synchronizedMap(HashMap<String, Contact?>())
+        java.util.Collections.synchronizedMap(HashMap<String, Answer>())
+
+    /**
+     * What the directories said about a number, if it is still worth believing.
+     *
+     * A name found stands for the life of the process. A miss does not: it is also what a
+     * directory that could not be reached looks like - a phone that opened its call log on
+     * a train - and remembered for good, that one failure would leave a colleague as a
+     * bare number until the launcher was next restarted.
+     */
+    private fun remembered(key: String): Answer? {
+        val answer = directoryAnswers[key] ?: return null
+        if (answer.contact == null && System.currentTimeMillis() - answer.at > DIRECTORY_MISS_MS) {
+            directoryAnswers.remove(key)
+            return null
+        }
+        return answer
+    }
+
+    /**
+     * Where questions for the network are asked.
+     *
+     * Apart from [executor], which reads the book: a directory can take seconds to answer,
+     * and a search typed into People or a card being opened must not leave a ringing
+     * phone waiting behind it to find out who is calling from the address book on disk.
+     */
+    private val network = Executors.newFixedThreadPool(2)
 
     /** How many numbers one pass may ask the network about. See [nameNumbers]. */
     private const val DIRECTORY_BUDGET = 12
+
+    /** How long a directory's "nobody" is believed. See [remembered]. */
+    private const val DIRECTORY_MISS_MS = 10 * 60 * 1000L
 
     /** How many letters a search needs before it is worth asking a directory. */
     private const val DIRECTORY_SEARCH_FROM = 3
@@ -1095,6 +1303,10 @@ object PeopleStore {
                 Log.w(TAG, "Could not create a contact", e)
                 null
             }
+            // Once the rows are in, not before: somebody new is a number with an owner now,
+            // and a call page read in the next few minutes should say so rather than offer
+            // to save them a second time - which an index rebuilt mid-write would not.
+            forgetNumbers()
             main.post { onDone(id) }
         }
     }
@@ -1140,6 +1352,7 @@ object PeopleStore {
                 Log.w(TAG, "Could not save a contact", e)
                 false
             }
+            forgetNumbers()
             main.post { onDone(ok) }
         }
     }
@@ -1303,11 +1516,82 @@ object PeopleStore {
      * Used to tell two rows apart, not to dial: "+38970123456" and "070 123 456" are one
      * number written twice, and a profile page listing both is a profile page that has
      * shown its filing system to somebody who wanted a phone number.
+     *
+     * Put into its international form first, against the country this phone is in, and
+     * only then cut to its last nine digits. Cutting alone was how this used to work, and
+     * it only holds where a number is at least nine digits long without its trunk zero. A
+     * Macedonian mobile is eight: "+389 70 341 074" came out as 970341074 and "070 341 074"
+     * as 070341074, and somebody saved in the book one way and ringing the other was a
+     * stranger on every page that asked. A number the phone cannot place - a short code, a
+     * range newer than the metadata, a phone with no idea what country it is in - is cut
+     * as before, which is still right for a number written the same way twice.
      */
-    fun normalise(number: String): String {
+    fun normalise(context: Context, number: String): String {
         val digits = number.filter { it.isDigit() }
-        return if (digits.length > MATCH_DIGITS) digits.takeLast(MATCH_DIGITS) else digits
+        if (digits.length < PLACEABLE_DIGITS) return digits
+        normalised.get(number)?.let { return it }
+        val placed = homeCountry(context)?.let {
+            try {
+                android.telephony.PhoneNumberUtils.formatNumberToE164(number, it)
+            } catch (e: Exception) {
+                null
+            }
+        }
+        val key = (placed?.filter { it.isDigit() } ?: digits).takeLast(MATCH_DIGITS)
+        normalised.put(number, key)
+        return key
     }
+
+    /**
+     * Whether two numbers are the same number, however each was written.
+     *
+     * [normalise] first, and the platform's loose comparison for whatever it cannot place.
+     * For the places a number is checked against one other number rather than filed.
+     */
+    fun sameNumber(context: Context, a: String, b: String): Boolean {
+        if (normalise(context, a) == normalise(context, b)) return true
+        if (a.count { it.isDigit() } < LOOSE_DIGITS || b.count { it.isDigit() } < LOOSE_DIGITS) {
+            return false
+        }
+        return looselyEqual(a, b)
+    }
+
+    /**
+     * Which country a number written without one belongs to.
+     *
+     * The SIM's before the network's. The address book is written in the home country's
+     * format, and a phone abroad is still full of numbers saved at home - parsing those
+     * against wherever the phone happens to be would put every one of them in the wrong
+     * country. The language setting last, for a phone with neither.
+     */
+    private fun homeCountry(context: Context): String? {
+        country?.let { return it.ifEmpty { null } }
+        val found = try {
+            val telephony = context.getSystemService(android.telephony.TelephonyManager::class.java)
+            listOf(
+                telephony?.simCountryIso,
+                telephony?.networkCountryIso,
+                java.util.Locale.getDefault().country
+            ).firstOrNull { !it.isNullOrBlank() }?.uppercase(java.util.Locale.ROOT)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not tell which country this phone is in", e)
+            null
+        }
+        country = found.orEmpty()
+        return found
+    }
+
+    @Volatile
+    private var country: String? = null
+
+    /**
+     * Numbers already placed, by how they were written.
+     *
+     * Placing one is a parse against the country's numbering plan, and the same few dozen
+     * numbers are asked about over and over: every call in the log, every message in a
+     * conversation, each time a page is read.
+     */
+    private val normalised = android.util.LruCache<String, String>(1024)
 
     /**
      * A name shortened to the pair of letters that stands in for a picture.
@@ -1373,12 +1657,28 @@ object PeopleStore {
     )
 
     /**
-     * How much of a number is compared when two are matched.
+     * How much of a placed number is kept when two are matched.
      *
-     * The last nine digits: enough that two different people never collide, few enough
-     * that a country code, a trunk zero or neither still comes out the same number.
+     * The last nine digits: enough that two different people never collide, and what the
+     * key has always been, so a number that cannot be placed still compares the way it did.
      */
     private const val MATCH_DIGITS = 9
+
+    /**
+     * How short a number can be and still be worth placing in a country.
+     *
+     * Anything shorter is a short code or an extension, which is the same number however
+     * the phone would place it - and a key made of digits alone keeps two of those apart.
+     */
+    private const val PLACEABLE_DIGITS = 6
+
+    /**
+     * How many trailing digits two numbers must share to be compared loosely.
+     *
+     * Seven, which is the platform's own minimum match - the provider indexes every number
+     * on the phone by exactly this much of it.
+     */
+    private const val LOOSE_DIGITS = 7
 
     /** What a contact picture is stored at. The provider thumbnails it from here. */
     private const val PHOTO_PX = 720

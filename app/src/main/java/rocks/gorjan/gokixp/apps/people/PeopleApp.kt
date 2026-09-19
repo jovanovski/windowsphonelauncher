@@ -71,28 +71,32 @@ class PeopleApp(
      * can run to four thousand people, and it is the one the phone gave letter squares, a
      * jump grid and a search band. All of which the app list already has - see
      * [rocks.gorjan.gokixp.wp81.MetroIndexList], which the two of them share.
-     */
-    private lateinit var allList: ContactList
-
-    /**
-     * The page the list sits on, so a word can be put above it.
      *
-     * The list itself has no room for one - it is a recycler of rows, and its empty case is
-     * simply no rows - and the one thing this app must be able to say is that it has not
-     * been allowed to read the book at all. See [bindContacts].
+     * The page itself is [ContactsPage] rather than anything of this app's own, because
+     * Phone stands on the same one: the address book is one book, and the page that shows
+     * it should not be two pages that have to be kept alike by hand.
      */
-    private lateinit var allPage: LinearLayout
-
-    private var contacts: List<PeopleStore.Contact> = emptyList()
+    private lateinit var contactsPage: ContactsPage
 
     /** The editor waiting for a picture, while the gallery is open over the app. */
     private var awaitingPhoto: Editor? = null
 
-    /** People a directory answered with, shown under the book while a search is on. */
-    private var directoryHits: List<PeopleStore.Contact> = emptyList()
+    /**
+     * Another program's errand in here, while there is one. See [beginVisit].
+     *
+     * [base] is how many pages were already open when it began: backing out to that depth
+     * is the end of the errand, whatever the book had open before Phone asked for a card.
+     */
+    private class Visit(val base: Int, val onEnded: () -> Unit)
 
-    /** The directory search waiting for the typing to settle. See [searchDirectory]. */
-    private var directorySearch: Runnable? = null
+    private var visit: Visit? = null
+
+    /**
+     * Pages asked for and not yet on screen - a card being read, which takes a trip to the
+     * provider. While one is on its way the app is between two pages rather than back at
+     * the list, and an errand is not over just because nothing is showing for a moment.
+     */
+    private var pagesOnTheWay = 0
 
     // ---------------------------------------------------------------- construction
 
@@ -115,49 +119,17 @@ class PeopleApp(
         // as the page is pulled underneath. Lowercase, as everything on this platform is.
         panorama.setTitle("people")
 
-        allList = ContactList(context, palette).apply {
-            onPick = { person ->
-                // Somebody found in a directory has no card to open - they are not on this
-                // phone - so tapping them offers to put them on it, with what the directory
-                // knew already filled in. See PeopleStore.Contact.directory.
-                if (person.directory) {
-                    showEditor(
-                        null,
-                        prefillNumber = person.number,
-                        prefillName = person.name
-                    )
-                } else {
-                    showProfile(person.id)
-                }
-            }
-            onLongPress = { person, anchor -> showContactMenu(person, anchor) }
-            // The keyboard's search key opens whoever is at the top of what is left, which
-            // is the person somebody typing three letters was typing towards.
-            onSearchSubmit = { _, found ->
-                found.firstOrNull()?.let { person ->
-                    if (person.directory) {
-                        showEditor(null, prefillNumber = person.number, prefillName = person.name)
-                    } else {
-                        showProfile(person.id)
-                    }
-                }
-            }
-            // Every account's directory, asked as the letters arrive. A colleague in a work
-            // account's company directory is in none of the queries that read this phone -
-            // there is nothing here to read - so a search that only filtered what was
-            // already loaded could never find them. See searchDirectories.
-            onQueryChanged = { typed -> searchDirectory(typed) }
-            // Leaving search puts the directory's people away with it. They were answers
-            // to a question that is no longer being asked, and a list of everybody with
-            // four colleagues stuck on the end of it is not the address book.
-            onSearchChanged = { on -> if (!on) forgetDirectoryHits() }
+        contactsPage = ContactsPage(context, palette, onRequestPermissions).apply {
+            // Somebody found in a directory opens onto the directory's card for them, the
+            // same as anybody in the book opens onto theirs - with saving them to the phone
+            // on its strip. See PeopleStore.directoryDetail.
+            onPick = { person -> showProfile(person) }
+            onHeld = { person, anchorY -> showContactMenu(person, anchorY) }
         }
-        allPage = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-        allPage.addView(allList, LinearLayout.LayoutParams(MATCH, 0, 1f))
         // Nameless: there is one section, and a strip reading "all" under a wordmark
         // reading "people" is a heading for a page nobody can leave. See
         // MetroPanorama.rebuildStrip, which draws no strip when nothing is named.
-        panorama.addPage("", allPage)
+        panorama.addPage("", contactsPage)
 
         column.addView(panorama, LinearLayout.LayoutParams(MATCH, 0, 1f))
         root.addView(column, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -172,7 +144,7 @@ class PeopleApp(
         // The jump grid measures itself against the whole display, because that is what it
         // covers - so it is put up over the app rather than inside the page, which is only
         // as tall as the panorama leaves it.
-        allList.setJumpListHost(root)
+        contactsPage.setJumpListHost(root)
 
         addOverlayFurniture()
 
@@ -186,7 +158,7 @@ class PeopleApp(
      * Reached from the shell's search key and from nowhere else in this app - see
      * [searchAction], and [buildAppBar] for what used to be on the strip.
      */
-    private fun searchContacts() = allList.beginSearch()
+    private fun searchContacts() = contactsPage.beginSearch()
 
     /**
      * The shell's search key, while the book itself is what is on screen.
@@ -197,7 +169,8 @@ class PeopleApp(
      * they come out. See [rocks.gorjan.gokixp.wp81.WP81Searchable].
      */
     override fun searchAction(): (() -> Unit)? =
-        if (overlays.isNotEmpty() || !::allList.isInitialized) null else ({ searchContacts() })
+        if (overlays.isNotEmpty() || !::contactsPage.isInitialized) null
+        else ({ searchContacts() })
 
     /**
      * The strip: a new contact, and the rest behind the dots.
@@ -231,75 +204,55 @@ class PeopleApp(
      */
     fun refresh() {
         if (!PeopleStore.canRead(context)) {
-            contacts = emptyList()
-            bindContacts()
+            contactsPage.setContacts(emptyList())
             return
         }
-        PeopleStore.all(context) { people ->
-            contacts = people
-            bindContacts()
-        }
+        PeopleStore.all(context) { people -> contactsPage.setContacts(people) }
     }
 
-    private fun bindContacts() {
-        // The one thing an empty list cannot say for itself. Taken down again the moment
-        // the permission arrives, which is what makes the offer worth tapping.
-        while (allPage.childCount > 1) allPage.removeViewAt(0)
-        if (!PeopleStore.canRead(context)) {
-            allList.setItems(emptyList())
-            allPage.addView(
-                note("no access to your contacts.  tap to allow") {
-                    onRequestPermissions(PeopleStore.permissions())
-                },
-                0,
-                LinearLayout.LayoutParams(MATCH, WRAP).apply { marginEnd = dp(PAGE_MARGIN_DP) }
-            )
-            return
-        }
-        allList.setItems(contacts + directoryHits)
+    // ---------------------------------------------------------------- visits
+
+    /**
+     * Marks what is about to be opened as another program's errand.
+     *
+     * Phone and Messaging send somebody here to see a card or to save a number, and backing
+     * out of that page should put the user back where they came from - the call they were
+     * looking at, the conversation they were in. What it did instead was land on the whole
+     * address book, which is a place nobody asked to go. So the host says an errand has
+     * begun, and [onEnded] is how it hears that the errand is over.
+     *
+     * Called before the page is opened, so its depth is counted from where the book stood.
+     */
+    fun beginVisit(onEnded: () -> Unit) {
+        visit = Visit(overlays.size, onEnded)
     }
 
-    /** Drops the directory's answers and puts the list back to the book alone. */
-    private fun forgetDirectoryHits() {
-        directorySearch?.let { root.removeCallbacks(it) }
-        directorySearch = null
-        if (directoryHits.isEmpty()) return
-        directoryHits = emptyList()
-        allList.setItems(contacts)
+    /** People opened on its own account: whatever errand there was, it is not this one. */
+    fun forgetVisit() {
+        visit = null
+    }
+
+    override fun dismissOverlay(view: View) {
+        super.dismissOverlay(view)
+        settleVisit()
     }
 
     /**
-     * Asks the directories about what is being typed, once the typing has settled.
+     * Ends the errand if it has been backed out of.
      *
-     * Debounced, because each of these is a network round trip and somebody typing a name
-     * would otherwise send one per letter. Short queries are not asked at all - see
-     * [PeopleStore.searchDirectories] - and the answer is dropped if the field has moved on
-     * since, so a slow directory cannot put stale people under a query they do not match.
+     * A turn of the main loop later, not now. Saving a contact closes the editor and then
+     * opens the card it made, and editing one closes the card and opens the editor - both
+     * in the same breath - and judging in between would send the user back to Phone with a
+     * page still on its way in behind them.
      */
-    private fun searchDirectory(typed: String) {
-        directorySearch?.let { root.removeCallbacks(it) }
-        val wanted = typed.trim()
-        if (wanted.isEmpty()) {
-            if (directoryHits.isNotEmpty()) {
-                directoryHits = emptyList()
-                allList.setItems(contacts)
-            }
-            return
+    private fun settleVisit() {
+        val current = visit ?: return
+        root.post {
+            if (visit !== current) return@post
+            if (overlays.size > current.base || pagesOnTheWay > 0) return@post
+            visit = null
+            current.onEnded()
         }
-        val run = Runnable {
-            PeopleStore.searchDirectories(context, wanted) { found ->
-                // The field has moved on while the network was thinking.
-                if (allList.searchText().trim() != wanted) return@searchDirectories
-                // Anybody already in the book is already in the list, and a colleague who
-                // is both would otherwise appear twice.
-                directoryHits = found.filter { person ->
-                    contacts.none { it.name.equals(person.name, ignoreCase = true) }
-                }
-                allList.setItems(contacts + directoryHits)
-            }
-        }
-        directorySearch = run
-        root.postDelayed(run, DIRECTORY_DEBOUNCE_MS)
     }
 
     // ---------------------------------------------------------------- profile
@@ -315,11 +268,28 @@ class PeopleApp(
      * Also the way in from outside: the other two programs send somebody here when the
      * question stops being about a call or a conversation and starts being about a person.
      */
+    fun showProfile(person: PeopleStore.Contact) {
+        if (!person.directory) {
+            showProfile(person.id)
+            return
+        }
+        // Never null: a directory that will not open the card still said who this was.
+        pagesOnTheWay++
+        PeopleStore.directoryDetail(context, person) {
+            pagesOnTheWay--
+            buildProfile(it)
+        }
+    }
+
     fun showProfile(contactId: Long) {
+        pagesOnTheWay++
         PeopleStore.detail(context, contactId) { detail ->
+            pagesOnTheWay--
             if (detail == null) {
                 notify("That contact is no longer on this phone")
                 refresh()
+                // Nothing is coming, so an errand waiting on this card is over.
+                settleVisit()
                 return@detail
             }
             buildProfile(detail)
@@ -375,7 +345,9 @@ class PeopleApp(
 
         // Which account this person is filed under, in the small type a footnote gets. It
         // matters exactly once - when an edit does not stick because the row belongs to an
-        // account that overwrites it - and this is where somebody would look.
+        // account that overwrites it - and this is where somebody would look. For somebody
+        // out of a directory it is the account whose directory it was, which is the one
+        // thing that says why a person who is not on the phone has a card on it.
         detail.account?.let {
             column.addView(TextView(context).apply {
                 text = it.name
@@ -391,6 +363,19 @@ class PeopleApp(
         // The page's own strip. Every page in this shell that can be acted on has one, and
         // a profile is the page where most of the acting happens.
         val bar = MetroAppBar(context, palette)
+        if (person.directory) {
+            // Nothing to star, edit or delete: none of those has a row on this phone to be
+            // done to, and the directory is not this phone's to change. What there is, is
+            // the offer to write them down here - with everything the card knows about
+            // them already filled in, rather than the one number they rang from.
+            bar.addCommand(ADD_ICON) {
+                dismissOverlay(page)
+                showEditor(null, prefillNumber = null, template = detail)
+            }
+            page.addView(bar, wide())
+            pushOverlay(page)
+            return
+        }
         // Held here rather than read back off the contact, because the contact is a
         // snapshot taken when the page was built and starring somebody does not rebuild it.
         var starred = person.starred
@@ -512,6 +497,24 @@ class PeopleApp(
 
     /** The same, for a list that reports where its row ended rather than handing it over. */
     private fun showContactMenu(person: PeopleStore.Contact, anchorY: Float) {
+        if (person.directory) {
+            // Somebody in a directory has no favourite to be and nothing on this phone to
+            // delete. What they can be is saved.
+            showMenu(
+                person.name,
+                listOf(
+                    WP81ContextMenu.Item("call") { chooseNumber(person) { place(it) } },
+                    WP81ContextMenu.Item("text") { chooseNumber(person) { onShowThread(it) } },
+                    WP81ContextMenu.Item("save to contacts") {
+                        PeopleStore.directoryDetail(context, person) {
+                            showEditor(null, prefillNumber = null, template = it)
+                        }
+                    }
+                ),
+                anchorY
+            )
+            return
+        }
         showMenu(
             person.name,
             listOf(
@@ -553,7 +556,12 @@ class PeopleApp(
     private inner class Editor(
         private val existing: PeopleStore.Detail?,
         prefillNumber: String?,
-        prefillName: String?
+        /**
+         * A card this contact is being copied from - somebody out of a directory, being
+         * saved to the phone. Fills the fields the way [existing] does, and is still saved
+         * as somebody new.
+         */
+        template: PeopleStore.Detail? = null
     ) {
         val page: LinearLayout = overlayPage()
         private val face = ImageView(context)
@@ -633,7 +641,7 @@ class PeopleApp(
             page.addView(bar, wide())
 
             // Filled last, so every field it writes into is already in the page.
-            existing?.let {
+            (existing ?: template)?.let {
                 given.setText(it.givenName.ifBlank {
                     // A contact synced without a structured name still has a display name,
                     // and losing it on the way into the editor is how an edit of a phone
@@ -647,16 +655,11 @@ class PeopleApp(
                 for (address in it.emails) {
                     addEmail(address.value, PeopleStore.nearestEmailLabel(address.label))
                 }
-                showFace(it.contact)
+                // A copied card's picture is kept as well as shown, so it is saved with them.
+                // An existing contact's is only shown: it is already theirs.
+                showFace(it.contact, keep = existing == null)
             }
             if (!prefillNumber.isNullOrBlank()) addPhone(prefillNumber, "mobile")
-            // What a directory knew about somebody being saved off it. Split on the first
-            // space, which is the same guess the phone's own editor makes and the same one
-            // this editor's two fields ask the user to make.
-            if (!prefillName.isNullOrBlank()) {
-                given.setText(prefillName.substringBefore(' ').trim())
-                family.setText(prefillName.substringAfter(' ', "").trim())
-            }
             if (phoneRows.isEmpty()) addPhone("", "mobile")
         }
 
@@ -684,11 +687,14 @@ class PeopleApp(
             return holder
         }
 
-        private fun showFace(person: PeopleStore.Contact) {
+        private fun showFace(person: PeopleStore.Contact, keep: Boolean) {
             faceInitials.text = person.initials.ifBlank { "photo" }
             val uri = person.photoUri ?: return
             ContactFeed.load(context, uri) { bitmap ->
-                if (bitmap != null) showBitmap(bitmap)
+                if (bitmap == null) return@load
+                // Not over one the user has picked in the meantime.
+                if (keep && photo == null) photo = bitmap
+                showBitmap(bitmap)
             }
         }
 
@@ -934,13 +940,13 @@ class PeopleApp(
     private fun showEditor(
         existing: PeopleStore.Detail?,
         prefillNumber: String?,
-        prefillName: String? = null
+        template: PeopleStore.Detail? = null
     ) {
         if (!PeopleStore.canWrite(context)) {
             onRequestPermissions(PeopleStore.permissions())
             return
         }
-        pushOverlay(Editor(existing, prefillNumber, prefillName).page)
+        pushOverlay(Editor(existing, prefillNumber, template).page)
     }
 
     /**
@@ -967,7 +973,7 @@ class PeopleApp(
      * steps inside that page rather than ways out of the app.
      */
     override fun handleBackInProgram(): Boolean =
-        ::allList.isInitialized && allList.handleBack()
+        ::contactsPage.isInitialized && contactsPage.handleBack()
 
     private companion object {
         /** Spelled here as every class in this shell spells it, beside the marks it names. */
@@ -987,9 +993,6 @@ class PeopleApp(
 
         /** Where new contacts go. This app's own, and nothing else reads it. */
         const val KEY_NEW_CONTACT_ACCOUNT = "wp81_people_new_contact_account"
-
-        /** How long the typing has to settle before a directory is asked about it. */
-        const val DIRECTORY_DEBOUNCE_MS = 400L
 
         const val TAG = "WP81People"
     }

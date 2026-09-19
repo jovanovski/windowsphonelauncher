@@ -297,7 +297,7 @@ class CarStartScreen(carContext: CarContext) : Screen(carContext) {
                 // tile from the driver's seat: whether there is a mail worth stopping for.
                 setNotifications { tile ->
                     NotificationListenerService.linesFor(tile.packageName)
-                        .map { TileView.Line(it.title, it.text) }
+                        .map { TileView.Line(it.title, it.text, it.count) }
                 }
 
                 // The weather is a face of its own rather than a reading off the tile, so

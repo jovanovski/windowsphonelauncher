@@ -66,12 +66,6 @@ class CallActionReceiver : BroadcastReceiver() {
         MissedCallReceiver.clear(context)
         val telecom = context.getSystemService(Context.TELECOM_SERVICE)
             as? android.telecom.TelecomManager
-        try {
-            telecom?.cancelMissedCallsNotification()
-        } catch (e: Exception) {
-            // Only the default phone app may say this, and it is not always this one.
-            Log.d(TAG, "Could not clear the missed calls", e)
-        }
         val uri = android.net.Uri.parse("tel:" + android.net.Uri.encode(number))
         val allowed = context.checkSelfPermission(android.Manifest.permission.CALL_PHONE) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED

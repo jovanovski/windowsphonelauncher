@@ -233,12 +233,50 @@ class KeyView(
             invalidate()
         }
 
+    /**
+     * What the keys are made of. See [KeyboardTheme].
+     *
+     * Pushed down from the grid with the rest of the settings rather than arriving with the
+     * palette, because that is what it is: a keyboard setting, written in this process and
+     * applied the same way the key height and the hold are. The colours it also changes do
+     * come through the palette - see [KeyboardAppearance.keyboardPalette] - and the two meet
+     * here, which is why this repaints rather than only remembering.
+     */
+    var theme: KeyboardTheme = KeyboardTheme.PHONE
+        set(value) {
+            if (field == value) return
+            field = value
+            face.color = fillFor(lit)
+            tintGlyph()
+            invalidate()
+        }
+
     private val face = Paint()
     private val ink = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    /**
+     * The bevel's own paint. See [Win98.bevel], which leaves whatever colour it finished on.
+     *
+     * Separate from [face] for exactly that reason: the fill's colour is set when the key is
+     * pressed or repainted and is expected to still be there on the next draw, and a bevel
+     * borrowing that paint would hand the key back painted in the bevel's last band.
+     */
+    private val edge = Paint()
+
     private val bounds = Rect()
 
     private val labelFont = ResourcesCompat.getFont(context, R.font.segoeui_semilight)
     private val hintFont = ResourcesCompat.getFont(context, R.font.segoeui_regular)
+
+    /**
+     * Tahoma, for the themes that are not the phone's.
+     *
+     * Windows 98's own face was MS Sans Serif, which is a bitmap font and has no business on
+     * a screen at this density - it exists at eight sizes and nothing in between. Tahoma is
+     * what Microsoft replaced it with, ships in this app already for the desktop launcher's
+     * chrome, and is the face anybody picturing that shell is actually picturing.
+     */
+    private val classicFont = ResourcesCompat.getFont(context, R.font.tahoma)
 
     /** Cleared on release, so a hold that has already fired does not also commit a letter. */
     private var longPressFired = false
@@ -550,6 +588,12 @@ class KeyView(
      */
     @ColorInt
     private fun fillFor(pressed: Boolean): Int {
+        // A bevelled key does not answer a press with a colour at all: the light moves to the
+        // other corner and the button appears to go into the screen. That is not a stylistic
+        // preference about Windows 98, it is how the shell worked - a button that changed
+        // colour under the mouse would have been a different kind of control - and it is why
+        // the fill here is one colour whatever is happening to the key. See [drawFace].
+        if (theme.bevelled) return Win98.FACE
         // A pressed key lights up in the accent, which is what the phone did and what
         // everything else on this keyboard was already doing: the suggestion under a finger,
         // the emoji under a finger and the chosen cell of the alternates row are all painted
@@ -599,8 +643,12 @@ class KeyView(
      * white when they are.
      */
     @ColorInt
-    private fun onFace(): Int =
-        if (lit || key.style == Style.ACCENT) palette.onAccent() else palette.foreground
+    private fun onFace(): Int = when {
+        // Black on the face, pressed or not, which follows from the face never changing.
+        theme.bevelled -> Win98.INK
+        lit || key.style == Style.ACCENT -> palette.onAccent()
+        else -> palette.foreground
+    }
 
     private fun tintGlyph() {
         glyph?.setTint(onFace())
@@ -703,7 +751,12 @@ class KeyView(
     /** What a corner mark is painted, whether it is a character or a drawing. */
     @ColorInt
     private fun hintColour(): Int =
-        ColorUtils.setAlphaComponent(onFace(), (255 * HINT_ALPHA).toInt())
+        // A solid shade rather than a faded black under the bevelled theme. Windows dimmed a
+        // label with `COLOR_3DSHADOW`, which is the same one the button's own shaded edge is
+        // drawn in, and the corner mark being exactly that colour is what makes it read as
+        // part of the button rather than as ink that has not printed properly.
+        if (theme.bevelled) Win98.SHADOW
+        else ColorUtils.setAlphaComponent(onFace(), (255 * HINT_ALPHA).toInt())
 
     /** How far the painted key sits inside the touchable bounds: half of the gutter. */
     private val inset get() = gap / 2f
@@ -729,9 +782,57 @@ class KeyView(
     /** The middle of the painted key, which is what everything on it is centred on. */
     private val faceCentreY get() = (faceTop + (height - inset)) / 2f
 
+    /**
+     * The key itself, before anything is written on it.
+     *
+     * Flat under the phone's theme, which is one rectangle and the whole of what a Windows
+     * Phone key ever was. Under a bevelled one it is a button: the same fill, then two bands
+     * of light down the top and left and two of shadow down the bottom and right, turned
+     * inside out while the key is held. See [Win98.bevel].
+     *
+     * The keys that would have been the dialog's default - enter, and whatever the field has
+     * asked it to be instead - get the black frame Windows put round one, which is what the
+     * bevelled theme has in place of the accent fill those keys wear elsewhere. It is drawn
+     * outside the bevel and the bevel is inset behind it, exactly as the shell drew it, so a
+     * default button is a button with a frame rather than a slightly different button.
+     */
+    private fun drawFace(canvas: Canvas) {
+        var left = inset
+        var top = faceTop
+        var right = width - inset
+        var bottom = height - inset
+        canvas.drawRect(left, top, right, bottom, face)
+        if (!theme.bevelled) return
+
+        val band = Win98.band(resources.displayMetrics.density)
+        if (key.style == Style.ACCENT) {
+            edge.color = Win98.DARK_SHADOW
+            canvas.drawRect(left, top, right, top + band, edge)
+            canvas.drawRect(left, bottom - band, right, bottom, edge)
+            canvas.drawRect(left, top, left + band, bottom, edge)
+            canvas.drawRect(right - band, top, right, bottom, edge)
+            left += band
+            top += band
+            right -= band
+            bottom -= band
+        }
+        Win98.bevel(canvas, left, top, right, bottom, edge, band, sunken = lit)
+    }
+
     override fun onDraw(canvas: Canvas) {
-        canvas.drawRect(inset, faceTop, width - inset, height - inset, face)
+        drawFace(canvas)
         if (keyW <= 0f) return
+
+        // A pressed Windows button moved what was written on it a pixel down and to the
+        // right, along with the light - the label went into the screen with the face it is
+        // written on, and a bevel that inverted while the letter stayed put looked like a
+        // hole with something floating over it. Everything below is drawn through this, so
+        // the glyph, the label, the caps-lock bar and the corner mark all move together.
+        val shove = if (theme.bevelled && lit) Win98.band(resources.displayMetrics.density) else 0f
+        if (shove != 0f) {
+            canvas.save()
+            canvas.translate(shove, shove)
+        }
 
         glyph?.let {
             val side = (textUnit() * glyphScale()).toInt()
@@ -760,7 +861,7 @@ class KeyView(
             // key produces, and a key whose face reads `English` in the weight of a letter
             // looks like a key that types the word.
             val quiet = key.action == Action.SPACE
-            ink.typeface = if (quiet) hintFont else labelFont
+            ink.typeface = if (quiet) quietFace() else labelFace()
             ink.textSize = textUnit() * when {
                 quiet -> HINT_TEXT
                 key.action == null -> LABEL_TEXT
@@ -793,7 +894,7 @@ class KeyView(
         }
 
         key.hint?.let { hint ->
-            ink.typeface = hintFont
+            ink.typeface = quietFace()
             ink.textSize = textUnit() * HINT_TEXT
             ink.color = hintColour()
             ink.textAlign = Paint.Align.LEFT
@@ -813,7 +914,15 @@ class KeyView(
                 ink
             )
         }
+
+        if (shove != 0f) canvas.restore()
     }
+
+    /** The face a key's own character is set in. */
+    private fun labelFace() = if (theme.bevelled) classicFont else labelFont
+
+    /** And the face of everything that is a note about the key rather than the key: see [classicFont]. */
+    private fun quietFace() = if (theme.bevelled) classicFont else hintFont
 
     /**
      * What is written across the key's middle.

@@ -14,6 +14,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import rocks.gorjan.gokixp.R
 import rocks.gorjan.gokixp.apps.people.ContactFace
+import rocks.gorjan.gokixp.apps.people.ContactsPage
 import rocks.gorjan.gokixp.apps.people.HubApp
 import rocks.gorjan.gokixp.apps.people.dayHeadingOf
 import rocks.gorjan.gokixp.apps.people.dayOf
@@ -46,6 +47,13 @@ import rocks.gorjan.gokixp.wp81.applyToPageText
  * reach for when the address book has failed you, which is not often enough to spend a
  * swipe of the panorama on.
  *
+ * The book itself is the third section, because the other way of reaching a person you
+ * have not rung lately is to look them up, and the shell's search key had nowhere to go
+ * from in here - it meant Cortana, an inch under a screenful of names it would not search.
+ * It is People's own page rather than a list of this app's - see [ContactsPage] - so that
+ * looking somebody up is the same page with the same letters and the same jump grid in
+ * both programs.
+ *
  * Everything about a *person* rather than about a call is somewhere else. Their card is
  * People's, and a conversation is Messaging's; this app asks the host to open them, which
  * is the honest arrangement now that they are separate programs. See [onShowContact] and
@@ -63,8 +71,13 @@ class PhoneApp(
      * is not an activity. See [isThePhone] for what holding it buys.
      */
     private val onBecomeDialer: () -> Unit,
-    /** Opens People on somebody's card. Their card is not this app's page. */
-    private val onShowContact: (Long) -> Unit,
+    /**
+     * Opens People on somebody's card. Their card is not this app's page.
+     *
+     * Handed the person rather than an id, because not everybody with a card has an id: a
+     * colleague out of a work account's directory is somebody to open all the same.
+     */
+    private val onShowContact: (PeopleStore.Contact) -> Unit,
     /** Opens People's editor on a number this phone does not have a name for. */
     private val onNewContact: (String) -> Unit,
     /** Opens Messaging on a conversation with one number. */
@@ -77,6 +90,15 @@ class PhoneApp(
 
     private lateinit var favouritesColumn: LinearLayout
     private lateinit var historyColumn: LinearLayout
+
+    /**
+     * The address book, on People's own page.
+     *
+     * Not a list of this app's: two alphabetical lists of the same people in one shell
+     * that differ in what a held row offers, or in whether the accounts' directories are
+     * asked, are two books that disagree about who is in them. See [ContactsPage].
+     */
+    private lateinit var contactsPage: ContactsPage
 
     /**
      * The calls the history holds but has not built rows for yet.
@@ -92,8 +114,19 @@ class PhoneApp(
     /** Whether the last read of the log threw rather than coming back empty. */
     private var historyFailed = false
 
+    /** The call log, watched while the window is up. See [historyChanged]. */
+    private var callsWatch: android.database.ContentObserver? = null
+
     /** The one history row that is open, if any. See [toggleHistoryActions]. */
     private var openHistoryActions: OpenRow? = null
+
+    /**
+     * The row to open again once the history has been rebuilt. See [bindHistory].
+     *
+     * Held by what the row is about rather than by the view, because the views are the
+     * thing a rebuild throws away.
+     */
+    private var reopenHistoryKey: String? = null
 
     /**
      * Which day the calls built into the history so far belong to.
@@ -130,8 +163,16 @@ class PhoneApp(
         favouritesColumn = sectionColumn()
         historyColumn = sectionColumn()
 
+        contactsPage = ContactsPage(context, palette, onRequestPermissions).apply {
+            // Their card is People's page, not this one - so a tap leaves for it, the same
+            // as a tap on the wall of favourites does, and backing out of it comes here.
+            onPick = { person -> onShowContact(person) }
+            onHeld = { person, anchorY -> showContactMenu(person, anchorY) }
+        }
+
         panorama.addPage("favourites", page(favouritesColumn) {})
         panorama.addPage("history", page(historyColumn) { extendHistory() })
+        panorama.addPage("contacts", contactsPage)
 
         column.addView(panorama, LinearLayout.LayoutParams(MATCH, 0, 1f))
         root.addView(column, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -143,7 +184,28 @@ class PhoneApp(
         // of a list is reachable instead of sitting behind the buttons.
         column.setPadding(0, 0, 0, dp(MetroAppBar.HEIGHT_DP))
 
+        // The jump grid measures itself against the whole display, because that is what it
+        // covers - so it is put up over the app rather than inside the page, which is only
+        // as tall as the panorama leaves it.
+        contactsPage.setJumpListHost(root)
+
         addOverlayFurniture()
+
+        // The call log, watched while the app is on screen. A call is written down by the
+        // platform rather than announced, so this is the only way one that happens with
+        // the window open reaches the page showing it - and the page is often open for
+        // days at a time, this being a launcher.
+        root.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) {
+                callsWatch = PhoneHistory.watch(context) { historyChanged() }
+            }
+
+            override fun onViewDetachedFromWindow(v: View) {
+                PhoneHistory.unwatch(context, callsWatch)
+                callsWatch = null
+                v.removeCallbacks(rereadHistory)
+            }
+        })
 
         // Favourites first, which is the whole argument for having the section: the people
         // you actually ring are four or five, and every other way of reaching them starts
@@ -153,6 +215,22 @@ class PhoneApp(
         refresh()
         return root
     }
+
+    /**
+     * The log has changed, so the page will be read again in a moment.
+     *
+     * Coalesced rather than acted on, because one call is several writes - the row, then
+     * its duration, then the name the platform caches onto it - and each arrives as its own
+     * change. Reading the log is four hundred rows and a pass over the address book; doing
+     * that three times for one call is three times the work to reach the same list.
+     */
+    private fun historyChanged() {
+        if (!::panorama.isInitialized) return
+        root.removeCallbacks(rereadHistory)
+        root.postDelayed(rereadHistory, WATCH_SETTLE_MS)
+    }
+
+    private val rereadHistory = Runnable { readHistory() }
 
     /**
      * The strip: the keypad, and the rest behind the dots.
@@ -188,6 +266,86 @@ class PhoneApp(
         return bar
     }
 
+    // ---------------------------------------------------------------- search
+
+    /**
+     * The shell's search key, while Phone itself is what is on screen.
+     *
+     * It used to mean Cortana in here, as it does everywhere with nothing of its own - and
+     * that was the one screen in the shell where it read as a mistake, a magnifying glass
+     * drawn at the foot of a program whose whole subject is a list of people it would not
+     * look in. So the key searches the book, on the section the book is on.
+     *
+     * Withdrawn under a page opened over it - the dialer, a caller's own page. Those are
+     * somewhere the user went into and none of them has a search, and a key that jumped to
+     * the contacts from inside the keypad would be an exit dressed as a filter. Cortana has
+     * it back until they come out. See [rocks.gorjan.gokixp.wp81.WP81Searchable].
+     */
+    override fun searchAction(): (() -> Unit)? =
+        if (overlays.isNotEmpty() || !::contactsPage.isInitialized) null
+        else ({ searchContacts() })
+
+    /**
+     * Looking somebody up: the contacts section, with its search band already open.
+     *
+     * The band folds the letters away under the reader's eye where they are already
+     * standing on the book, and does not where the panorama is carrying the page in at the
+     * same moment - a second animation over the first makes the arrival stutter. See
+     * [rocks.gorjan.gokixp.wp81.MetroIndexList.beginSearch].
+     */
+    private fun searchContacts() {
+        val standingOnIt = panorama.currentPage() == PAGE_CONTACTS
+        if (!standingOnIt) panorama.goTo(PAGE_CONTACTS, animated = true)
+        contactsPage.beginSearch(animated = standingOnIt)
+    }
+
+    /**
+     * The book answers for its own jump grid and its own search band, both of which are
+     * steps inside that section rather than ways out of the app.
+     */
+    override fun handleBackInProgram(): Boolean =
+        ::contactsPage.isInitialized && contactsPage.handleBack()
+
+    /**
+     * The commands for somebody in the book, held.
+     *
+     * Ringing first, because this is Phone: the tap opens their card, which is the safe
+     * thing for a list four thousand rows long to do with a stray thumb, and the call is
+     * the thing a deliberate press is after. Starring is here because it is the one change
+     * worth making from a list - it puts somebody on the wall this app opens on, and having
+     * to go to People to do it is what stops anybody using favourites at all.
+     */
+    private fun showContactMenu(person: PeopleStore.Contact, anchorY: Float) {
+        if (person.directory) {
+            // Somebody in a directory has no row on this phone to star, and the directory
+            // is not this phone's to change. What they have is a number to be reached on.
+            showMenu(
+                person.name,
+                listOf(
+                    WP81ContextMenu.Item("call") { chooseNumber(person) { place(it) } },
+                    WP81ContextMenu.Item("text") { chooseNumber(person) { onShowThread(it) } },
+                    WP81ContextMenu.Item("view contact") { onShowContact(person) }
+                ),
+                anchorY
+            )
+            return
+        }
+        showMenu(
+            person.name,
+            listOf(
+                WP81ContextMenu.Item("call") { chooseNumber(person) { place(it) } },
+                WP81ContextMenu.Item("text") { chooseNumber(person) { onShowThread(it) } },
+                WP81ContextMenu.Item("view contact") { onShowContact(person) },
+                WP81ContextMenu.Item(
+                    if (person.starred) "remove from favourites" else "add to favourites"
+                ) {
+                    PeopleStore.setStarred(context, person.id, !person.starred) { refresh() }
+                }
+            ),
+            anchorY
+        )
+    }
+
     // ---------------------------------------------------------------- reading
 
     /**
@@ -200,16 +358,28 @@ class PhoneApp(
     fun refresh() {
         if (!PeopleStore.canRead(context)) {
             contacts = emptyList()
-            bindFavourites()
+            bindPeople()
         } else {
             PeopleStore.all(context) { people ->
                 contacts = people
-                bindFavourites()
+                bindPeople()
             }
         }
         // Asked for itself. The call log is a permission of its own, and a phone that has
         // said yes to contacts should not have the history go blank over it.
         readHistory()
+    }
+
+    /**
+     * The two sections the address book fills: the wall of the starred, and the book.
+     *
+     * One read for both. They are the same query - the whole book, with a star on some of
+     * the rows - and asking twice would be two answers that can disagree the moment
+     * somebody is starred between them.
+     */
+    private fun bindPeople() {
+        bindFavourites()
+        contactsPage.setContacts(contacts)
     }
 
     private fun readHistory() {
@@ -306,7 +476,7 @@ class PhoneApp(
         val tile = FavouritesGrid.Tile(context)
         tile.key = keyOf(person)
         tile.isClickable = true
-        tile.setOnClickListener { onShowContact(person.id) }
+        tile.setOnClickListener { onShowContact(person) }
         // No long-click listener: the hold on this wall is the grid's, because a hold is
         // where a drag starts. What a hold that goes nowhere does is this, and the grid
         // fires it once it knows the finger stayed put.
@@ -347,7 +517,7 @@ class PhoneApp(
             listOf(
                 WP81ContextMenu.Item("call") { chooseNumber(person) { place(it) } },
                 WP81ContextMenu.Item("text") { chooseNumber(person) { onShowThread(it) } },
-                WP81ContextMenu.Item("view contact") { onShowContact(person.id) },
+                WP81ContextMenu.Item("view contact") { onShowContact(person) },
                 WP81ContextMenu.Item("remove from favourites") {
                     PeopleStore.setStarred(context, person.id, false) { refresh() }
                 }
@@ -368,6 +538,11 @@ class PhoneApp(
      * had nowhere to be until the row could open.
      */
     private fun bindHistory() {
+        // Whichever row was open stays open. The history is re-read whenever People is left,
+        // so a caller saved there comes back as somebody - and coming back from a card with
+        // the row that opened it folded shut, a second after it appeared, is losing your
+        // place for the sake of a list that mostly did not change.
+        reopenHistoryKey = openHistoryActions?.key
         historyColumn.removeAllViews()
         openHistoryActions = null
         lastHistoryDay = NO_DAY
@@ -397,7 +572,16 @@ class PhoneApp(
         pendingCalls.clear()
         pendingCalls.addAll(history)
         extendHistory()
+        // Built down as far as the open row, if it was further than one screenful: short of
+        // that the page would be shorter than where it was scrolled to, and jump.
+        if (history.any { historyKeyOf(it) == reopenHistoryKey }) {
+            while (reopenHistoryKey != null && pendingCalls.isNotEmpty()) extendHistory()
+        }
+        reopenHistoryKey = null
     }
+
+    /** Which call a history row is, across a re-read of the log. */
+    private fun historyKeyOf(entry: PhoneHistory.Entry): String = "${entry.number}@${entry.at}"
 
     /** Adds the next screenful of calls, if there are any left. */
     private fun extendHistory() {
@@ -424,16 +608,18 @@ class PhoneApp(
     /**
      * The line that says which day the calls under it happened on.
      *
-     * In the accent, which is what the phone put its list headings in and what makes them
-     * findable at a scroll - the eye goes down the coloured line and stops at the day it
-     * wants. Set smaller and in the lighter face than the names it stands over, because it
-     * is still not one of the things in the list; it is the shelf they are on.
+     * In the page's own text colour, not the accent. The accent is what says a word can be
+     * tapped here - "call history", "view contact" - and red is what says a call was
+     * missed, so a heading in either colour competed with the two things on the page that
+     * mean something by their colour. Set smaller and in the lighter face than the names it
+     * stands over, because it is still not one of the things in the list; it is the shelf
+     * they are on.
      */
     private fun dayHeading(label: String, first: Boolean) = TextView(context).apply {
         text = label
         typeface = font(R.font.segoeui_semilight)
         textSize = 15f
-        setTextColor(palette.accent)
+        setTextColor(palette.foreground)
         includeFontPadding = false
         // Air above, so a heading belongs to what follows it rather than floating between
         // two days - except at the very top, where there is nothing above to be parted from.
@@ -465,7 +651,7 @@ class PhoneApp(
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
             setTextColor(
-                if (entry.direction == PhoneHistory.Direction.MISSED) palette.accent
+                if (entry.direction == PhoneHistory.Direction.MISSED) MISSED_RED
                 else palette.foreground
             )
             includeFontPadding = false
@@ -511,10 +697,15 @@ class PhoneApp(
         actions.visibility = View.GONE
         holder.addView(actions, wide())
 
-        val open = OpenRow(rings, actions)
+        val open = OpenRow(historyKeyOf(entry), rings, actions)
         row.setOnClickListener {
             Haptics.tap(it)
             toggleHistoryActions(open)
+        }
+        if (open.key == reopenHistoryKey) {
+            open.setOpen(true)
+            openHistoryActions = open
+            reopenHistoryKey = null
         }
         return holder
     }
@@ -525,7 +716,7 @@ class PhoneApp(
      * Two views rather than one, and in different parents: the rings belong on the title's
      * line and the words belong under it, and they still have to come and go together.
      */
-    private class OpenRow(private val rings: View, private val words: View) {
+    private class OpenRow(val key: String, private val rings: View, private val words: View) {
         val isOpen: Boolean get() = words.visibility == View.VISIBLE
 
         fun setOpen(open: Boolean) {
@@ -550,8 +741,8 @@ class PhoneApp(
             setPadding(dp(ARROW_DP + 10), 0, 0, dp(10))
         }
         row.addView(actionWord("call history") { showNumberHistory(entry) })
-        val id = entry.contactId
-        if (id != null) row.addView(actionWord("view contact") { onShowContact(id) })
+        val person = entry.contact
+        if (person != null) row.addView(actionWord("view contact") { onShowContact(person) })
         else row.addView(actionWord("add contact") { onNewContact(entry.number) })
         return row
     }
@@ -583,8 +774,10 @@ class PhoneApp(
     /**
      * Which way a call went, as an arrow.
      *
-     * A missed one is the same arrow in the accent: the direction is the same fact about
-     * it, and what is different is that it wants answering.
+     * A missed one is the same arrow in red: the direction is the same fact about it, and
+     * what is different is that it wants answering. Red whatever the accent is - in the
+     * accent, a missed call on a phone themed blue was a blue row among grey ones, which
+     * reads as a selection rather than as something that went wrong.
      */
     private fun directionArrow(entry: PhoneHistory.Entry): ImageView = ImageView(context).apply {
         setImageDrawable(
@@ -596,7 +789,7 @@ class PhoneApp(
         )
         scaleType = ImageView.ScaleType.FIT_CENTER
         imageTintList = android.content.res.ColorStateList.valueOf(
-            if (entry.direction == PhoneHistory.Direction.MISSED) palette.accent
+            if (entry.direction == PhoneHistory.Direction.MISSED) MISSED_RED
             else palette.foregroundSubtle
         )
     }
@@ -665,7 +858,7 @@ class PhoneApp(
             typeface = font(R.font.segoeui_regular)
             textSize = 16f
             setTextColor(
-                if (entry.direction == PhoneHistory.Direction.MISSED) palette.accent
+                if (entry.direction == PhoneHistory.Direction.MISSED) MISSED_RED
                 else palette.foreground
             )
             includeFontPadding = false
@@ -703,6 +896,13 @@ class PhoneApp(
     }
 
     private fun confirmClearHistory() {
+        // Asked for before the confirmation rather than after it, so the user is not told
+        // the log has been cleared by a command that had no way to clear it. Normally
+        // already held - see PhoneHistory.canWrite.
+        if (!PhoneHistory.canWrite(context)) {
+            onRequestPermissions(PhoneHistory.permissions())
+            return
+        }
         ask(
             "delete all",
             "This clears every call from the phone's history, not just the ones shown here.",
@@ -718,9 +918,12 @@ class PhoneApp(
             buildList {
                 add(WP81ContextMenu.Item("text") { onShowThread(entry.number) })
                 add(WP81ContextMenu.Item("call") { place(entry.number) })
-                val id = entry.contactId
-                if (id != null) add(WP81ContextMenu.Item("view contact") { onShowContact(id) })
-                else add(WP81ContextMenu.Item("save to contacts") { onNewContact(entry.number) })
+                val person = entry.contact
+                if (person != null) {
+                    add(WP81ContextMenu.Item("view contact") { onShowContact(person) })
+                } else {
+                    add(WP81ContextMenu.Item("save to contacts") { onNewContact(entry.number) })
+                }
                 // Last, under the things the row is usually held for. It is the one command
                 // here that is about the number as a piece of text rather than about the
                 // person - pasting it into a message, into a form, reading it out to
@@ -997,7 +1200,7 @@ class PhoneApp(
             isClickable = true
             setOnClickListener {
                 Haptics.tap(it)
-                onShowContact(found.contact.id)
+                onShowContact(found.contact)
             }
             TiltEffect.apply(this)
         }
@@ -1170,9 +1373,25 @@ class PhoneApp(
     private companion object {
         const val PAGE_FAVOURITES = 0
         const val PAGE_HISTORY = 1
+        const val PAGE_CONTACTS = 2
 
         /** No day yet, for [lastHistoryDay]. Not zero: that is what an undated call gives. */
         const val NO_DAY = Long.MIN_VALUE
+
+        /**
+         * How long the call log is left to settle before it is read again.
+         *
+         * Long enough that the handful of writes one call makes are one re-read, short
+         * enough that a call that has just ended is on the page by the time the user has
+         * looked down at it. See [historyChanged].
+         */
+        const val WATCH_SETTLE_MS = 400L
+
+        /**
+         * What a missed call is written in, whatever the theme. The call screen's red, so a
+         * call turned away there and one missed here are the same colour. See [CALL_RED].
+         */
+        const val MISSED_RED = CALL_RED
 
         /** Spelled here as every class in this shell spells it, beside the marks it names. */
         const val ICON_DIR = "custom_icons_8"

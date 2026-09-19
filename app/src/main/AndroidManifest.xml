@@ -6,6 +6,18 @@
          Signature level on that side, so it only works between builds signed alike. -->
     <uses-permission android:name="rocks.gorjan.gokixp.permission.READ_WP8_MIGRATION" />
 
+    <!--
+        Lets another app read the accent and the Dark/Light setting, so it can wear the
+        phone's theme rather than pick one of its own. See WP81ThemeProvider.
+
+        Normal level, not signature: what is behind it is a colour and a light switch, and a
+        signature guard would stop working the day the two apps are released under different
+        keys. It is a name for the contract, not a lock on anything.
+    -->
+    <permission
+        android:name="${applicationId}.permission.READ_THEME"
+        android:protectionLevel="normal" />
+
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
     <!-- Lets the app hand the car a NavigationTemplate, which is what carries the Surface. -->
@@ -83,6 +95,15 @@
     -->
     <uses-permission android:name="android.permission.WRITE_CONTACTS"/>
     <uses-permission android:name="android.permission.READ_CALL_LOG"/>
+    <!--
+      Writing the call log is what lets the history do anything about what it shows:
+      "delete all", and marking a missed call as seen. The second is not a nicety - Telecom
+      counts missed calls by asking the log which rows are still new, on every boot, so a
+      phone app that cannot mark them read is one where the count grows forever. See
+      PhoneHistory.markMissedRead. Same permission group as reading, so it is the same
+      dialog the history already asks.
+    -->
+    <uses-permission android:name="android.permission.WRITE_CALL_LOG"/>
     <!--
       Text messages, on the same terms: asked for by the messages page when it is first
       opened, and by the box at the foot of a conversation the first time somebody presses
@@ -480,6 +501,23 @@
         </receiver>
 
         <!--
+          The daily settings backup: its own alarm, and the two broadcasts that wipe one.
+
+          Exported, because BOOT_COMPLETED and MY_PACKAGE_REPLACED come from the system and
+          a manifest receiver cannot hear them otherwise. Safe to have open: the receiver
+          decides nothing - it asks AutoBackup whether a copy is owed, which it is at most
+          once a day and only when the user has switched the thing on.
+        -->
+        <receiver
+            android:name=".AutoBackupReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!--
           What holds an alarm while it is ringing. mediaPlayback because that is literally
           what it is doing - a looping sound on the alarm stream - and it is the type the
           platform's own clock app uses for this.
@@ -654,6 +692,17 @@
                 android:name="android.view.im"
                 android:resource="@xml/method" />
         </service>
+
+        <!--
+            The phone's theme, for the author's other apps. One row: accent, its name, and
+            whether the background is Dark. See WP81ThemeProvider.
+        -->
+        <provider
+            android:name=".wp81.WP81ThemeProvider"
+            android:authorities="${applicationId}.theme"
+            android:exported="true"
+            android:grantUriPermissions="false"
+            android:permission="${applicationId}.permission.READ_THEME" />
 
         <!-- FileProvider for My Computer file sharing -->
         <provider

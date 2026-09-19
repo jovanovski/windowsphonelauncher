@@ -81,6 +81,74 @@ class EmojiData private constructor(
      */
     fun find(glyph: String): Emoji? = byGlyph[glyph]
 
+    // ---------------------------------------------------------------- families
+
+    /**
+     * A base emoji and its skin-tone variants, grouped once.
+     *
+     * Half the asset is skin tones - 1875 entries of 3773 - and laid out flat they are what
+     * the picker mostly is: six pages of the same hand in five shades before the next hand.
+     * So the grid draws one cell per family and a hold opens the rest, the way a hold on a
+     * letter key opens its accents. [bases] is what the grid walks and [variantsOf] is what
+     * the hold asks for.
+     *
+     * Both come out of a single pass, in one object, because they are two views of the same
+     * grouping and two `by lazy` fields would be the same three and a half thousand names
+     * split twice.
+     */
+    private class Families(
+        /** Base first, then the variants in the asset's order. Keyed by *every* glyph in it. */
+        val byGlyph: Map<String, List<Emoji>>,
+        /** The glyph of every emoji that heads a family, families of one included. */
+        val heads: Set<String>,
+        /** [categories] with the variants taken out. */
+        val bases: List<List<Emoji>>
+    )
+
+    private val families: Families by lazy { group() }
+
+    /** [categories], with each family collapsed to the emoji that heads it. */
+    val bases: List<List<Emoji>> get() = families.bases
+
+    /**
+     * Every emoji drawn the same as [glyph] but for its skin tone, base first, or empty.
+     *
+     * Asked with *any* glyph of the family rather than only with the base, because the
+     * recents hold whatever was actually picked - a hold that gave `\uD83D\uDC4B\uD83C\uDFFD`
+     * once puts that in the recents, and holding it there has to open the same six.
+     */
+    fun variantsOf(glyph: String): List<Emoji> = families.byGlyph[glyph].orEmpty()
+
+    /** Whether [glyph] belongs to a family with more than one member. See [variantsOf]. */
+    fun hasVariants(glyph: String): Boolean = families.byGlyph.containsKey(glyph)
+
+    /**
+     * Files every emoji under the name of the one it is a variant of.
+     *
+     * The asset lists a base immediately before its own variants, so the first emoji filed
+     * under a key is that key's base and no separate lookup is needed to find it - and if a
+     * base was dropped because this phone's font cannot draw it, the first variant that
+     * survived takes its place rather than the family disappearing with it.
+     */
+    private fun group(): Families {
+        val known = HashSet<String>(all.size * 2)
+        for (emoji in all) known.add(emoji.name)
+
+        val groups = LinkedHashMap<String, MutableList<Emoji>>(2048)
+        for (emoji in all) groups.getOrPut(baseNameOf(emoji.name, known)) { mutableListOf() }
+            .add(emoji)
+
+        val heads = HashSet<String>(groups.size * 2)
+        val byGlyph = HashMap<String, List<Emoji>>(all.size * 2)
+        for (family in groups.values) {
+            heads.add(family[0].glyph)
+            if (family.size < 2) continue
+            val members = family.toList()
+            for (member in members) byGlyph[member.glyph] = members
+        }
+        return Families(byGlyph, heads, categories.map { it.filter { e -> e.glyph in heads } })
+    }
+
     /**
      * Every kept emoji whose name contains [query], in the asset's own order.
      *
@@ -93,7 +161,10 @@ class EmojiData private constructor(
     fun search(query: String): List<Emoji> {
         val needle = query.trim().lowercase()
         if (needle.isEmpty()) return emptyList()
-        return all.filter { it.name.contains(needle) }
+        // Heads only, the same as the browsing grid: a search for `hand` that answered with
+        // the same wave six times over would push everything else off the first screenful,
+        // and the five it left out are a hold away on the one it kept.
+        return all.filter { it.name.contains(needle) && it.glyph in families.heads }
     }
 
     /**
@@ -165,7 +236,8 @@ class EmojiData private constructor(
     /**
      * Builds the indices now, on whatever thread is calling, so nothing has to build them later.
      *
-     * Every lookup here reads through a `by lazy` - [all], [byGlyph], [byHead] - and a lazy is
+     * Every lookup here reads through a `by lazy` - [all], [byGlyph], [byHead], [families] -
+     * and a lazy is
      * built by whoever asks first. For [byHead] that first asker was the suggestion bar, which
      * runs on the main thread under a keystroke, and what it triggered was a walk over the
      * whole asset: three and a half thousand names split into words and filed into a map of
@@ -179,6 +251,7 @@ class EmojiData private constructor(
     fun warm() {
         byGlyph
         byHead
+        families
     }
 
     fun headed(term: String, limit: Int): List<Emoji> {
@@ -229,6 +302,77 @@ class EmojiData private constructor(
          */
         fun isVariant(name: String): Boolean =
             name.contains("skin tone") || name.endsWith(" hair") || name.endsWith(": bald")
+
+        /**
+         * The five shades Unicode writes as a qualifier after the colon.
+         *
+         * Matched as whole qualifiers rather than by searching the name for `skin tone`,
+         * because what is being taken out has to leave a name that another entry in the
+         * asset actually has - `man: light skin tone, red hair` has to come out as
+         * `man: red hair`, which exists, and not as `man`, which is a different emoji.
+         */
+        private val SKIN_TONES = setOf(
+            "light skin tone",
+            "medium-light skin tone",
+            "medium skin tone",
+            "medium-dark skin tone",
+            "dark skin tone"
+        )
+
+        /**
+         * [name] with its skin-tone qualifiers removed, or null if it had none.
+         *
+         * The asset's names are a head, a colon and a comma-separated list of qualifiers -
+         * `waving hand: light skin tone`, `man: dark skin tone, bald`, `people holding
+         * hands: light skin tone, dark skin tone`. Dropping the shades from that list and
+         * putting the rest back is the whole of it, and it leaves the *other* qualifiers
+         * alone: hair and gender say which emoji this is, not which shade of it, and a
+         * picker that folded `man: bald` into `man` would be hiding a different person
+         * rather than a different skin.
+         *
+         * [alsoPerson] additionally drops the `person` qualifiers, and exists for two
+         * families. Unicode spells the mixed-shade forms of the gender-neutral kiss and
+         * couple as `kiss: person, person, light skin tone, medium-light skin tone` - the
+         * two `person`s are there to say whose shades those are - so taking out only the
+         * shades leaves `kiss: person, person`, which is not the name of anything. See
+         * [baseNameOf], which reaches for this only when the plain answer names nothing.
+         */
+        fun withoutSkinTone(name: String, alsoPerson: Boolean = false): String? {
+            val colon = name.indexOf(": ")
+            if (colon < 0) return null
+            val head = name.substring(0, colon)
+            var dropped = false
+            val kept = ArrayList<String>(4)
+            for (part in name.substring(colon + 2).split(",")) {
+                val qualifier = part.trim()
+                when {
+                    qualifier in SKIN_TONES -> dropped = true
+                    alsoPerson && qualifier == "person" -> Unit
+                    else -> kept.add(qualifier)
+                }
+            }
+            if (!dropped) return null
+            return if (kept.isEmpty()) head else head + ": " + kept.joinToString(", ")
+        }
+
+        /**
+         * What [name] should be filed under: the name of the emoji it is a shade of, or its
+         * own when it is not a shade of anything.
+         *
+         * [known] is every name in the asset, and is what decides between the two readings
+         * of a name rather than a rule about which is right. Taking the shades out of
+         * `kiss: person, person, light skin tone, medium-light skin tone` gives a name
+         * nothing has, and the answer is then the one that does - see [withoutSkinTone].
+         * Falling back on the *absence* of a name, rather than on a list of the two families
+         * this happens to, means a later Unicode release spelling some third family the same
+         * way is grouped correctly without anything here being changed.
+         */
+        fun baseNameOf(name: String, known: Set<String>): String {
+            val base = withoutSkinTone(name) ?: return name
+            if (base in known) return base
+            val withoutPerson = withoutSkinTone(name, alsoPerson = true)
+            return if (withoutPerson != null && withoutPerson in known) withoutPerson else base
+        }
 
         /**
          * Parses the asset's own tab-separated format: `glyph<TAB>categoryIndex<TAB>name`.

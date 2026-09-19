@@ -262,6 +262,7 @@ class KeyboardView(
     private fun attachJoystick() {
         if (joystickView != null) return
         val view = JoystickView(context, palette)
+        view.theme = theme
         // Zero when there is no listener, which is the same answer the field gives when the
         // caret has nowhere left to go: nothing moved.
         view.onDrag = { steps -> listener?.onCursorSlide(view, steps) ?: 0 }
@@ -290,6 +291,28 @@ class KeyboardView(
             field = value
             grids.values.forEach { grid -> grid.forEach { it.slideSelect = value } }
             if (!value) endSlide()
+        }
+
+    /**
+     * What the keys are made of. See [KeyboardTheme].
+     *
+     * Pushed down to every grid for the same reason the two settings above are, and the
+     * colours that go with it arrive separately through [applyPalette] - the service changes
+     * both when this setting moves. The keys are the only thing here that knows about it: a
+     * theme is a palette plus the shape of a button, and everything except the buttons is
+     * already painted from the palette.
+     */
+    var theme: KeyboardTheme = KeyboardTheme.PHONE
+        set(value) {
+            if (field == value) return
+            field = value
+            setBackgroundColor(groundColour())
+            grids.values.forEach { grid -> grid.forEach { it.theme = value } }
+            // The two things that float above the keys, which are made of what the keys are
+            // made of. Nothing else here has a shape of its own to change.
+            popup.theme = value
+            preview.theme = value
+            joystickView?.theme = value
         }
 
     /**
@@ -792,6 +815,7 @@ class KeyboardView(
                     it.holdMillis = holdMillis
                     it.caretSlide = !joystick
                     it.slideSelect = slideKeys
+                    it.theme = theme
                     it.onPressedChanged = ::showPreview
                     addView(it)
                 }
@@ -1034,9 +1058,18 @@ class KeyboardView(
      * Not [WP81Palette.background]. The phone's keyboard ground was a shade off black, a
      * step darker than the keys rather than the page behind them, which is what stops a
      * field of dark keys from reading as holes cut in the screen.
+     *
+     * A bevelled theme wants none of that and is given the keys' own colour instead. A step
+     * darker behind them is how a flat key is told from the field it is on, and a raised key
+     * does not need telling - the light down its top edge has already said it. Windows put
+     * its buttons straight onto the dialog they belonged to, in the same colour, and the
+     * gutters between these keys are that dialog showing through. See [Win98].
      */
     private fun groundColour(): Int =
-        androidx.core.graphics.ColorUtils.blendARGB(palette.background, palette.foreground, GROUND_ALPHA)
+        if (theme.bevelled) Win98.FACE
+        else androidx.core.graphics.ColorUtils.blendARGB(
+            palette.background, palette.foreground, GROUND_ALPHA
+        )
 
     /**
      * How tall the rows come to, gutters included and the navigation bar excluded.

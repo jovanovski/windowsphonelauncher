@@ -294,6 +294,32 @@ class CandidateBar(
     private val ink = TextPaint(Paint.ANTI_ALIAS_FLAG)
     private val font = ResourcesCompat.getFont(context, R.font.segoeui_regular)
 
+    /** The other face the bar can be set in. See `KeyView.classicFont`. */
+    private val classicFont = ResourcesCompat.getFont(context, R.font.tahoma)
+
+    /**
+     * What the keyboard is made of. See [KeyboardTheme].
+     *
+     * The bar takes almost the whole of a theme through the palette - its ground, the navy
+     * behind the word under a finger, the black the words are set in - and needs to be told
+     * only one thing, which is what to set them in. A row of suggestions in Segoe above a
+     * keyboard in Tahoma is the join showing, and it is the join people look straight at:
+     * the bar is a finger's width above the letters being typed.
+     *
+     * Slots are laid out from measured text, so a change of face is a change of width and
+     * the row has to be measured again.
+     */
+    var theme: KeyboardTheme = KeyboardTheme.PHONE
+        set(value) {
+            if (field == value) return
+            field = value
+            slotsDirty = true
+            invalidate()
+        }
+
+    /** The face the words are set in, which is the theme's. */
+    private fun wordFace() = if (theme.bevelled) classicFont else font
+
     /** How far a finger may wander and still be holding still. */
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
 
@@ -440,7 +466,7 @@ class CandidateBar(
      * become a difference in height. See [baseline].
      */
     private fun styleFor(slot: Int) {
-        ink.typeface = if (slot in 1..emojiCount) null else font
+        ink.typeface = if (slot in 1..emojiCount) null else wordFace()
         ink.textSize = keyW * TEXT
     }
 
@@ -661,8 +687,12 @@ class CandidateBar(
         }
 
         // The bar sits on the same ground as the keyboard, not on the keys' own grey. It is
-        // the gap the phone left above the keys, with things in it.
-        face.color = ColorUtils.blendARGB(palette.background, palette.foreground, GROUND_ALPHA)
+        // the gap the phone left above the keys, with things in it - and under a bevelled
+        // theme that ground is the keys' colour, so this follows it there too. See
+        // `KeyboardView.groundColour`, which is the same decision and has the reasoning.
+        face.color =
+            if (theme.bevelled) Win98.FACE
+            else ColorUtils.blendARGB(palette.background, palette.foreground, GROUND_ALPHA)
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), face)
 
         val side = keyW * GLYPH_SLOT
@@ -673,7 +703,7 @@ class CandidateBar(
         // bin is at the far end, which is the end nothing else uses.
         draggedWord()?.let { word ->
             drawGlyph(canvas, binGlyph, width - side / 2f, overBin)
-            ink.typeface = font
+            ink.typeface = wordFace()
             ink.textSize = keyW * TEXT
             ink.textAlign = Paint.Align.CENTER
             ink.color = if (overBin) palette.accent else palette.foreground

@@ -60,7 +60,7 @@ object MessageNotifier {
 
         val them = Person.Builder()
             .setName(who)
-            .setKey(MessageStore.keyOf(address))
+            .setKey(MessageStore.keyOf(context, address))
             .setImportant(true)
             .apply { face?.let { setIcon(IconCompat.createWithAdaptiveBitmap(it)) } }
             .build()
@@ -71,7 +71,7 @@ object MessageNotifier {
             .setAction(MainActivity.ACTION_SHOW_MESSAGE_THREAD)
             .putExtra(MainActivity.EXTRA_MESSAGE_ADDRESS, address)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-        val id = idFor(address)
+        val id = idFor(context, address)
         val opening = PendingIntent.getActivity(
             context, id, open,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
@@ -89,7 +89,7 @@ object MessageNotifier {
             style.addMessage(body, System.currentTimeMillis(), them)
         }
 
-        val shortcut = "message:" + MessageStore.keyOf(address)
+        val shortcut = "message:" + MessageStore.keyOf(context, address)
         pushConversation(context, shortcut, who, face, them, open)
 
         val builder = NotificationCompat.Builder(context, CHANNEL)
@@ -161,7 +161,7 @@ object MessageNotifier {
             // typed once already and losing them is the one unforgivable part of failing.
             .putExtra(MainActivity.EXTRA_MESSAGE_DRAFT, body)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-        val id = idFor(address) + FAILED_OFFSET
+        val id = idFor(context, address) + FAILED_OFFSET
         try {
             notifications(context).notify(
                 id,
@@ -189,7 +189,7 @@ object MessageNotifier {
     /** Takes a conversation's notification down, for when it has been read. */
     fun clear(context: Context, address: String) {
         try {
-            notifications(context).cancel(idFor(address))
+            notifications(context).cancel(idFor(context, address))
         } catch (e: Exception) {
             Log.d(TAG, "The message notification was already gone", e)
         }
@@ -239,8 +239,8 @@ object MessageNotifier {
      * message from the same person replaces the first rather than joining it, and so a
      * conversation opened in the app can take down the right one.
      */
-    fun idFor(address: String): Int =
-        BASE_ID + (MessageStore.keyOf(address).hashCode() and 0xFFFF)
+    fun idFor(context: Context, address: String): Int =
+        BASE_ID + (MessageStore.keyOf(context, address).hashCode() and 0xFFFF)
 
     private fun ensureChannel(context: Context) {
         val manager = notifications(context)

@@ -127,7 +127,7 @@ class AlarmRingActivity : Activity() {
         // difference between recognising a button and reading it.
         val commands = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         commands.addView(
-            command("snooze", SNOOZE_COLOR) {
+            command("snooze", SNOOZE_COLOR, filled = true) {
                 AlarmRingService.send(this, AlarmRingService.ACTION_SNOOZE)
                 finishAndRemoveTask()
             }.also { snooze = it },
@@ -152,21 +152,30 @@ class AlarmRingActivity : Activity() {
      * only things on the lower half of the screen - a phone being answered in the dark
      * should not require aim.
      *
-     * [color] draws the edge and the word both, rather than filling the rectangle: a
-     * solid block of red across half the screen is a warning, and an alarm going off is
-     * not one. The theme's accent is deliberately not used - these two have to mean orange
-     * and red whatever colour the wall happens to be set to this week.
+     * [color] draws the edge, and with [filled] the rectangle behind it as well. Snooze is
+     * the filled one: it is the key a hand arriving half asleep should land on, and a solid
+     * orange block is easier to hit by sight than an outline. Stop stays an outline, because
+     * a solid block of red across half the screen is a warning and an alarm going off is not
+     * one. The theme's accent is deliberately not used - these two have to mean orange and
+     * red whatever colour the wall happens to be set to this week.
      */
-    private fun command(text: String, color: Int, onTap: () -> Unit): View = TextView(this).apply {
+    private fun command(
+        text: String,
+        color: Int,
+        filled: Boolean = false,
+        onTap: () -> Unit
+    ): View = TextView(this).apply {
         this.text = text
         typeface = ResourcesCompat.getFont(context, R.font.segoeui_regular)
         textSize = 20f
         gravity = Gravity.CENTER
-        setTextColor(color)
+        // On a filled key the word cannot be its own colour, so it takes white - the same
+        // thing a tile does with an accent behind it.
+        setTextColor(if (filled) Color.WHITE else color)
         setPadding(0, dp(18), 0, dp(18))
         background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            setColor(Color.TRANSPARENT)
+            setColor(if (filled) color else Color.TRANSPARENT)
             setStroke(dp(2), color)
         }
         isClickable = true

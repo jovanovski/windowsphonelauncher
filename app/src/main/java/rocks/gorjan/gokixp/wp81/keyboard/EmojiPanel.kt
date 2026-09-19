@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.drawable.Drawable
 import android.os.Handler
@@ -349,6 +350,7 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
      * Rebuilding here rather than on each pick is the whole point - see [RecentEmoji.record].
      */
     fun onClosed() {
+        grid.hideVariants()
         recents.commit()
         refreshGrid()
         // Back to the emoji, and the GIFs freed. The panel outlives its use - it is built
@@ -359,9 +361,32 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
         gifGrid.release()
     }
 
+    /**
+     * What the keyboard is made of. See [KeyboardTheme].
+     *
+     * The panel takes the theme's colours through the palette like everything else and needs
+     * to be told two things it cannot work out: what the ground under it actually is - see
+     * `KeyboardView.groundColour`, which the panel has always had to match because it stands
+     * in the keyboard's place - and that its three keys are the same kind of key as the ones
+     * they replace.
+     */
+    var theme: KeyboardTheme = KeyboardTheme.PHONE
+        set(value) {
+            if (field == value) return
+            field = value
+            setBackgroundColor(ground())
+            abcKey.theme = value
+            gifKey.theme = value
+            backspaceKey.theme = value
+            invalidate()
+        }
+
+    /** The panel's own ground, which is the keyboard's. */
+    private fun ground(): Int = if (theme.bevelled) Win98.FACE else blend(GROUND_ALPHA)
+
     fun applyPalette(p: WP81Palette) {
         palette = p
-        setBackgroundColor(blend(GROUND_ALPHA))
+        setBackgroundColor(ground())
         magnifyIcon?.setTint(palette.foregroundSubtle)
         searchBar.applyPalette()
         grid.applyPalette()
@@ -521,7 +546,9 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
         val recent = recents.list().mapNotNull(data::find)
         if (recent.isNotEmpty()) sections.add(EmojiSection(RECENT_LABEL, clockIcon, recent))
         for (i in 0 until EmojiCategories.COUNT) {
-            val bucket = data.categories.getOrNull(i) ?: continue
+            // The collapsed buckets, not the raw ones: a family of skin tones is one cell
+            // with a corner mark on it, and the rest are a hold away. See [EmojiData.bases].
+            val bucket = data.bases.getOrNull(i) ?: continue
             if (bucket.isNotEmpty()) sections.add(EmojiSection(EmojiCategories.LABELS[i], null, bucket))
         }
         return sections to (if (sections.isEmpty()) NO_EMOJI_MESSAGE else null)
@@ -704,6 +731,7 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
         private var maxScroll = 0f
 
         private var dragging = false
+        private var downX = 0f
         private var downY = 0f
         private var downScroll = 0f
         private var downCell: Pair<Int, Int>? = null
@@ -715,9 +743,28 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
         private val face = Paint()
         private val ink = Paint(Paint.ANTI_ALIAS_FLAG)
         private val headerInk = Paint(Paint.ANTI_ALIAS_FLAG)
+        /**
+         * The corner mark's own paint.
+         *
+         * Its own, because the mark is the one thing drawn here small enough to need
+         * anti-aliasing: everything else on this canvas is a filled rectangle or a glyph.
+         */
+        private val mark = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val corner = Path()
         private val bounds = Rect()
         private val headerFont = ResourcesCompat.getFont(context, R.font.segoeui_semibold)
         private val bodyFont = ResourcesCompat.getFont(context, R.font.segoeui_regular)
+
+        /**
+         * The shades a hold opens, in a window of its own - see [VariantsPopup].
+         *
+         * Held by the grid rather than by the panel because the grid is what drives it: it
+         * owns the gesture from the hold that opens the block to the release that picks from
+         * it, and a window steered from two places is a window left showing over nothing.
+         */
+        private val variants = VariantsPopup(context, palette)
+
+        private val holdCheck = Runnable { openVariants() }
 
         init {
             isClickable = true
@@ -743,7 +790,14 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
         fun applyPalette() {
             clockIcon?.setTint(palette.foregroundSubtle)
             smileyIcon?.setTint(palette.foregroundSubtle)
+            variants.applyPalette(palette)
             invalidate()
+        }
+
+        /** Takes the block away - the panel closing, or the view going. */
+        fun hideVariants() {
+            removeCallbacks(holdCheck)
+            variants.dismiss()
         }
 
         override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -823,6 +877,47 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
         private fun emojiAt(cell: Pair<Int, Int>): Emoji? =
             (rows.getOrNull(cell.first) as? EmojiRow.Items)?.items?.getOrNull(cell.second)
 
+        /**
+         * Where a row's top edge is on screen right now, scrolling included.
+         *
+         * Walked rather than multiplied, because the rows are not all the same height -
+         * a section header is shorter than a row of cells - which is the same reason
+         * [cellAt] walks them going the other way.
+         */
+        private fun rowTop(index: Int): Float {
+            var y = -scrollOffset
+            for (i in 0 until index) {
+                y += if (rows[i] is EmojiRow.Header) headerHeight else cellPitch
+            }
+            return y
+        }
+
+        // -------------------------------------------------------------- the hold
+
+        /**
+         * Opens the shades of whatever is being held, if it has any.
+         *
+         * Nothing happens for an emoji that comes in one shade, deliberately and visibly:
+         * the cells that answer a hold are the ones wearing the corner mark, so a hold that
+         * did something on the others would make the mark mean nothing.
+         */
+        private fun openVariants() {
+            val cell = downCell ?: return
+            val emoji = emojiAt(cell) ?: return
+            val family = data.variantsOf(emoji.glyph)
+            if (family.size < 2) return
+            KeyboardHaptics.tap(this)
+            variants.show(
+                anchor = this,
+                cellLeft = cell.second * cellPitch,
+                cellTop = rowTop(cell.first),
+                variants = family,
+                held = emoji.glyph,
+                cellSize = cellPitch,
+                gap = gap
+            )
+        }
+
         // -------------------------------------------------------------- touch
 
         override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -831,18 +926,35 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
                     scroller.forceFinished(true)
                     velocityTracker?.recycle()
                     velocityTracker = VelocityTracker.obtain().also { it.addMovement(event) }
+                    downX = event.x
                     downY = event.y
                     downScroll = scrollOffset
                     dragging = false
                     downCell = cellAt(event.x, event.y + scrollOffset)
                     highlighted = downCell
+                    if (downCell != null) postDelayed(holdCheck, LONG_PRESS)
                     invalidate()
                     return true
                 }
 
                 MotionEvent.ACTION_MOVE -> {
+                    // Once the block is up the finger is steering it, not the grid. Not even
+                    // to scroll: the shades sit over the rows the finger would be dragging
+                    // past, and a grid moving underneath a block pinned to a cell that is no
+                    // longer there is a block pointing at the wrong emoji.
+                    if (variants.isShowing) {
+                        variants.moveTo(event.x, event.y)
+                        return true
+                    }
                     velocityTracker?.addMovement(event)
                     val dy = event.y - downY
+                    // Any movement worth noticing ends the hold, sideways as much as down.
+                    // The grid only scrolls one way, so a finger sliding across it is not
+                    // starting a drag - but it has left the cell it pressed, and a block
+                    // that opened over some other emoji a moment later would be a surprise.
+                    if (kotlin.math.hypot(event.x - downX, dy) > touchSlop) {
+                        removeCallbacks(holdCheck)
+                    }
                     if (!dragging && kotlin.math.abs(dy) > touchSlop) {
                         dragging = true
                         highlighted = null
@@ -853,6 +965,21 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
                 }
 
                 MotionEvent.ACTION_UP -> {
+                    if (variants.isShowing) {
+                        // Whatever the finger came off over, and null over one of the empty
+                        // cells a short row leaves. A release that never left the held cell
+                        // lands on the cell the block opened on, which is the emoji the grid
+                        // was drawing - so a hold and a straight lift gives back exactly what
+                        // a tap would have. See [VariantsPopup.show].
+                        variants.selected?.let {
+                            KeyboardHaptics.key(this)
+                            KeyboardSounds.tap()
+                            commitEmoji(it)
+                        }
+                        hideVariants()
+                        endTouch()
+                        return true
+                    }
                     if (dragging) {
                         velocityTracker?.addMovement(event)
                         velocityTracker?.computeCurrentVelocity(1000)
@@ -877,6 +1004,7 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
                 }
 
                 MotionEvent.ACTION_CANCEL -> {
+                    hideVariants()
                     endTouch()
                     return true
                 }
@@ -885,6 +1013,7 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
         }
 
         private fun endTouch() {
+            removeCallbacks(holdCheck)
             dragging = false
             downCell = null
             highlighted = null
@@ -902,6 +1031,8 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
 
         override fun onDetachedFromWindow() {
             super.onDetachedFromWindow()
+            // A window outlives the view that opened it unless something says otherwise.
+            hideVariants()
             scroller.forceFinished(true)
             velocityTracker?.recycle()
             velocityTracker = null
@@ -954,7 +1085,8 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
             ink.color = palette.foreground
             for ((col, emoji) in row.items.withIndex()) {
                 val left = col * cellPitch
-                if (highlighted?.first == rowIndex && highlighted?.second == col) {
+                val on = highlighted?.first == rowIndex && highlighted?.second == col
+                if (on) {
                     face.color = palette.accent
                     canvas.drawRect(
                         left + gap / 2f, y + gap / 2f,
@@ -965,7 +1097,31 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
                 val cy = y + cellPitch / 2f
                 ink.getTextBounds(emoji.glyph, 0, emoji.glyph.length, bounds)
                 canvas.drawText(emoji.glyph, cx, cy - (bounds.top + bounds.bottom) / 2f, ink)
+                if (data.hasVariants(emoji.glyph)) drawCorner(canvas, left, y, on)
             }
+        }
+
+        /**
+         * The mark that says a cell has more under it.
+         *
+         * A filled triangle in the bottom right corner, the same corner a letter key carries
+         * its hint in, and for the same reason - it is the corner a thumb coming up the
+         * screen covers last. Drawn rather than written: the keyboard's own hint is a
+         * character because a key's alternates *are* characters and one of them can stand
+         * for the rest, and no shade of a waving hand stands for the other four.
+         */
+        private fun drawCorner(canvas: Canvas, left: Float, top: Float, highlighted: Boolean) {
+            val inset = gap / 2f + cellPitch * CORNER_INSET_FRACTION
+            val side = cellPitch * CORNER_FRACTION
+            val x = left + cellPitch - inset
+            val y = top + cellPitch - inset
+            corner.rewind()
+            corner.moveTo(x, y)
+            corner.lineTo(x - side, y)
+            corner.lineTo(x, y - side)
+            corner.close()
+            mark.color = if (highlighted) palette.onAccent() else palette.foregroundSubtle
+            canvas.drawPath(corner, mark)
         }
 
         private fun drawEmptyState(canvas: Canvas) {
@@ -1081,6 +1237,20 @@ internal class EmojiPanel(context: Context, private var palette: WP81Palette) : 
         /** How many emoji to a row, and how much of a cell one of them fills. */
         const val EMOJI_COLUMNS = 8
         const val EMOJI_TEXT_FRACTION = 0.56f
+
+        /** The corner mark on a cell with shades under it: its size, and its inset. */
+        const val CORNER_FRACTION = 0.15f
+        const val CORNER_INSET_FRACTION = 0.07f
+
+        /**
+         * How long an emoji has to be held before its shades open.
+         *
+         * The platform's own, the same number [KeyView] holds its keys for, so that holding
+         * an emoji and holding a letter take the same length of time - and so that a user who
+         * has turned the system's touch-and-hold delay up or down gets what they asked for
+         * here as well.
+         */
+        val LONG_PRESS = ViewConfiguration.getLongPressTimeout().toLong()
 
         /** The "nothing here" state: an icon a little larger than an emoji, and its caption. */
         const val NO_RESULTS_ICON_FRACTION = 1.6f

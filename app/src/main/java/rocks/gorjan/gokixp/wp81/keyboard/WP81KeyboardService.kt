@@ -220,6 +220,14 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
             // fires many times a second with the keyboard on screen underneath. It has to:
             // watching the keys resize under the finger is the whole point of that box.
             WP81Settings.KEY_WP81_KB_KEY_HEIGHT -> applySettings()
+            // The one keyboard setting that is also a colour. [applySettings] changes the
+            // shape of a key and the palette is what everything else on the keyboard is
+            // painted from, so both halves have to be asked for or a Windows 98 keyboard
+            // comes up grey with a Windows Phone suggestion bar over it.
+            WP81Settings.KEY_WP81_KB_THEME -> {
+                applySettings()
+                refreshPalette()
+            }
             // Changed from the settings page, which is a different window: the system's own
             // list has to be brought back into step before the globe is next used.
             WP81Settings.KEY_WP81_KB_LANGUAGES -> {
@@ -246,6 +254,7 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         keyboard?.keyPreview = themeManager.getWP81KeyboardKeyPreview()
         keyboard?.joystick = themeManager.getWP81KeyboardJoystick()
         keyboard?.slideKeys = themeManager.getWP81KeyboardSlideKeys()
+        host?.theme = KeyboardAppearance.theme(themeManager)
         // Survives a trip to the symbol pages, which have a space bar and no language.
         keyboard?.setSpaceLabel(language.name)
         // Started now, so the dictionary is parsed and waiting before the first key is
@@ -290,7 +299,7 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         // process, and moving the keyboard's settings into the keyboard's file is a write
         // that belongs to it alone. See [WP81Settings.migrateKeyboardSettings].
         themeManager.migrateKeyboardSettings()
-        palette = KeyboardAppearance.palette(themeManager)
+        palette = KeyboardAppearance.keyboardPalette(themeManager)
         prefs.registerOnSharedPreferenceChangeListener(prefsWatcher)
         appearanceWatch = KeyboardAppearance.watch(this) { refreshPalette() }
         learned = UserDictionary.open(this)
@@ -326,7 +335,7 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
     }
 
     override fun onCreateInputView(): View {
-        palette = KeyboardAppearance.palette(themeManager)
+        palette = KeyboardAppearance.keyboardPalette(themeManager)
         val view = KeyboardHost(this, palette)
         view.keyboard.listener = this
         // Whatever was last in use, unless it has since been turned off in the settings.
@@ -432,6 +441,16 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         cancelSlide()
         clipboardHistory?.dismiss()
         watchClipboard(false)
+        // Closed, so it opens the way a keyboard opens: letters, and nothing held down.
+        // A locked shift and the symbol page are both answers to the sentence being typed,
+        // and neither is an answer to whatever field is asked for next - a message box that
+        // comes up SHOUTING, or one showing brackets and currency signs, is the keyboard
+        // still arguing about the last field. The lock has to be let go of here because it
+        // is the one thing [updateAutoCaps] will not touch on the way back in: a shift the
+        // user locked is deliberately left alone there, so if it is not dropped on the way
+        // out it is never dropped at all.
+        setShift(ShiftState.OFF)
+        showLetters()
         super.onFinishInputView(finishingInput)
     }
 
@@ -791,7 +810,7 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
      * than a colour on a view, and the window is torn down and built again between showings.
      */
     private fun refreshPalette() {
-        val next = KeyboardAppearance.palette(themeManager)
+        val next = KeyboardAppearance.keyboardPalette(themeManager)
         if (next != palette || !palettePainted) {
             palette = next
             palettePainted = true
@@ -2473,6 +2492,10 @@ class WP81KeyboardService : InputMethodService(), KeyView.Listener {
         panel.mode = EmojiPanel.Mode.EMOJI
 
         panel.applyPalette(palette)
+        // The panel stands in the keyboard's place, so it is made of what the keyboard is
+        // made of. Set here rather than in [applySettings] because the panel is built on
+        // first use and may not exist when that runs.
+        panel.theme = KeyboardAppearance.theme(themeManager)
         val keys = stack.keyboard
         panel.setMetrics(
             keys.unitWidth(), keys.keyHeight(), keys.gutter(),

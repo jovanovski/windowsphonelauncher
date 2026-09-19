@@ -178,10 +178,9 @@ object MessageStore {
     /** Everything said to and from one number, oldest first - the order it is read in. */
     fun conversation(context: Context, address: String, onReady: (List<Message>) -> Unit) {
         val app = context.applicationContext
-        val wanted = keyOf(address)
         executor.execute {
             val messages = try {
-                read(app, THREAD_KEEP, THREAD_SCAN, wanted)
+                read(app, THREAD_KEEP, THREAD_SCAN, keyOf(app, address))
                     .map {
                         Message(
                             id = it.id,
@@ -213,7 +212,7 @@ object MessageStore {
      * knows there was an earlier one. Never call it from the main thread.
      */
     fun recentNow(context: Context, address: String, limit: Int): List<Message> = try {
-        read(context, limit, THREAD_SCAN, keyOf(address))
+        read(context, limit, THREAD_SCAN, keyOf(context, address))
             .map {
                 Message(
                     id = it.id,
@@ -280,7 +279,7 @@ object MessageStore {
                 val type = cursor.getInt(4)
                 // Something typed and never sent belongs to whichever app it was typed in.
                 if (type == Telephony.Sms.MESSAGE_TYPE_DRAFT) continue
-                if (wanted != null && keyOf(address) != wanted) continue
+                if (wanted != null && keyOf(context, address) != wanted) continue
                 rows.add(
                     Row(
                         id = cursor.getLong(0),
@@ -301,7 +300,7 @@ object MessageStore {
         val byKey = LinkedHashMap<String, MutableList<Row>>()
         // Insertion order is the order the rows came in, which is newest first - so the
         // conversations come out in the order they were last spoken in, for free.
-        for (row in rows) byKey.getOrPut(keyOf(row.address)) { mutableListOf() }.add(row)
+        for (row in rows) byKey.getOrPut(keyOf(context, row.address)) { mutableListOf() }.add(row)
 
         // Once per conversation rather than once per message - a list of four hundred
         // messages is rarely four hundred people - and in one call, so the directories are
@@ -335,10 +334,10 @@ object MessageStore {
      * is filed under itself instead: normalising those would leave every one of them with
      * the same empty key, and the page would show one conversation with everybody.
      */
-    fun keyOf(address: String): String {
+    fun keyOf(context: Context, address: String): String {
         val digits = address.count { it.isDigit() }
         if (digits < SHORT_CODE_DIGITS) return address.trim().lowercase()
-        return PeopleStore.normalise(address)
+        return PeopleStore.normalise(context, address)
     }
 
     // ---------------------------------------------------------------- writing
@@ -663,10 +662,9 @@ object MessageStore {
     fun markRead(context: Context, address: String) {
         if (!canRead(context)) return
         val app = context.applicationContext
-        val wanted = keyOf(address)
         executor.execute {
             try {
-                val unread = read(app, THREAD_KEEP, THREAD_SCAN, wanted)
+                val unread = read(app, THREAD_KEEP, THREAD_SCAN, keyOf(app, address))
                     .filter { !it.read && !isOutgoing(it.type) }
                     .map { it.id }
                 if (unread.isEmpty()) return@execute

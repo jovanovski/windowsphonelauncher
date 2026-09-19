@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.util.Log
 import androidx.core.content.edit
+import rocks.gorjan.gokixp.AutoBackup
 import rocks.gorjan.gokixp.MainActivity
 import rocks.gorjan.gokixp.SettingsBackup
 import rocks.gorjan.gokixp.getSafeInt
@@ -201,6 +202,9 @@ class WP81Settings(private val context: Context) {
 
     fun setWP81Accent(color: Int) {
         prefs.edit { putInt(KEY_WP81_ACCENT, color) }
+        // The phone's accent is the phone's, not this launcher's; the author's other apps
+        // follow it over WP81ThemeProvider and are told here so they turn with it.
+        WP81ThemeProvider.notifyChanged(context)
     }
 
     /**
@@ -368,10 +372,10 @@ class WP81Settings(private val context: Context) {
     }
 
     /**
-     * Whether a tile says *how much* is waiting rather than merely that something is.
+     * Whether a tile counts what is waiting beside its icon, at the icon's own height.
      *
-     * On by default, because it is what Windows Phone did and it is strictly more than the
-     * dot tells you. Off returns the mark to the corner, for anyone who wants the wall to
+     * On by default, because it is what Windows Phone did. Off returns the mark to the
+     * corner - a dot with the count set small into it - for anyone who wants the wall to
      * be a wall of colour rather than a wall of numbers.
      */
     fun getWP81TileCounts(): Boolean = prefs.getBoolean(KEY_WP81_TILE_COUNTS, true)
@@ -458,6 +462,21 @@ class WP81Settings(private val context: Context) {
 
     fun setWP81LastFileBackup(at: Long) {
         prefs.edit { putLong(SettingsBackup.KEY_LAST_FILE_BACKUP, at) }
+    }
+
+    /**
+     * Whether the copy on Google Drive keeps itself up to date.
+     *
+     * Off until asked for, and read and written through [AutoBackup] rather than here,
+     * because the setting is not only a preference: turning it on books an alarm and
+     * turning it off takes one down, and a setter that wrote the value without doing that
+     * would leave the phone backing up a day after being told to stop. This pair is here so
+     * that the settings page reads it where it reads every other setting.
+     */
+    fun getWP81AutoBackup(): Boolean = AutoBackup.isEnabled(context)
+
+    fun setWP81AutoBackup(on: Boolean) {
+        AutoBackup.setEnabled(context, on)
     }
 
     /**
@@ -580,6 +599,27 @@ class WP81Settings(private val context: Context) {
 
     /** True when the WP8.1 shell uses the dark (black) background rather than the light one. */
     // ---------------------------------------------------------------- keyboard
+
+    /**
+     * What the keys are made of: `phone` for the phone's own, `win98` for Windows 98's.
+     *
+     * A string rather than the keyboard's own `KeyboardTheme`, deliberately. This class is
+     * read in the launcher's process and the theme is a keyboard idea; naming the enum here
+     * would drag a keyboard class - and the keyboard's drawing code behind it - into the
+     * launcher to answer a question about a settings value. The keyboard turns the string
+     * back into a theme on its own side, where an unknown one falls back to the phone's.
+     *
+     * The phone's own by default, and it is not a coin toss: this is a Windows Phone 8.1
+     * launcher, the keyboard is the one the phone had, and the accent it follows is one the
+     * user has already chosen on the launcher's own theme page. The other is for somebody who
+     * went looking for it.
+     */
+    fun getWP81KeyboardTheme(): String =
+        keyboardPrefs.getString(KEY_WP81_KB_THEME, WP81_KB_THEME_DEFAULT) ?: WP81_KB_THEME_DEFAULT
+
+    fun setWP81KeyboardTheme(id: String) {
+        keyboardPrefs.edit { putString(KEY_WP81_KB_THEME, id) }
+    }
 
     /**
      * Whether the keyboard replaces a word by itself when you press space.
@@ -848,6 +888,7 @@ class WP81Settings(private val context: Context) {
 
     fun setWP81Dark(dark: Boolean) {
         prefs.edit { putBoolean(KEY_WP81_DARK, dark) }
+        WP81ThemeProvider.notifyChanged(context)
     }
 
     /**
@@ -922,6 +963,12 @@ class WP81Settings(private val context: Context) {
          *
          * This is the list of settings, and it is exact in both directions: it says what to
          * carry over, and its absence is what says the carrying has not happened yet.
+         *
+         * It is also closed. A setting added after the split - [KEY_WP81_KB_THEME] is the
+         * first - was never written to the launcher's file and so has nothing to carry over,
+         * and listing one here would be worse than pointless: a new setting that happened to
+         * be written before the move ran would answer the question above with "already done"
+         * and strand every older setting on the launcher's side.
          */
         val KEYBOARD_SETTING_KEYS = setOf(
             KEY_WP81_KB_AUTOCORRECT,
@@ -956,6 +1003,15 @@ class WP81Settings(private val context: Context) {
         const val KEY_WP81_KB_KEY_PREVIEW = "wp81_kb_key_preview"
         const val KEY_WP81_KB_JOYSTICK = "wp81_kb_joystick"
         const val KEY_WP81_KB_SLIDE_KEYS = "wp81_kb_slide_keys"
+
+        /**
+         * What the keys are made of. See [getWP81KeyboardTheme], and `KeyboardTheme`, which
+         * is where the ids this holds are spelled out.
+         */
+        const val KEY_WP81_KB_THEME = "wp81_kb_theme"
+
+        /** The phone's own keyboard, which is the one this launcher is of. */
+        const val WP81_KB_THEME_DEFAULT = "phone"
 
         /**
          * Keystroke vibration: the phone's own, silent, or a strength in between.

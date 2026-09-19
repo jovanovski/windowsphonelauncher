@@ -240,10 +240,31 @@ class MissedCallReceiver : BroadcastReceiver() {
         const val CHANNEL = "wp81_missed_calls"
         const val NOTIFICATION_ID = 8102
 
-        /** Takes the notification down, for when the user has been shown the history. */
+        /**
+         * The missed calls, dealt with: Phone has been opened, or somebody rung back.
+         *
+         * Three things, because the notification is only the visible one of them. Telecom
+         * keeps a count of its own and the call log keeps a "new" flag per row, and it is
+         * the flag that outlives everything: Telecom rebuilds its count from the log on
+         * every boot, so rows left marked new come back as "5 missed calls" on a phone
+         * whose user dealt with all five last week, and then as six after the next one.
+         *
+         * Telecom is asked first, which is the polite way round and also marks the rows -
+         * but only for an app that holds the phone role, and only if the call gets through.
+         * [PhoneHistory.markMissedRead] says the same thing to the log directly, so the
+         * flag is cleared whether or not it did. Neither is enough on its own.
+         */
         fun clear(context: Context) {
             (context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)
                 ?.cancel(NOTIFICATION_ID)
+            try {
+                (context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager)
+                    ?.cancelMissedCallsNotification()
+            } catch (e: Exception) {
+                // Only the default phone app may say this, and it is not always this one.
+                Log.d(TAG, "Could not clear the missed calls", e)
+            }
+            rocks.gorjan.gokixp.wp81.PhoneHistory.markMissedRead(context)
         }
 
         /**

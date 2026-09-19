@@ -17,6 +17,8 @@ import androidx.core.view.ViewCompat
 import androidx.core.widget.doAfterTextChanged
 import androidx.core.view.WindowInsetsCompat
 import rocks.gorjan.gokixp.R
+import rocks.gorjan.gokixp.wp81.MetroChoiceRow
+import rocks.gorjan.gokixp.wp81.MetroMarker
 import rocks.gorjan.gokixp.wp81.MetroPageHeader
 import rocks.gorjan.gokixp.wp81.MetroSlider
 import rocks.gorjan.gokixp.wp81.MetroToggle
@@ -85,6 +87,8 @@ class KeyboardSettingsActivity : Activity() {
         )
 
         val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        column.addView(section("theme"))
+        column.addView(themeChoices())
         column.addView(section("languages"))
         column.addView(languagesNote())
         column.addView(languageList())
@@ -169,6 +173,62 @@ class KeyboardSettingsActivity : Activity() {
             toggle
         )
     }
+
+    /**
+     * What the keys are made of.
+     *
+     * Round marks, because the two answers are exclusive - see
+     * [rocks.gorjan.gokixp.wp81.MetroMarker] - and held as a group, because choosing one has
+     * to unchoose the other and something must be holding both to do it.
+     *
+     * Each theme says what it is underneath its own name rather than the section carrying one
+     * note for all of them, which is a page this long earning its length in the one place it
+     * should: everything else here is a switch whose title says the whole of what it does,
+     * and this is a choice between two keyboards somebody cannot see from the top of the
+     * page. The note goes where the choice is.
+     *
+     * Nothing is applied from here. The setting is written and the keyboard's own process -
+     * which is this one - hears the write through its preference listener and repaints
+     * itself, exactly as it does for the key height. Which is why the note points at the test
+     * box: it is the only way to see any of this from the page that sets it.
+     */
+    private fun themeChoices(): View {
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad(), pad() / 2, pad(), pad() / 2)
+        }
+        column.addView(
+            detail("tap the box under key height to see one against the other."),
+            wide()
+        )
+
+        val chosen = KeyboardAppearance.theme(themeManager)
+        val rows = mutableListOf<Pair<KeyboardTheme, MetroChoiceRow>>()
+        for (theme in KeyboardTheme.entries) {
+            val row = MetroChoiceRow(this, palette, theme.title, round = true)
+            row.set(theme == chosen)
+            row.onPicked = {
+                themeManager.setWP81KeyboardTheme(theme.id)
+                for ((other, view) in rows) view.set(other == theme)
+            }
+            rows += theme to row
+            column.addView(row, wide())
+            // Indented to the words rather than to the mark, so the note reads as belonging
+            // to the choice above it instead of as a third line in the list.
+            column.addView(
+                detail(theme.note),
+                wide().apply {
+                    marginStart = indent()
+                    bottomMargin = pad() / 2
+                }
+            )
+        }
+        return column
+    }
+
+    /** How far a note under a choice sits in: past the mark and the gap after it. */
+    private fun indent(): Int =
+        ((MetroMarker.SIZE_DP + MetroMarker.GAP_DP) * resources.displayMetrics.density).toInt()
 
     private fun languagesNote(): View = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL

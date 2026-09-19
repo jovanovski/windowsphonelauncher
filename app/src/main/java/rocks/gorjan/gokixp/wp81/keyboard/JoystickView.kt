@@ -129,6 +129,20 @@ internal class JoystickView(
         invalidate()
     }
 
+    /**
+     * What the keyboard is made of. See [KeyboardTheme].
+     *
+     * Only the disc this sits in cares. The face and the dot are already worked out from the
+     * palette and come out in the theme's own colours without being told anything; the room
+     * made for them is the one thing that has to match a ground it cannot derive.
+     */
+    var theme: KeyboardTheme = KeyboardTheme.PHONE
+        set(value) {
+            if (field == value) return
+            field = value
+            invalidate()
+        }
+
     fun setMetrics(keyW: Float) {
         if (keyW == this.keyW) return
         this.keyW = keyW
@@ -236,7 +250,13 @@ internal class JoystickView(
         // The keyboard's own ground, painted over whatever keys the ring overlaps. This is the
         // room being made: four key corners are covered by it, and what is left of them is the
         // shape that says the dot is not part of any of them.
-        paint.color = ColorUtils.blendARGB(palette.background, palette.foreground, GROUND_ALPHA)
+        //
+        // Which means it has to be whatever the ground actually is, and under a bevelled theme
+        // that is the keys' own colour - see `KeyboardView.groundColour`. A disc of some other
+        // grey here would not read as room made, it would read as a plate laid over the keys.
+        paint.color =
+            if (theme.bevelled) Win98.FACE
+            else ColorUtils.blendARGB(palette.background, palette.foreground, GROUND_ALPHA)
         canvas.drawCircle(cx, cy, keyW * HALO, paint)
 
         // The face, in a key's own grey, sinking a step further while it is held.

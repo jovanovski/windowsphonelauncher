@@ -68,6 +68,21 @@ internal class KeyPreviewPopup(
     }
 
     /**
+     * What the keyboard is made of. See [KeyboardTheme].
+     *
+     * The flag is the key, lifted clear of the thumb, so it is made of whatever the key is:
+     * the accent under the phone's theme, a raised grey button under a bevelled one. Windows
+     * 98 had nothing quite like this - a keyboard under a thumb was not a problem it had - so
+     * the shape is borrowed from the thing it is standing in for, which is the key.
+     */
+    var theme: KeyboardTheme = KeyboardTheme.PHONE
+        set(value) {
+            if (field == value) return
+            field = value
+            content.invalidate()
+        }
+
+    /**
      * Shows [text] above [key].
      *
      * @param anchor the keyboard, whose position in the window is what the flag is placed
@@ -131,6 +146,7 @@ internal class KeyPreviewPopup(
         private val ink = Paint(Paint.ANTI_ALIAS_FLAG)
         private val bounds = Rect()
         private val font = ResourcesCompat.getFont(context, R.font.segoeui_semilight)
+        private val classicFont = ResourcesCompat.getFont(context, R.font.tahoma)
 
         private var text = ""
 
@@ -142,12 +158,19 @@ internal class KeyPreviewPopup(
 
         override fun onDraw(canvas: Canvas) {
             if (text.isEmpty()) return
-            face.color = palette.accent
+            val bevelled = theme.bevelled
+            face.color = if (bevelled) Win98.FACE else palette.accent
             canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), face)
+            if (bevelled) {
+                Win98.bevel(
+                    canvas, 0f, 0f, width.toFloat(), height.toFloat(), face,
+                    Win98.band(resources.displayMetrics.density), sunken = false
+                )
+            }
 
-            ink.typeface = font
+            ink.typeface = if (bevelled) classicFont else font
             ink.textAlign = Paint.Align.CENTER
-            ink.color = palette.onAccent()
+            ink.color = if (bevelled) Win98.INK else palette.onAccent()
             // Centred on the ink of this particular character rather than on the font's line,
             // which is right here for the same reason it is wrong on the suggestion bar: this
             // is one character alone in a box, not a row of words that has to sit on a line.

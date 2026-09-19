@@ -62,7 +62,7 @@ class MessageThread(
     /** Words to open with, from a share, an `sms:` link, or a message that would not go. */
     draft: String?,
     private val onBack: () -> Unit,
-    private val onProfile: (Long) -> Unit,
+    private val onProfile: (PeopleStore.Contact) -> Unit,
     private val onAddContact: (String) -> Unit,
     private val onRequestPermissions: (Array<String>) -> Unit,
     /**
@@ -140,7 +140,7 @@ class MessageThread(
         // rather than about what was said.
         header.onTitle = {
             val person = contact
-            if (person != null) onProfile(person.id) else onAddContact(address)
+            if (person != null) onProfile(person) else onAddContact(address)
         }
         addView(header, LayoutParams(MATCH, WRAP))
 

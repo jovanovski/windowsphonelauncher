@@ -56,7 +56,7 @@ class MessagingApp(
      */
     private val onBecomeMessenger: () -> Unit,
     /** Opens People on somebody's card. Their card is not this app's page. */
-    private val onShowContact: (Long) -> Unit,
+    private val onShowContact: (PeopleStore.Contact) -> Unit,
     /** Opens People's editor on a number this phone does not have a name for. */
     private val onNewContact: (String) -> Unit
 ) : HubApp(context, palette, onRequestPermissions, onNotify) {
@@ -325,7 +325,7 @@ class MessagingApp(
                 add(WP81ContextMenu.Item("call") { place(thread.address) })
                 val person = thread.contact
                 if (person != null) {
-                    add(WP81ContextMenu.Item("view contact") { onShowContact(person.id) })
+                    add(WP81ContextMenu.Item("view contact") { onShowContact(person) })
                 } else {
                     add(WP81ContextMenu.Item("save to contacts") { onNewContact(thread.address) })
                 }

@@ -122,6 +122,9 @@ class WP81SettingsView(
     var onRestoreFromDrive: (() -> Unit)? = null
     var onRestoreFromFile: (() -> Unit)? = null
 
+    /** Flipping the switch that keeps the Drive copy up to date by itself. */
+    var onAutoBackupChanged: ((Boolean) -> Unit)? = null
+
     /**
      * Tapping the icon pack row, with the row's bottom edge to hang the list of packs off.
      *
@@ -502,6 +505,25 @@ class WP81SettingsView(
     private val restoreFromFileRow =
         ActionRow("restore from a file") { _ -> onRestoreFromFile?.invoke() }
 
+    /**
+     * The switch that makes the Drive copy keep itself up to date.
+     *
+     * Under the two commands rather than above them, because it is an answer to the
+     * question they raise: somebody who has just tapped "back up to google drive" is the
+     * person who wants to be told they need not tap it again. Off until asked for - it
+     * signs the user in and puts their settings on somebody else's computer once a day.
+     *
+     * Drive is named in the label, and that is not padding. The daily copy can only go
+     * there: the file export asks the user where to put it, every time, which is what makes
+     * it useful and what makes it impossible to do unattended. A switch that simply said
+     * "back up every day" under a heading with two destinations under it would be read as
+     * promising both. See AutoBackup.
+     */
+    private val autoBackupRow =
+        SwitchRow("back up to google drive every day") { on ->
+            onAutoBackupChanged?.invoke(on)
+        }
+
     private var selectedAccent: Int = palette.accent
     private var selectedDark: Boolean = palette.isDark
     private var selectedBackground: String? = null
@@ -642,6 +664,7 @@ class WP81SettingsView(
         backup.addView(sectionLabel("back up"), wide())
         backup.addView(backUpToDriveRow.view, wide())
         backup.addView(backUpToFileRow.view, wide())
+        backup.addView(autoBackupRow.view, wide())
         backup.addView(sectionLabel("restore"), wide())
         backup.addView(restoreFromDriveRow.view, wide())
         backup.addView(restoreFromFileRow.view, wide())
@@ -1279,6 +1302,11 @@ class WP81SettingsView(
         restoreFromFileRow.setDetail("replaces everything on this phone")
     }
 
+    /** Seeds the switch that keeps the Drive copy up to date by itself. */
+    fun setAutoBackup(on: Boolean) {
+        autoBackupRow.set(on)
+    }
+
     private fun lastBackup(at: Long): String {
         if (at <= 0L) return "not backed up here yet"
         val stamp = android.text.format.DateUtils.formatDateTime(
@@ -1554,6 +1582,14 @@ class WP81SettingsView(
         aboutRow.repaint()
         iconPackRow.repaint()
         iconPackTilesRow.repaint()
+        // The backup page's five. They were missed when it was built: the accent can be
+        // changed with settings open, and rows that are not swept keep the old one until
+        // the page is built again.
+        backUpToDriveRow.repaint()
+        backUpToFileRow.repaint()
+        autoBackupRow.repaint()
+        restoreFromDriveRow.repaint()
+        restoreFromFileRow.repaint()
         repaintCountRows()
         repaintColumnRows()
         blurSlider.applyPalette(p)

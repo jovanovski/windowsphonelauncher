@@ -66,6 +66,21 @@ internal class AlternatesPopup(
     }
 
     /**
+     * What the keyboard is made of. See [KeyboardTheme].
+     *
+     * The row floats over the keys and is the same thing they are - a cell of it is a key you
+     * have not lifted your finger onto yet - so under a bevelled theme the cells are buttons
+     * like the ones underneath them. Flat grey cells over raised grey keys would read as the
+     * row having come from somewhere else.
+     */
+    var theme: KeyboardTheme = KeyboardTheme.PHONE
+        set(value) {
+            if (field == value) return
+            field = value
+            content.invalidate()
+        }
+
+    /**
      * Shows [alternates] above [key].
      *
      * @param anchor the keyboard, whose position in the window is what the row is placed
@@ -138,6 +153,7 @@ internal class AlternatesPopup(
         private val ink = Paint(Paint.ANTI_ALIAS_FLAG)
         private val bounds = Rect()
         private val font = ResourcesCompat.getFont(context, R.font.segoeui_semilight)
+        private val classicFont = ResourcesCompat.getFont(context, R.font.tahoma)
 
         private var chars: String = ""
         private var primary = 0
@@ -163,17 +179,36 @@ internal class AlternatesPopup(
 
         override fun onDraw(canvas: Canvas) {
             if (chars.isEmpty()) return
-            ink.typeface = font
+            ink.typeface = if (theme.bevelled) classicFont else font
             ink.textAlign = Paint.Align.CENTER
+            val bevelled = theme.bevelled
+            val band = Win98.band(resources.displayMetrics.density)
             val pitch = cellW + gutter
             for (i in chars.indices) {
                 val x = i * pitch
                 val on = i == chosen
-                face.color = if (on) palette.accent else fill()
+                // The chosen cell keeps the accent under both themes, which under the
+                // bevelled one is the navy Windows selected everything in - a list row, a
+                // menu item, a run of text. The rest are buttons, or the flat float the
+                // phone's theme has always drawn. See [fill].
+                face.color = when {
+                    on -> palette.accent
+                    bevelled -> Win98.FACE
+                    else -> fill()
+                }
                 canvas.drawRect(x, 0f, x + cellW, height.toFloat(), face)
+                if (bevelled && !on) {
+                    Win98.bevel(
+                        canvas, x, 0f, x + cellW, height.toFloat(), face, band, sunken = false
+                    )
+                }
 
                 val ch = (alternateAt(chars, i, primary) ?: continue).toString()
-                ink.color = if (on) palette.onAccent() else palette.foreground
+                ink.color = when {
+                    on -> palette.onAccent()
+                    bevelled -> Win98.INK
+                    else -> palette.foreground
+                }
                 ink.getTextBounds(ch, 0, ch.length, bounds)
                 canvas.drawText(
                     ch,

@@ -49,6 +49,25 @@ internal class KeyboardHost(
     }
 
     /**
+     * What the keyboard is made of. See [KeyboardTheme].
+     *
+     * Set here rather than on the grid alone, because the bar is as much the keyboard as the
+     * keys are - it is drawn in the same window, a gutter above them, and the two disagreeing
+     * about which decade they are from is more obvious than either of them being wrong.
+     *
+     * The panel is not included and does not need to be: it is built by the service and given
+     * the palette like everything else, and a wall of emoji has no chrome of its own to be of
+     * one period or another.
+     */
+    var theme: KeyboardTheme = KeyboardTheme.PHONE
+        set(value) {
+            if (field == value) return
+            field = value
+            bar.theme = value
+            keyboard.theme = value
+        }
+
+    /**
      * Shows [view] above the keys, or in place of them.
      *
      * @param withKeys true while the panel's own search box is being typed into, which is the

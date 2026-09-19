@@ -332,12 +332,21 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         val wanted = consumePendingDriveAction()
+        // Whatever the sign-in was for, it is over. A switch that was flipped on in the
+        // expectation of an account goes back off in every one of the ways there is not
+        // one - backed out of, refused, or a build with no OAuth client behind it.
+        val autoBackup = wanted == DRIVE_ACTION_AUTO_BACKUP
         if (result.resultCode != RESULT_OK) {
             // RESULT_CANCELED is both "the user backed out" and "this build has no OAuth
             // client for its package and signing key", and the two are indistinguishable
             // from here. Said plainly rather than guessed at.
             Log.w("MainActivity", "Google sign-in did not complete: ${result.resultCode}")
-            showNotification("Google Drive", "Not signed in")
+            if (autoBackup) abandonAutoBackup()
+            showNotification(
+                "Google Drive",
+                if (autoBackup) "Not signed in - daily backup switched off"
+                else "Not signed in"
+            )
             return@registerForActivityResult
         }
         try {
@@ -345,15 +354,17 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 .getResult(ApiException::class.java)
             googleDrive.connect(account)
             when (wanted) {
-                DRIVE_ACTION_BACKUP -> backUpToDrive()
+                DRIVE_ACTION_BACKUP, DRIVE_ACTION_AUTO_BACKUP -> backUpToDrive()
                 DRIVE_ACTION_RESTORE -> restoreFromDrive()
                 else -> showNotification("Google Drive", "Signed in as ${account.email}")
             }
         } catch (e: ApiException) {
             Log.e("MainActivity", "Google sign-in failed: ${e.statusCode}", e)
+            if (autoBackup) abandonAutoBackup()
             showNotification("Google Drive", "Sign-in failed (${e.statusCode})")
         } catch (e: Exception) {
             Log.e("MainActivity", "Google sign-in failed", e)
+            if (autoBackup) abandonAutoBackup()
             showNotification("Google Drive", "Sign-in failed")
         }
     }
@@ -634,6 +645,18 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         private const val KEY_PENDING_DRIVE_ACTION = "pending_drive_action"
         private const val DRIVE_ACTION_BACKUP = "backup"
         private const val DRIVE_ACTION_RESTORE = "restore"
+
+        /**
+         * The first copy, asked for by the daily-backup switch rather than by a tap.
+         *
+         * The same upload as [DRIVE_ACTION_BACKUP] and a separate action all the same,
+         * because the two want opposite things from a sign-in that does not happen. A tap
+         * on "back up to google drive" that ends in a cancelled sign-in is simply a backup
+         * that did not get made. The switch is a setting the user believes they have turned
+         * on, and leaving it on with no account behind it would quietly promise a daily
+         * backup this phone cannot make - so that one goes back off. See [setAutoBackup].
+         */
+        private const val DRIVE_ACTION_AUTO_BACKUP = "auto_backup"
 
         /**
          * That a restore has just happened, for the launcher it restarts to announce.
@@ -1057,6 +1080,10 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         rocks.gorjan.gokixp.apps.alarms.AlarmScheduler.sync(this)
         rocks.gorjan.gokixp.apps.alarms.TaskScheduler.sync(this)
         rocks.gorjan.gokixp.apps.alarms.Countdown.resync(this)
+        // And the daily backup, for the same reason and one more of its own: a phone that
+        // has just been restored from a backup has the switch on and no booking to go with
+        // it, since the setting travelled in the file and the alarm could not.
+        AutoBackup.sync(this)
 
         // Take programs that have since left the shell out of the user's arrangement,
         // before anything reads that arrangement back in
@@ -3172,14 +3199,28 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      * The permission is not demanded here. The app opens either way and says what it is
      * missing and offers to ask for it, which is the only honest order to do this in.
      *
-     * [contactId] opens straight onto somebody's card, which is how Phone and Messaging
+     * [contact] opens straight onto somebody's card, which is how Phone and Messaging
      * reach a person: neither of them has a card of its own any more, and both have rows
      * that are about somebody rather than about a call or a conversation.
+     *
+     * [returnTo] is the window that asked, and backing out of the card or the editor goes
+     * back to it rather than down into the rest of the address book. See
+     * [PeopleApp.beginVisit][rocks.gorjan.gokixp.apps.people.PeopleApp.beginVisit].
      */
-    private fun showPeopleDialog(contactId: Long? = null, newContactNumber: String? = null) {
+    private fun showPeopleDialog(
+        contact: rocks.gorjan.gokixp.wp81.PeopleStore.Contact? = null,
+        newContactNumber: String? = null,
+        returnTo: String? = null
+    ) {
+        val errand = returnTo != null && (contact != null || newContactNumber != null)
         if (floatingWindowManager.findAndFocusWindow("system.people")) {
-            contactId?.let { peopleAppInstance?.showProfile(it) }
-            newContactNumber?.let { peopleAppInstance?.showNewContact(it) }
+            val people = peopleAppInstance
+            // People was already open, with whatever the user had it on. It stays open
+            // when the errand is done; the asking window is simply put back in front.
+            if (errand) people?.beginVisit { returnFromPeople(returnTo!!, closePeople = false) }
+            else people?.forgetVisit()
+            contact?.let { people?.showProfile(it) }
+            newContactNumber?.let { people?.showNewContact(it) }
             return
         }
 
@@ -3212,16 +3253,41 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             peopleAppInstance = null
             // The wall on Start is the same address book. Anything added, starred or
             // deleted in here has to reach it, and the way out of the app is the moment
-            // to say so.
+            // to say so. So do the other two programs that put names to numbers: a
+            // caller saved from the call history came in here to be saved, and should not
+            // still be offered as "add contact" when the history is looked at again.
             refreshWP81People(force = true)
+            phoneAppInstance?.refresh()
+            messagingAppInstance?.refresh()
         }
         windowsDialog.setContextMenuView(contextMenu)
         floatingWindowManager.showWindow(windowsDialog)
         turnWP81PageIn(view)
         // After the window, because the card is a page inside it and there has to be
         // something for it to be a page over.
-        contactId?.let { people.showProfile(it) }
+        //
+        // Opened for nothing but this errand, so it closes again when the errand is over:
+        // a People window left behind Phone on the whole book is a window nobody opened.
+        if (errand) people.beginVisit { returnFromPeople(returnTo!!, closePeople = true) }
+        contact?.let { people.showProfile(it) }
         newContactNumber?.let { people.showNewContact(it) }
+    }
+
+    /**
+     * The end of an errand in People: back to the window that sent the user there.
+     *
+     * [closePeople] where People was opened for it, which also re-reads Phone and Messaging
+     * through its close listener - somebody may just have been saved. Where People was
+     * already open it is left as it was and the two are re-read here instead.
+     */
+    private fun returnFromPeople(returnTo: String, closePeople: Boolean) {
+        if (closePeople) {
+            floatingWindowManager.findWindowByIdentifier("system.people")?.closeWindow()
+        } else {
+            phoneAppInstance?.refresh()
+            messagingAppInstance?.refresh()
+        }
+        floatingWindowManager.findAndFocusWindow(returnTo)
     }
 
     /**
@@ -3236,7 +3302,21 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      * own window would be the split undone.
      */
     private fun showPhoneDialog() {
-        if (floatingWindowManager.findAndFocusWindow("system.phone")) return
+        // Opening Phone is seeing the missed calls, however it was opened. This used to
+        // happen only on the way in from the notification, so a call missed and then looked
+        // at from the tile stayed in the shade and on the tile. Before the early return,
+        // because bringing a window that is already open to the front is opening it too.
+        rocks.gorjan.gokixp.apps.phone.MissedCallReceiver.clear(this)
+
+        if (floatingWindowManager.findAndFocusWindow("system.phone")) {
+            // A window that was left open is showing whatever the log said when it was
+            // last read, which on a launcher can be days ago. Opening Phone is asking to
+            // see the calls, and the answer should not be the ones from before the call
+            // the user opened it about. Its own watch covers the window that is on screen
+            // while a call comes in; this covers the one that was buried behind Start.
+            phoneAppInstance?.refresh()
+            return
+        }
 
         val windowsDialog = createThemedWindowsDialog()
         windowsDialog.windowIdentifier = "system.phone"
@@ -3250,11 +3330,18 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             },
             onNotify = { title, message -> showNotification(title, message) },
             onBecomeDialer = { requestDialerRole() },
-            onShowContact = { id -> showPeopleDialog(contactId = id) },
-            onNewContact = { number -> showPeopleDialog(newContactNumber = number) },
+            onShowContact = { person ->
+                showPeopleDialog(contact = person, returnTo = "system.phone")
+            },
+            onNewContact = { number ->
+                showPeopleDialog(newContactNumber = number, returnTo = "system.phone")
+            },
             onShowThread = { number -> showMessagingDialog(address = number) }
         )
         phoneAppInstance = phone
+        // Phone stands on the same address book People does, on the contacts section of
+        // its panorama - so the key searches it in here too. See refreshWP81SearchOffer.
+        phone.onSearchOfferChanged = { refreshWP81SearchOffer() }
 
         val view = phone.createView()
         windowsDialog.setContentView(view)
@@ -3300,8 +3387,12 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             },
             onNotify = { title, message -> showNotification(title, message) },
             onBecomeMessenger = { requestSmsRole() },
-            onShowContact = { id -> showPeopleDialog(contactId = id) },
-            onNewContact = { number -> showPeopleDialog(newContactNumber = number) }
+            onShowContact = { person ->
+                showPeopleDialog(contact = person, returnTo = "system.messaging")
+            },
+            onNewContact = { number ->
+                showPeopleDialog(newContactNumber = number, returnTo = "system.messaging")
+            }
         )
         messagingAppInstance = messaging
 
@@ -4949,9 +5040,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
      * on the phone sends - and what Telecom's own missed-call notification used to send,
      * to whichever app happened to claim it.
      *
-     * Telecom is told the missed calls have been seen on the way past. It is the one thing
-     * only the phone app can do about them, and being shown the history is exactly the
-     * moment they have been dealt with.
+     * The missed calls are cleared by [showPhoneDialog], as they are for every way in.
      */
     private fun handleCallHistoryIntent(intent: Intent?) {
         val action = intent?.action ?: return
@@ -4960,15 +5049,6 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         if (action != ACTION_SHOW_CALL_HISTORY && !viewingLog) return
         intent.action = Intent.ACTION_MAIN
         intent.type = null
-
-        rocks.gorjan.gokixp.apps.phone.MissedCallReceiver.clear(this)
-        try {
-            (getSystemService(TELECOM_SERVICE) as? android.telecom.TelecomManager)
-                ?.cancelMissedCallsNotification()
-        } catch (e: Exception) {
-            // Only the default phone app may say this, and it is not always this one.
-            Log.d("MainActivity", "Could not clear the missed calls", e)
-        }
 
         showPhoneDialog()
         // After the window, because the history is a page inside it.
@@ -6011,6 +6091,13 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         // left. Taken now rather than on the next tick, which is up to two seconds away
         // and is two seconds spent looking at the wrong time.
         wp81Shell?.statusBar?.refresh(force = true)
+
+        // The daily backup, if one is owed. Here as well as on its alarm because this is
+        // the moment a phone is awake, unlocked and on a network - Doze can sit on a
+        // three-in-the-morning wakeup for hours, and a phone that was switched off for a
+        // fortnight has no alarm left to be sat on at all. Costs two preference reads when
+        // nothing is owed, which is almost every time. See AutoBackup.runIfDue.
+        AutoBackup.runIfDue(this) { runOnUiThread { refreshWP81BackupRows() } }
     }
 
     /**
@@ -8266,7 +8353,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             // by somebody else. See NotificationListenerService.linesFor.
             NotificationListenerService.linesFor(tile.packageName)
                 .map { line ->
-                    rocks.gorjan.gokixp.wp81.TileView.Line(line.title, line.text).apply {
+                    rocks.gorjan.gokixp.wp81.TileView.Line(line.title, line.text, line.count).apply {
                         open = wp81NotificationOpening(tile, line)
                     }
                 }
@@ -8505,7 +8592,7 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
                 val detail = listOf(line.title, line.text)
                     .filter { it.isNotBlank() }
                     .joinToString(" \u00b7 ")
-                lines += rocks.gorjan.gokixp.wp81.TileView.Line(appName, detail)
+                lines += rocks.gorjan.gokixp.wp81.TileView.Line(appName, detail, line.count)
             }
         }
         return lines
@@ -10044,16 +10131,60 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
         shell.settingsPage.onBackUpToFile = { backUpToFile() }
         shell.settingsPage.onRestoreFromDrive = { restoreFromDrive() }
         shell.settingsPage.onRestoreFromFile = { restoreFromFile() }
+        shell.settingsPage.onAutoBackupChanged = { on -> setAutoBackup(on) }
     }
 
     // ---- backup and restore -----------------------------------------------------------
 
     /** Tells the backup rows when each destination was last written to. */
     private fun refreshWP81BackupRows() {
-        wp81Shell?.settingsPage?.setBackupTimes(
+        val page = wp81Shell?.settingsPage ?: return
+        page.setBackupTimes(
             themeManager.getWP81LastDriveBackup(),
             themeManager.getWP81LastFileBackup()
         )
+        page.setAutoBackup(themeManager.getWP81AutoBackup())
+    }
+
+    /**
+     * The daily backup being switched on or off.
+     *
+     * Switched on, it makes a copy there and then rather than waiting for tomorrow. Two
+     * reasons: the phone gets a backup at the moment its owner asked to be backed up, which
+     * is what they think they just did - and it is the only way the switch can report
+     * anything, since an automatic run says nothing in the shade. The date under "back up
+     * to google drive" moving to just now is the answer.
+     *
+     * It goes through [backUpToDrive], which is also what signs the user in if there is no
+     * account yet: turning the switch on with nothing signed in opens Google's screen and
+     * makes the first copy on the way back. See [driveSignInLauncher].
+     */
+    private fun setAutoBackup(on: Boolean) {
+        themeManager.setWP81AutoBackup(on)
+        if (!on) return
+        if (!googleDrive.isSignedIn()) {
+            // Not through backUpToDrive, which would ask for the sign-in under its own
+            // action: what happens if the user backs out of Google's screen is the whole
+            // difference between the two. See [DRIVE_ACTION_AUTO_BACKUP].
+            setPendingDriveAction(DRIVE_ACTION_AUTO_BACKUP)
+            signInToDrive()
+            return
+        }
+        backUpToDrive()
+    }
+
+    /**
+     * Puts the daily-backup switch back off, for a sign-in that never happened.
+     *
+     * The switch is flipped before Google's screen opens - it has to be, since that screen
+     * can take the launcher's own process down behind it - so a user who backs out of it
+     * would otherwise come home to a switch claiming a daily backup that has no account to
+     * be made with. This is what springs it back: the setting goes off, which takes the
+     * booking down with it, and the page is re-read so the switch on screen follows.
+     */
+    private fun abandonAutoBackup() {
+        themeManager.setWP81AutoBackup(false)
+        refreshWP81BackupRows()
     }
 
     /**
@@ -10081,6 +10212,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             runOnUiThread {
                 if (failure == null) {
                     themeManager.setWP81LastDriveBackup(System.currentTimeMillis())
+                    // A copy is a copy, however it was asked for: the next automatic one is
+                    // a day after this, not a day after whenever it was last booked.
+                    AutoBackup.sync(this)
                     refreshWP81BackupRows()
                     // Named, because a phone can have more than one Google account on it
                     // and "backed up" is worth nothing to somebody who cannot tell which
@@ -10155,7 +10289,9 @@ class MainActivity : AppCompatActivity(), AppChangeListener {
             driveSignInLauncher.launch(googleDrive.signInIntent())
         } catch (e: Exception) {
             Log.e("MainActivity", "Could not open the Google sign-in screen", e)
-            consumePendingDriveAction()
+            // The screen never opened, so nothing is coming back to read the action: it is
+            // consumed here instead, and a switch waiting on it springs back here too.
+            if (consumePendingDriveAction() == DRIVE_ACTION_AUTO_BACKUP) abandonAutoBackup()
             showNotification("Google Drive", "This phone cannot sign in to Google")
         }
     }

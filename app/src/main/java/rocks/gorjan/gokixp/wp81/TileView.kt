@@ -198,10 +198,12 @@ class TileView(
      * falls through to launching the app - as it does once the tile *is* turned over,
      * where the dot stays on as a mark and has nothing left to turn to.
      *
-     * The view is larger than the dot it draws: an inset keeps the mark small while the
-     * touch target stays worth aiming at.
+     * The view is larger than the dot it draws: the dot is centred in it, so the mark stays
+     * small while the touch target stays worth aiming at. How many are waiting is set into
+     * the dot itself - see [CountDot].
      */
     private val notificationDot = View(context)
+    private val notificationDotMark = CountDot(segoe(COUNT_FONT), dp(NOTIFICATION_DOT_DP).toFloat())
 
     /**
      * Invisible hot zone over the tile's top-right corner.
@@ -288,10 +290,17 @@ class TileView(
     var onMediaNext: (() -> Unit)? = null
     var onMediaPrevious: (() -> Unit)? = null
 
-    /** One notification, as this tile shows it: a subject and a body. */
+    /**
+     * One notification, as this tile shows it: a subject and a body.
+     *
+     * [count] is how many messages it stands for, which is what the tile's count adds up -
+     * one conversation notification can be carrying several. In the constructor so that a
+     * message arriving in a thread whose newest line reads the same still counts as a change.
+     */
     data class Line(
         val title: String,
-        val text: String
+        val text: String,
+        val count: Int = 1
     ) {
         /**
          * Where a tap on this line goes, when it has somewhere of its own to go.
@@ -870,11 +879,11 @@ class TileView(
 
     @SuppressLint("ClickableViewAccessibility")
     /**
-     * Whether this tile says how many are waiting, or only that some are.
+     * Whether this tile counts what is waiting beside its icon, or in a dot in the corner.
      *
-     * A setting rather than a rule, and on by default: the number is what Windows Phone
-     * showed and it is strictly more than the dot tells you, but a wall of numbers is not
-     * what everyone wants a wall of tiles to be.
+     * A setting rather than a rule, and on by default: the number beside the icon is what
+     * Windows Phone showed, but a wall of numbers is not what everyone wants a wall of
+     * tiles to be. The dot carries the same count, only small - see [CountDot].
      */
     var countsEnabled: Boolean = true
         set(value) {
@@ -1099,6 +1108,7 @@ class TileView(
         })
 
         notificationDot.visibility = GONE
+        notificationDot.background = notificationDotMark
         notificationDot.setOnClickListener { showNotificationFace() }
         TiltEffect.apply(notificationDot)
         // Sits in the same corner as the app mark, and the two are never shown together:
@@ -3595,7 +3605,8 @@ class TileView(
      * nothing that the corner was using. The dot is what is left for the cases with no
      * icon of their own: a live widget, whose face is a reading, and a folder, which marks
      * the app it came from on that app's own square instead - and for a tile turned over
-     * onto the notification, where there is no icon left to count beside either.
+     * onto the notification, where there is no icon left to count beside either. The dot
+     * still says how many, only smaller: the count is set into it.
      */
     private fun updateNotificationDot() {
         val unread = notifications.isNotEmpty() && media == null && !isEditMode
@@ -3603,11 +3614,12 @@ class TileView(
         // that has one.
         val counted = unread && !showingBack && countsEnabled && !hasFolderPreview &&
             (!tile.kind.isLiveWidget || standingIn())
-        if (counted) countLabel.text = formatCount(notifications.size)
+        if (counted) countLabel.text = formatCount(notifications.sumOf { it.count })
         countLabel.visibility = if (counted) VISIBLE else GONE
 
         applyFolderLabel()
         val show = unread && !counted && !hasFolderPreview && (!showingBack || dotHoldsCorner())
+        if (show) notificationDotMark.text = formatCount(notifications.sumOf { it.count })
         notificationDot.visibility = if (show) VISIBLE else GONE
         // Only a tile that can actually turn over should take the tap; on a small one it
         // must fall through so the tile still launches, and on a tile already turned over
@@ -3660,7 +3672,7 @@ class TileView(
         val name = tile.label
         val marked = hasFolderPreview && notifications.isNotEmpty() && !isEditMode
         val counted = marked && countsEnabled
-        label.text = if (counted) "(${formatCount(notifications.size)}) $name" else name
+        label.text = if (counted) "(${formatCount(notifications.sumOf { it.count })}) $name" else name
         val dot = if (marked && !counted) {
             android.graphics.drawable.GradientDrawable().apply {
                 shape = android.graphics.drawable.GradientDrawable.OVAL
@@ -3795,14 +3807,7 @@ class TileView(
         }
         if (widgetGlyph.drawable != null) widgetGlyph.imageTintList = onAccent
         if (alarmMark.drawable != null) alarmMark.imageTintList = onAccent
-        // Drawn as an inset oval so the mark stays small while the view stays tappable.
-        notificationDot.background = android.graphics.drawable.InsetDrawable(
-            android.graphics.drawable.GradientDrawable().apply {
-                shape = android.graphics.drawable.GradientDrawable.OVAL
-                setColor(palette.onAccent())
-            },
-            dp((NOTIFICATION_DOT_TARGET_DP - NOTIFICATION_DOT_DP) / 2)
-        )
+        notificationDotMark.setColor(p.onAccent())
         if (glyph.imageTintList != null) {
             glyph.imageTintList = android.content.res.ColorStateList.valueOf(p.onAccent())
         }
@@ -4773,8 +4778,13 @@ class TileView(
         /** Kept between the count and the edge of the tile it is being fitted into. */
         private const val COUNT_EDGE_DP = 8
 
-        /** Unread marker on a tile still showing its icon. */
-        private const val NOTIFICATION_DOT_DP = 14
+        /**
+         * Unread marker on a tile still showing its icon.
+         *
+         * A step up from the 14 it was as a bare mark, to leave the count set into it room
+         * to be read.
+         */
+        private const val NOTIFICATION_DOT_DP = 16
 
         /** View size around the dot, so it is reliably tappable on tiles that can flip. */
         private const val NOTIFICATION_DOT_TARGET_DP = 36

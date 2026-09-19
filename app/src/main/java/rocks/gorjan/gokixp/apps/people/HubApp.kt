@@ -387,6 +387,14 @@ abstract class HubApp(
      * of one in front of somebody is a dialog that exists to be dismissed.
      */
     protected fun chooseNumber(person: PeopleStore.Contact, onPicked: (String) -> Unit) {
+        // Somebody out of a directory has no row in the book to read numbers from, but was
+        // found by one - which is the number they are reached on.
+        if (person.directory) {
+            val number = person.number
+            if (number.isNullOrBlank()) notify("${person.name} has no number to reach them on")
+            else onPicked(number)
+            return
+        }
         PeopleStore.detail(context, person.id) { detail ->
             val numbers = detail?.phones.orEmpty()
             when {
@@ -441,18 +449,8 @@ abstract class HubApp(
             marginStart = dp(if (first) REACH_KEY_INSET_DP else REACH_KEY_GAP_DP)
         }
 
-    protected fun note(message: String, onTap: (() -> Unit)? = null) = TextView(context).apply {
-        text = message
-        typeface = font(R.font.segoeui_regular)
-        textSize = 15f
-        setTextColor(palette.foregroundSubtle)
-        setPadding(0, dp(18), dp(16), dp(18))
-        if (onTap != null) {
-            isClickable = true
-            setOnClickListener { onTap() }
-            TiltEffect.apply(this)
-        }
-    }
+    protected fun note(message: String, onTap: (() -> Unit)? = null) =
+        metroNote(context, palette, message, onTap)
 
     protected fun font(res: Int): Typeface? = ResourcesCompat.getFont(context, res)
 
@@ -501,5 +499,35 @@ abstract class HubApp(
         const val SEPARATOR = "\u001f"
 
         private const val TAG = "WP81Hub"
+    }
+}
+
+/**
+ * The line of small grey type a page puts where a list would have been.
+ *
+ * "No access to your contacts", "no calls yet", "nobody starred yet" - every one of these
+ * programs has somewhere it has to speak in its own voice instead of showing rows, and a
+ * tappable one is how a permission gets asked for at the moment it explains itself.
+ *
+ * Out here rather than inside [HubApp] because the pages these apps share are views rather
+ * than programs - see [ContactsPage], which is a page in two of them and belongs to
+ * neither.
+ */
+fun metroNote(
+    context: Context,
+    palette: WP81Palette,
+    message: String,
+    onTap: (() -> Unit)? = null
+): TextView = TextView(context).apply {
+    text = message
+    typeface = ResourcesCompat.getFont(context, R.font.segoeui_regular)
+    textSize = 15f
+    setTextColor(palette.foregroundSubtle)
+    val density = context.resources.displayMetrics.density
+    setPadding(0, (18 * density).toInt(), (16 * density).toInt(), (18 * density).toInt())
+    if (onTap != null) {
+        isClickable = true
+        setOnClickListener { onTap() }
+        TiltEffect.apply(this)
     }
 }

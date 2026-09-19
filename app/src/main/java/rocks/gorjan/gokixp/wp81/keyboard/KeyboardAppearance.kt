@@ -107,4 +107,26 @@ internal object KeyboardAppearance {
      */
     fun palette(settings: WP81Settings): WP81Palette =
         accent?.let { WP81Palette.of(it, dark) } ?: WP81Palette.from(settings)
+
+    /**
+     * The keyboard's own theme, which is a keyboard setting and not the launcher's business.
+     *
+     * Read from the file rather than held here, unlike the accent above, and the difference
+     * is the whole reason both exist: the accent is the launcher's and cannot be read on this
+     * side, where this is written in the keyboard's process - from its settings page, which
+     * runs in it - and so a read is always of what was just written.
+     */
+    fun theme(settings: WP81Settings): KeyboardTheme =
+        KeyboardTheme.of(settings.getWP81KeyboardTheme())
+
+    /**
+     * The colours the keyboard itself is drawn in.
+     *
+     * [palette] is the phone's, and remains what the keyboard's *settings page* is painted
+     * from: that page is a page of the phone's Settings and belongs to the shell, whatever
+     * the keyboard underneath it has been made to look like. This is the keyboard, which is
+     * the only thing the theme applies to.
+     */
+    fun keyboardPalette(settings: WP81Settings): WP81Palette =
+        theme(settings).palette(palette(settings))
 }

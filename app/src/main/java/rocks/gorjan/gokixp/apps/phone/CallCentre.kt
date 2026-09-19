@@ -34,7 +34,10 @@ object CallCentre {
         /** Their name, once the address book has been asked. The number until then. */
         val name: String,
         val photoUri: String?,
-        /** The aggregated contact, where the number belongs to one. */
+        /**
+         * The aggregated contact, where the number belongs to somebody in the book. Null for
+         * somebody a directory named, who has a name and a face but no row on this phone.
+         */
         val contactId: Long?,
         /** When the call connected, for the timer. Zero while it is still ringing. */
         val connectedAt: Long
@@ -107,6 +110,11 @@ object CallCentre {
         } catch (e: Exception) {
             Log.w(TAG, "Could not stop watching a call that has ended", e)
         }
+        // Who everybody was is forgotten once nobody is on the phone. It is a cache for the
+        // length of a call, not a second address book: somebody saved after they rang - or
+        // a directory that could not be reached the first time - would otherwise be a bare
+        // number on every call from them until the launcher was next restarted.
+        if (calls.isEmpty()) known.clear()
         announce()
     }
 
@@ -137,19 +145,34 @@ object CallCentre {
     private fun lineFor(call: Call): Line {
         val number = numberOf(call)
         val contact = known[number]
+        val details = call.details
         return Line(
             call = call,
             stage = stageOf(call),
             number = number,
-            // The provider's own idea of who is calling is the fallback, not the first
-            // choice: it is whatever the network sent, and the address book is what the
-            // person actually calls them.
-            name = contact?.name ?: call.details?.callerDisplayName.orEmpty(),
-            photoUri = contact?.photoUri,
-            contactId = contact?.id,
-            connectedAt = call.details?.connectTimeMillis ?: 0L
+            // The address book first, because it is what the person actually calls them.
+            // Then Telecom's own lookup, which has usually finished before the phone starts
+            // ringing and so has a name on screen while ours - which may be waiting on a
+            // directory somewhere - is still thinking. The network's caller name last: it
+            // is whatever the carrier sent, when it sent anything at all.
+            name = contact?.name?.takeIf { it.isNotBlank() }
+                ?: telecomName(details)
+                ?: details?.callerDisplayName.orEmpty(),
+            photoUri = contact?.photoUri ?: telecomPhoto(details),
+            contactId = contact?.takeIf { !it.directory }?.id,
+            connectedAt = details?.connectTimeMillis ?: 0L
         )
     }
+
+    private fun telecomName(details: Call.Details?): String? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            details?.contactDisplayName?.trim()?.takeIf { it.isNotEmpty() }
+        } else null
+
+    private fun telecomPhoto(details: Call.Details?): String? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            details?.contactPhotoUri?.toString()
+        } else null
 
     private fun numberOf(call: Call): String {
         val handle = call.details?.handle ?: return ""
@@ -172,7 +195,13 @@ object CallCentre {
         }
     }
 
-    /** Asks the address book who a number belongs to, and says so when it answers. */
+    /**
+     * Asks who a number belongs to, and says so when the answer comes.
+     *
+     * The book and then the directories - see [PeopleStore.lookup]. A colleague from a work
+     * account is not on the phone, and asking only the book is how one rang as a bare
+     * number while the call log named them a minute later.
+     */
     private fun identify(context: Context, call: Call) {
         val number = numberOf(call)
         if (number.isBlank() || known.containsKey(number)) return
@@ -180,6 +209,9 @@ object CallCentre {
         // does not send two lookups after the same number.
         known[number] = null
         PeopleStore.lookup(context, number) { contact ->
+            // Only while the question still stands. The call can be over and the cache
+            // cleared before a directory gets round to answering.
+            if (!known.containsKey(number)) return@lookup
             known[number] = contact
             announce()
         }

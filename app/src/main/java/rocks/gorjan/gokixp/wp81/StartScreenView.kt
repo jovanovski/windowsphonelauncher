@@ -439,7 +439,7 @@ class StartScreenView(
         // The open folder's rules are its tile's colour, so repainting that tile repaints
         // them - including the case that matters most, every tile on the wall being handed
         // back to the accent so the wallpaper can show through them.
-        if (tileId == openFolderId) syncBandRules()
+        if (tileId == bandFolderId) syncBandRules()
     }
 
     /**
@@ -450,7 +450,7 @@ class StartScreenView(
      */
     private fun syncBandRules() {
         if (bandRules.isEmpty()) return
-        val folderView = openFolderId?.let { id -> findTileView { it.tile.id == id } }
+        val folderView = bandFolderId?.let { id -> findTileView { it.tile.id == id } }
         val color = folderView?.fillColor ?: palette.accent
         val window = folderView?.showsStartBackground == true
         for (rule in bandRules) rule.setRule(color, window, ruleDim())
@@ -963,6 +963,17 @@ class StartScreenView(
      */
     private var bandRules: List<BandRule> = emptyList()
 
+    /**
+     * The folder those rules belong to.
+     *
+     * Held apart from [openFolderId] for the reason [blurExempt] is: the rules are still on
+     * screen while the folder is closing, and by then that is already null. The wall grows
+     * shorter on every frame of the close, which rebuilds the photograph's crop and asks
+     * the rules again - and asked by [openFolderId], they found no folder and turned back
+     * into bars of solid accent for the length of the slide.
+     */
+    private var bandFolderId: String? = null
+
     /** Which side of the folder the tile in hand started on. See [fileOnDrop]. */
     private var dragStartedInBand = false
 
@@ -1122,6 +1133,7 @@ class StartScreenView(
             bandGrid = null
             bandColumn = null
             bandRules = emptyList()
+            bandFolderId = null
             blurExempt = null
             clearWallBlur()
             return
@@ -1133,6 +1145,7 @@ class StartScreenView(
             bandGrid = null
             bandColumn = null
             bandRules = emptyList()
+            bandFolderId = null
             blurExempt = null
             // The wall is a row shorter again, so the parallax has a different range.
             post { pushBackgroundToTiles() }
@@ -1300,6 +1313,7 @@ class StartScreenView(
         val folderView = findTileView { it.tile.id == folder.id }
         val rule = folderView?.fillColor ?: palette.accent
         val ruleIsWindow = folderView?.showsStartBackground == true
+        bandFolderId = folder.id
         bandRules = listOf(BandRule(context), BandRule(context)).onEach {
             it.setRule(rule, ruleIsWindow, ruleDim())
             // Handed the wall's crop as they are made, exactly as [buildTileView] hands it

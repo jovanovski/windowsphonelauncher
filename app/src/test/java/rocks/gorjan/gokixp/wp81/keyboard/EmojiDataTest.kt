@@ -46,6 +46,131 @@ class EmojiDataTest {
         "👨‍🦲\t1\tman: bald"
     ).joinToString("\n")
 
+    /**
+     * A fixture shaped like the real asset around the skin tones.
+     *
+     * Copied from `assets/keyboard/emoji.txt` verbatim and in its own order, because every
+     * rule being checked here is a rule about how Unicode spells these names - the shade as a
+     * qualifier after a colon, hair as another one beside it, and the two `person`s that the
+     * mixed-shade kiss carries and nothing else does.
+     */
+    private val shades = listOf(
+        "\uD83D\uDC4B\t1\twaving hand",
+        "\uD83D\uDC4B\uD83C\uDFFB\t1\twaving hand: light skin tone",
+        "\uD83D\uDC4B\uD83C\uDFFF\t1\twaving hand: dark skin tone",
+        "\uD83D\uDC68\u200D\uD83E\uDDB0\t1\tman: red hair",
+        "\uD83D\uDC68\uD83C\uDFFB\u200D\uD83E\uDDB0\t1\tman: light skin tone, red hair",
+        "\uD83D\uDC68\u200D\uD83E\uDDB2\t1\tman: bald",
+        "\uD83D\uDC8F\t1\tkiss",
+        "\uD83D\uDC8F\uD83C\uDFFB\t1\tkiss: light skin tone",
+        "\uD83E\uDDD1\uD83C\uDFFB\u200D\u2764\uFE0F\u200D\uD83D\uDC8B\u200D\uD83E\uDDD1\uD83C\uDFFC" +
+            "\t1\tkiss: person, person, light skin tone, medium-light skin tone",
+        "\uD83E\uDD16\t6\trobot"
+    ).joinToString("\n")
+
+    // ---------------------------------------------------------------- families
+
+    /**
+     * The grid draws one cell per family, and the shades are not in it.
+     *
+     * The whole point of the grouping: laid out flat, half the picker is the same hand five
+     * times over before the next hand. Hair is not a shade and stays its own cell - `man:
+     * bald` is a different person, not a different skin.
+     */
+    @Test
+    fun theGridDrawsOneCellPerFamily() {
+        val data = EmojiData.parse(shades)
+        assertEquals(
+            listOf("waving hand", "man: red hair", "man: bald", "kiss"),
+            data.bases[EmojiCategories.PEOPLE_BODY].map { it.name }
+        )
+        assertEquals(listOf("robot"), data.bases[EmojiCategories.OBJECTS].map { it.name })
+    }
+
+    /**
+     * Holding any member of a family opens all of it, base first.
+     *
+     * Any member, not only the base, because the recents hold whatever was actually picked:
+     * a hold that gave the dark wave once puts *that* in the recents, and holding it there
+     * has to open the same three.
+     */
+    @Test
+    fun holdingAnyShadeOpensTheWholeFamily() {
+        val data = EmojiData.parse(shades)
+        val family = listOf("\uD83D\uDC4B", "\uD83D\uDC4B\uD83C\uDFFB", "\uD83D\uDC4B\uD83C\uDFFF")
+        assertEquals(family, data.variantsOf(family[0]).map { it.glyph })
+        assertEquals(family, data.variantsOf(family[2]).map { it.glyph })
+    }
+
+    /** Hair is a different emoji, so it heads a family of its own rather than joining one. */
+    @Test
+    fun hairIsNotAShade() {
+        val data = EmojiData.parse(shades)
+        assertEquals(
+            listOf("man: red hair", "man: light skin tone, red hair"),
+            data.variantsOf("\uD83D\uDC68\u200D\uD83E\uDDB0").map { it.name }
+        )
+        assertTrue(
+            "bald has no shades in this fixture and should offer none",
+            data.variantsOf("\uD83D\uDC68\u200D\uD83E\uDDB2").isEmpty()
+        )
+    }
+
+    /**
+     * The mixed-shade kiss is filed under the kiss, not under a name nothing has.
+     *
+     * Unicode spells it `kiss: person, person, light skin tone, medium-light skin tone` - the
+     * two `person`s say whose shades those are - so taking out only the shades leaves
+     * `kiss: person, person`, which names nothing. Twenty entries in the real asset, and
+     * twenty more under `couple with heart`, would otherwise each become a cell of their own.
+     */
+    @Test
+    fun aMixedPairIsFiledUnderItsBase() {
+        val data = EmojiData.parse(shades)
+        assertEquals(
+            listOf("kiss", "kiss: light skin tone",
+                "kiss: person, person, light skin tone, medium-light skin tone"),
+            data.variantsOf("\uD83D\uDC8F").map { it.name }
+        )
+    }
+
+    /** An emoji that comes in one shade has none to open, and wears no corner mark. */
+    @Test
+    fun anEmojiWithOneShadeOffersNothing() {
+        val data = EmojiData.parse(shades)
+        assertTrue(data.variantsOf("\uD83E\uDD16").isEmpty())
+        assertTrue(!data.hasVariants("\uD83E\uDD16"))
+        assertTrue(data.hasVariants("\uD83D\uDC4B"))
+    }
+
+    /** The search box answers with heads too, for the same reason the grid shows them. */
+    @Test
+    fun searchAnswersWithHeadsOnly() {
+        val data = EmojiData.parse(shades)
+        assertEquals(listOf("waving hand"), data.search("waving").map { it.name })
+        // And the shades are still there to be found by glyph, which is what recents need.
+        assertEquals("waving hand: dark skin tone",
+            data.find("\uD83D\uDC4B\uD83C\uDFFF")?.name)
+    }
+
+    /**
+     * A family whose base this phone cannot draw is headed by the first shade that survived.
+     *
+     * [EmojiData.filtered] drops whatever the device's font has no glyph for, and it has no
+     * idea it is dropping the head of a family. Promoting the next one keeps the other four
+     * reachable; the alternative is a family that vanishes because of its first member.
+     */
+    @Test
+    fun aFamilyOutlivesABaseTheFontCannotDraw() {
+        val data = EmojiData.filtered(shades) { it != "\uD83D\uDC4B" }
+        assertEquals(
+            listOf("waving hand: light skin tone", "waving hand: dark skin tone"),
+            data.variantsOf("\uD83D\uDC4B\uD83C\uDFFF").map { it.name }
+        )
+        assertEquals("waving hand: light skin tone",
+            data.bases[EmojiCategories.PEOPLE_BODY].first().name)
+    }
+
     // ---------------------------------------------------------------- headed
 
     /** The two the feature was asked for, both answered by the emoji that *is* the term. */

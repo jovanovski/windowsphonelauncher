@@ -15,12 +15,18 @@ class NotificationListenerService : NotificationListenerService() {
      * post, the avatar of whoever is messaging - already scaled down to tile size. A
      * notification with none simply has none; most do not. [opening] is where it goes
      * when the tile showing it is tapped.
+     *
+     * [count] is how many messages it is carrying - the same number as
+     * [ShadeEntry.messageCount], and for the same reason: a chat app posts one notification
+     * per conversation, so three unread messages from one person are one line, and a tile
+     * counting lines said 1.
      */
     data class NotificationLine(
         val title: String,
         val text: String,
         val image: android.graphics.Bitmap? = null,
-        val opening: Opening? = null
+        val opening: Opening? = null,
+        val count: Int = 1
     )
 
     /**
@@ -480,6 +486,10 @@ class NotificationListenerService : NotificationListenerService() {
             // keeping cannot be decided one notification at a time. See below.
             val shade = mutableListOf<Pair<StatusBarNotification, ShadeEntry>>()
             for (sbn in getActiveNotifications() ?: emptyArray()) {
+                // Read once for both lists: the Action Center's row, and how many messages
+                // the tile lines below are carrying. See [NotificationLine.count].
+                val entry = shadeEntryOf(sbn)
+                val count = entry?.messageCount ?: 1
                 // Gathered here for the same reason the missed calls are: the People tile
                 // has no package to read them from, and these are wanted whole rather than
                 // as part of whatever this launcher's own package happens to be showing.
@@ -491,7 +501,8 @@ class NotificationListenerService : NotificationListenerService() {
                         ?.toString()?.trim().orEmpty()
                     if (who.isNotEmpty() || what.isNotEmpty()) {
                         texts.add(NotificationLine(
-                            who, if (what == who) "" else what, opening = openingOf(sbn)))
+                            who, if (what == who) "" else what, opening = openingOf(sbn),
+                            count = count))
                     }
                 }
                 // Gathered before the filter below rather than after it: a missed call is
@@ -507,14 +518,15 @@ class NotificationListenerService : NotificationListenerService() {
                         // Telecom's own says "Missed call" in both lines. Repeating it
                         // under itself on a tile is a tile saying one thing twice.
                         missed.add(NotificationLine(
-                            who, if (what == who) "" else what, opening = openingOf(sbn)))
+                            who, if (what == who) "" else what, opening = openingOf(sbn),
+                            count = count))
                     }
                 }
                 // The Action Center's own list, taken before the filter below rather than
                 // after it: what it leaves out is the quiet and the ongoing, and a shade
                 // that hid those would be missing the download that is running and the
                 // track that is playing. See [ShadeEntry].
-                shadeEntryOf(sbn)?.let { shade.add(sbn to it) }
+                entry?.let { shade.add(sbn to it) }
 
                 if (!shouldShowNotification(sbn)) continue
 
@@ -532,7 +544,7 @@ class NotificationListenerService : NotificationListenerService() {
                 if (title.isEmpty() && text.isEmpty()) continue
                 grouped.getOrPut(sbn.packageName) { mutableListOf() }
                     .add(NotificationLine(
-                        title, text, notificationImage(sbn.notification), openingOf(sbn)))
+                        title, text, notificationImage(sbn.notification), openingOf(sbn), count))
             }
             // A group summary is dropped only where the group it summarises is on the
             // list too. Mail and messaging apps post one alongside each real notification,
